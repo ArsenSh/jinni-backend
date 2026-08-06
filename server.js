@@ -415,6 +415,10 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/saves', auth, savesRoutes);
 app.use('/api/share', shareRouter);
+// Root-mounted OG preview for shared trips. Caddy routes jinni.travel/share/*
+// here ONLY for crawler user-agents (WhatsApp/Facebook/Twitter/etc.) so link
+// previews render rich cards; human browsers keep hitting the static SPA.
+app.get('/share/:token', shareRouter.ogHandler);
 app.use('/api/staff', staffRoutes);
 app.use('/api/routing', routingRoutes);
 app.use('/api/itinerary', require('./routes/itineraryRoutes'));

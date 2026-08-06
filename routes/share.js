@@ -179,4 +179,140 @@ router.get('/:token', async (req, res) => {
   }
 });
 
+/* ═══════════════════════ OpenGraph handler ═══════════════════════════════════
+ * Rich link previews for shared trips. A shared URL pasted into WhatsApp /
+ * iMessage / Facebook / Twitter is fetched by a crawler that does NOT run
+ * JavaScript — so a client-rendered SPA shows a bare URL with no preview. This
+ * returns a tiny HTML doc with per-trip OpenGraph tags injected server-side.
+ *
+ * Served at jinni.travel/share/:token, but ONLY for crawler user-agents (see
+ * the Caddy block in INTEGRATION notes). Humans keep hitting the static SPA,
+ * so there is no redirect hop and no loop risk. A JS redirect is included only
+ * as a courtesy for the rare falsely-matched real browser — a real browser's
+ * UA never matches the crawler rule, so it can't loop.
+ *
+ * Mount in server.js at the ROOT (not under /api):
+ *     app.get('/share/:token', shareRouter.ogHandler);
+ */
+
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://jinni.travel').replace(/\/$/, '');
+// Where absolute image URLs resolve. Place images are served by the API host.
+const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || 'https://api.jinni.travel').replace(/\/$/, '');
+
+// Escape for insertion into an HTML attribute (content="..."). Covers the five
+// characters that can break out of an attribute or inject markup.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Relative place images ('/api/ai/place-image/<id>/0') live on the API host;
+// absolute Google URLs are used as-is. Anything else → no image (branded
+// fallback is applied by the caller).
+function absoluteImage(img) {
+  if (typeof img !== 'string' || !img) return null;
+  if (/^https?:\/\//i.test(img)) return img;
+  if (img.startsWith('/api/')) return `${API_PUBLIC_URL}${img}`;
+  return null;
+}
+
+// Pull the first usable place photo out of an itinerary snapshot.
+function firstItineraryImage(itin) {
+  for (const d of itin?.days || []) {
+    for (const s of d.slots || []) {
+      const abs = absoluteImage(s.place?.image);
+      if (abs) return abs;
+    }
+  }
+  return null;
+}
+
+// Derive { title, description, image } from a share payload of any type.
+function ogFromPayload(payload) {
+  const brandImage = `${FRONTEND_URL}/og-default.png`;   // branded fallback (add this asset once)
+  if (payload?.type === 'itinerary' && payload.itinerary) {
+    const it = payload.itinerary;
+    const dest = it.destination?.name || 'your trip';
+    const days = it.daysCount || (Array.isArray(it.days) ? it.days.length : 0);
+    return {
+      title: it.title || `${days}-day trip to ${dest}`,
+      description: `A ${days}-day trip to ${dest}, planned with Jinni.`,
+      image: firstItineraryImage(it) || brandImage,
+    };
+  }
+  if (payload?.type === 'recommendation' && payload.rec) {
+    return {
+      title: payload.rec.name || 'A place on Jinni',
+      description: payload.rec.description
+        ? String(payload.rec.description).slice(0, 200)
+        : `Discover ${payload.rec.name || 'this place'} on Jinni.`,
+      image: absoluteImage(payload.rec.image) || brandImage,
+    };
+  }
+  if (payload?.type === 'message' && payload.message) {
+    return {
+      title: 'Shared from Jinni',
+      description: String(payload.message).replace(/\s+/g, ' ').slice(0, 200),
+      image: brandImage,
+    };
+  }
+  return {
+    title: 'Jinni — plan your trip',
+    description: 'Discover verified local places and build a real, mapped itinerary with Jinni.',
+    image: brandImage,
+  };
+}
+
+function renderOgHtml(og, canonicalUrl) {
+  const t = esc(og.title), d = esc(og.description), img = esc(og.image), url = esc(canonicalUrl);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${t} · Jinni</title>
+<meta name="description" content="${d}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Jinni">
+<meta property="og:title" content="${t}">
+<meta property="og:description" content="${d}">
+<meta property="og:image" content="${img}">
+<meta property="og:url" content="${url}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${t}">
+<meta name="twitter:description" content="${d}">
+<meta name="twitter:image" content="${img}">
+<link rel="canonical" href="${url}">
+</head>
+<body>
+<p>${t}</p>
+<p><a href="${url}">Open this on Jinni →</a></p>
+<script>location.replace(${JSON.stringify(canonicalUrl)})</script>
+</body>
+</html>`;
+}
+
+/**
+ * GET /share/:token  (root-mounted, crawler traffic only via Caddy).
+ * Returns HTML with per-trip OG tags. Never errors to the client — an invalid
+ * or expired token just yields the branded default preview.
+ */
+async function ogHandler(req, res) {
+  const canonicalUrl = `${FRONTEND_URL}/share/${encodeURIComponent(req.params.token)}`;
+  try {
+    const share = await Share.findOne({ token: req.params.token }).lean();
+    const og = ogFromPayload(share?.payload);
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    // Cache previews briefly at the edge; the trip is immutable for its 24h life.
+    res.set('Cache-Control', 'public, max-age=600');
+    return res.send(renderOgHtml(og, canonicalUrl));
+  } catch (err) {
+    console.error('Share OG render error:', err);
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    return res.send(renderOgHtml(ogFromPayload(null), canonicalUrl));
+  }
+}
+
 module.exports = router;
+module.exports.ogHandler = ogHandler;
