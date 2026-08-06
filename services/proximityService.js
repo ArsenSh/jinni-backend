@@ -1,0 +1,337 @@
+const Business = require('../models/Business');
+const Destination = require('../models/Destination');
+const googleService = require('./googleService');
+const currencyService = require('./currencyService');
+
+/**
+ * Mongo filter clauses that gate which Business documents are eligible to be
+ * surfaced to travelers (AI chat, quick actions, public discovery, etc.).
+ *
+ * Two layers, combined into an `$and` block by the caller:
+ *
+ *   1. status === 'active'
+ *      Excludes pending, frozen, waitlisted, rejected, and expired listings.
+ *      These statuses each carry their own meaning that travelers shouldn't
+ *      see: pending isn't approved yet, frozen lost its zone slot, expired
+ *      events have already happened, etc.
+ *
+ *   2. Event freshness
+ *      A defense-in-depth check for events specifically. Even an event with
+ *      `status: 'active'` should be hidden if its end-time has passed —
+ *      because lazy-expire only fires when someone GETs the listing, an
+ *      event could sit at `active` in Mongo for days after it ended if its
+ *      owner doesn't open the dashboard. The clauses:
+ *        • non-events             → always pass
+ *        • recurring events       → always pass (perpetually relevant)
+ *        • events with endDate    → endDate must be in the future
+ *        • events without endDate → startDate must be in the future
+ *
+ * Returns the clauses as an object so callers can merge into a larger query
+ * with their own `$and` constraints (region filter, type filter, etc.).
+ */
+function discoverabilityFilter() {
+    const now = new Date();
+    return {
+        status: 'active',
+        $and: [{
+            $or: [
+                // Non-events: status: 'active' is sufficient
+                { type: { $nin: ['events'] } },
+                // Recurring events are perpetually relevant
+                { 'eventSchedule.isRecurring': true },
+                // One-time events with an endDate that's still in the future
+                { 'eventSchedule.endDate': { $gte: now } },
+                // One-time events with only a startDate (no end), still upcoming
+                { $and: [
+                    { 'eventSchedule.endDate':   { $in: [null, undefined] } },
+                    { 'eventSchedule.startDate': { $gte: now } }
+                ]}
+            ]
+        }]
+    };
+}
+
+/**
+ * Smart proximity-based place finder with preference matching (NO Google enrichment)
+ * @param {Object} userLocation - { lat: number, lng: number }
+ * @param {Object} preferences - { interests: string[], travelStyle: string }
+ * @param {string} actionType - 'restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots'
+ *        Note on the two newer actions:
+ *          • 'shopping'   → gated on the chosen sub-type tag (souvenirs/clothing/
+ *                           market/mall/jewelry/food). There is no 'shopping'
+ *                           tag — the button always resolves to a sub-type before
+ *                           a search runs. Sub-type comes in via the subType arg.
+ *          • 'photo_spots'→ usually has no tagged businesses, so the business
+ *                           $all filter returns nothing and results come from
+ *                           region-bound scenic destinations (parks, viewpoints,
+ *                           monuments) plus AI-suggested places. An optional
+ *                           'photo_spots' tag also exists for hand-curated spots,
+ *                           which then surface (and rank highest) under it.
+ * @param {number} radiusKm - Search radius in kilometers (default: 50)
+ * @param {number} maxResults - Maximum results to return (default: 10)
+ * @param {string|null} subType - Shopping sub-category when actionType==='shopping'
+ *        (one of: souvenirs | clothing | market | mall | jewelry | food).
+ *        When set, the business AND destination type filters tighten to that
+ *        sub-type tag instead of the generic 'shopping' umbrella, so "Jewelry"
+ *        returns only jewelry-tagged listings. Ignored for every other action.
+ * @returns {Promise<Object>} { businesses: Array, destinations: Array, metadata: Object }
+ */
+async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null) {
+    const startTime = Date.now();
+    try {
+        if (!userLocation?.lat || !userLocation?.lng) { throw new Error('Valid user location required'); }
+        const userInterests = preferences?.interests || [];
+        // travelStyle now carries the PRICE axis only (luxury | budget). Those are
+        // the only style values that exist as type tags on Business/Destination,
+        // so they're the only ones we hard-gate on. family/romantic moved to
+        // interests and are handled as soft scoring (calculatePreferenceScore).
+        // Anything else (empty, legacy 'solo', or a not-yet-migrated
+        // 'romantic'/'family') is treated as "no price gate" — otherwise an
+        // empty/unknown style would $all-match a tag no document has and return
+        // zero results.
+        const GATING_STYLE_TAGS = ['luxury', 'budget'];
+        const rawStyle = (preferences?.travelStyle || '').toLowerCase();
+        const userStyle = GATING_STYLE_TAGS.includes(rawStyle) ? rawStyle : null;
+        const userBudget = preferences?.budget || null;
+
+        // For shopping, the real category is the sub-type the user picked
+        // ('jewelry', 'mall', …). There is no 'shopping' tag in the schema —
+        // "Shopping" is just the button — so the UI always sends a sub-type. If
+        // one is somehow missing, effectiveTag stays 'shopping', which matches no
+        // document on purpose (the DB simply contributes nothing and the AI
+        // prompt's general-shopping fallback carries the result). Other actions
+        // ignore subType entirely.
+        const SHOPPING_SUBTYPES = ['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
+        const effectiveTag = (actionType === 'shopping' && SHOPPING_SUBTYPES.includes(subType))
+            ? subType
+            : actionType;
+        
+        // Normalize user budget to USD for database comparison
+        let normalizedBudget = null;
+        const shouldFilterBudget = userBudget?.min && userBudget?.max && !(userBudget.min === 0 && userBudget.max === 0);
+        
+        if (shouldFilterBudget) {
+            normalizedBudget = currencyService.normalizeBudgetToUSD(userBudget);
+            // console.log(`Budget conversion: ${userBudget.min}-${userBudget.max} ${userBudget.currency} → ${normalizedBudget.min}-${normalizedBudget.max} USD`);
+        }
+        
+        //console.log(`Proximity search: action = ${actionType}, radius = ${radiusKm}km, interests = [${userInterests.join(',')}], style = ${userStyle}`);
+
+        if (!userRegion) {
+            try { userRegion = await googleService.detectUserRegion(userLocation, requestId) } 
+            catch (error) { console.warn('Region detection failed, using global search') }
+        } else {
+            //console.log('✅ Using pre-detected region (no API call)');
+        }
+        // ── Base business query ──────────────────────────────────────────────
+        // `isActive` is the soft-delete flag (false = owner-deleted listing).
+        // The status+freshness gate is added via discoverabilityFilter() so
+        // we don't surface pending/frozen/rejected/expired listings, and so
+        // events that have ended but haven't been lazy-expired yet still
+        // get hidden. The helper writes its own `$and` clause; we merge
+        // rather than overwrite so the budget/region clauses below still
+        // layer cleanly on top.
+        const discFilter = discoverabilityFilter();
+        const baseQuery = {
+            isActive: true,
+            type: userStyle ? { $all: [effectiveTag, userStyle] } : { $all: [effectiveTag] },
+            status: discFilter.status,
+            $and: [...discFilter.$and]
+        };
+        if (shouldFilterBudget && normalizedBudget) {
+            baseQuery.$and.push({
+                $or: [
+                    { 'pricing.averagePrice': { $gte: normalizedBudget.min, $lte: normalizedBudget.max } },
+                    { 'pricing.averagePrice': { $exists: false } },
+                    { 'pricing.averagePrice': null }
+                ]
+            });
+        }
+        if (userRegion?.country) {
+            const countryVariations = [userRegion.country, userRegion.region, userRegion.city].filter(Boolean);
+            const regionFilter = {
+                $or: [
+                    { 'location.region': { $in: countryVariations } },
+                    { 'location.city': { $in: countryVariations } },
+                    { 'location.coordinates.lat': { $gte: userLocation.lat - 2, $lte: userLocation.lat + 2 }, 'location.coordinates.lng': { $gte: userLocation.lng - 2, $lte: userLocation.lng + 2 } }
+                ]
+            };
+            // baseQuery.$and always exists now (seeded by discoverabilityFilter),
+            // so we just push the region clause. The old `if (baseQuery.$and)`
+            // / `else` branch is no longer needed.
+            baseQuery.$and.push(regionFilter);
+        }
+        // ── Destination query ────────────────────────────────────────────────
+        //   Destinations are public sites (parks, monuments, viewpoints, museums).
+        //   They are almost never tagged with `restaurants` or `hotels`, so the
+        //   old strict filter `type: { $all: [actionType, userStyle] }` returned
+        //   zero rows whenever the user message was about food or lodging — even
+        //   though nearby cultural/historical sites would be relevant context.
+        //
+        //   New rule:
+        //     - For `historical`, `hidden_gems`, `events`, `shopping` keep the
+        //       strict $all filter — those action types are first-class tags a
+        //       destination genuinely carries (e.g. a covered bazaar tagged
+        //       'shopping'). This is what stops, say, a 'restaurants'-tagged
+        //       destination from leaking into a Shopping search.
+        //     - For `photo_spots` gate on a set of *visually relevant* tags via
+        //       $in (parks, viewpoints, heritage, art) so a 'restaurants'-only
+        //       destination is excluded while scenic sites still surface. We use
+        //       $in (not $all) because photo-worthiness comes from ANY of these.
+        //     - For `restaurants` and `hotels` we still surface nearby
+        //       destinations as complementary context, bounded by region +
+        //       radius and ranked by interest scoring — no type gate.
+        //
+        //   IMPORTANT: destinations are public sites (parks, monuments,
+        //   viewpoints) that almost never carry a price tier, so we do NOT gate
+        //   them on luxury/budget — doing so would filter out almost everything.
+        // NOTE: 'restaurants' and 'hotels' are included so a destination must
+        // actually carry that tag to surface under those actions. Without them
+        // the query falls through to region-only and pulls EVERY active
+        // destination in the area — e.g. a 'restaurants'-tagged destination
+        // ("Master Class") showing up as the lone result under a Hotels search,
+        // then mislabeled "Hotel" by getCategoryFromAction. If you want nearby
+        // destinations as complementary context again, do it as a separate,
+        // clearly-labeled section rather than mixing them into the typed results.
+        const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping'];
+        const PHOTO_DEST_TAGS = ['photo_spots', 'nature', 'art', 'cultural', 'history', 'historical', 'hidden_gems'];
+        const destinationQuery = { isActive: true };
+        if (actionType === 'photo_spots') {
+            // Only visually-relevant destinations — excludes e.g. a destination
+            // tagged solely 'restaurants', includes parks/viewpoints/heritage/art.
+            destinationQuery.type = { $in: PHOTO_DEST_TAGS };
+        } else if (destinationActionFirstClass.includes(actionType)) {
+            // First-class action types are real destination tags → match strictly.
+            // For shopping this is the chosen sub-type (effectiveTag), e.g. a
+            // covered bazaar tagged 'market' surfaces under the Markets chip.
+            destinationQuery.type = { $all: [effectiveTag] };
+        }
+        // else (restaurants/hotels): no type gate — region/distance bound the set
+        // and calculatePreferenceScore ranks by the user's interests.
+        // Same region/coordinate filter as businesses, so we don't pull
+        // destinations from across the world when the user is in a specific city.
+        if (userRegion?.country) {
+            const countryVariations = [userRegion.country, userRegion.region, userRegion.city].filter(Boolean);
+            destinationQuery.$or = [
+                { 'location.region': { $in: countryVariations } },
+                { 'location.city':   { $in: countryVariations } },
+                { 'location.coordinates.lat': { $gte: userLocation.lat - 2, $lte: userLocation.lat + 2 }, 'location.coordinates.lng': { $gte: userLocation.lng - 2, $lte: userLocation.lng + 2 } }
+            ];
+        }
+        const [candidateBusinesses, candidateDestinations] = await Promise.all([
+            Business.find(baseQuery).lean().exec(),
+            Destination.find(destinationQuery).lean().exec()
+        ]);
+        const destFilterMode = actionType === 'photo_spots'
+            ? 'photogenic-$in'
+            : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only');
+        console.log(`Proximity DB query: action=${actionType}${effectiveTag !== actionType ? ' subType='+effectiveTag : ''}, style=${userStyle || 'none'} → ${candidateBusinesses.length} businesses, ${candidateDestinations.length} destinations (destination filter: ${destFilterMode})`);
+
+        function hasValidCoords(place) { return place.location?.coordinates?.lat && place.location?.coordinates?.lng; }
+        const validBusinesses = candidateBusinesses.filter(hasValidCoords);
+        const validDestinations = candidateDestinations.filter(hasValidCoords);
+        const businessesForDistance = validBusinesses.map(business => ({ ...business, lat: business.location.coordinates.lat, lng: business.location.coordinates.lng, name: business.name }));
+        const destinationsForDistance = validDestinations.map(dest => ({ ...dest, lat: dest.location.coordinates.lat, lng: dest.location.coordinates.lng, name: dest.name }));
+        const [businessDistances, destinationDistances] = await Promise.all([businessesForDistance.length > 0 ? googleService.calculateDistances(userLocation, businessesForDistance, requestId) : [], destinationsForDistance.length > 0 ? googleService.calculateDistances(userLocation, destinationsForDistance, requestId) : []]);
+        const businessesWithDistance = businessDistances.filter(result => result.distance.km <= radiusKm).map(result => ({...result.destination, distance: result.distance.km, distanceText: result.distance.text, duration: result.duration.text}));
+        const destinationsWithDistance = destinationDistances.filter(result => result.distance.km <= radiusKm).map(result => ({...result.destination, distance: result.distance.km, distanceText: result.distance.text, duration: result.duration.text}));
+        //console.log(`Distance filtered: ${businessesWithDistance.length} businesses, ${destinationsWithDistance.length} destinations`);
+
+        function calculatePreferenceScore(placeTypes, userInterests, averagePrice = null, normalizedBudget = null) {
+            let score = 5;    
+            userInterests.forEach(interest => { if (placeTypes.includes(interest)) { score += 2 } });    
+            // Photo-spot bias: most photogenic destinations aren't tagged
+            // 'photo_spots' explicitly, so beyond the strong boost for an
+            // explicit tag (above) we softly boost destinations whose tags tend
+            // to be visually striking (scenic nature, landmarks, art, heritage)
+            // so viewpoints/monuments float above, say, an admin office tagged
+            // only 'cultural'. Pure ranking nudge — nothing is excluded.
+            if (actionType === 'photo_spots') {
+                // An explicit 'photo_spots' tag is the strongest signal (admin
+                // hand-picked it), so weight it above the merely photogenic tags.
+                if (placeTypes.includes('photo_spots')) { score += 4; }
+                const PHOTOGENIC_TAGS = ['nature', 'art', 'cultural', 'history', 'historical', 'hidden_gems'];
+                PHOTOGENIC_TAGS.forEach(tag => { if (placeTypes.includes(tag)) { score += 1.5 } });
+            }
+            if (shouldFilterBudget && averagePrice && normalizedBudget) {
+                const budgetMid = (normalizedBudget.min + normalizedBudget.max) / 2;
+                const priceDeviation = Math.abs(averagePrice - budgetMid);
+                const maxDeviation = (normalizedBudget.max - normalizedBudget.min) / 2;
+                const budgetScore = 1 - (priceDeviation / maxDeviation);
+                score += budgetScore * 3;
+            }
+            return score;
+        }
+        const finalBusinesses = businessesWithDistance
+            .map(business => {
+                const prefScore = calculatePreferenceScore(business.type || [], userInterests, business.pricing?.averagePrice, normalizedBudget);
+                return {
+                    ...business,
+                    preferenceScore: prefScore,
+                    totalScore: prefScore + (radiusKm - business.distance) / 10,
+                    withinBudget: shouldFilterBudget && business.pricing?.averagePrice && normalizedBudget ? (business.pricing.averagePrice >= normalizedBudget.min && business.pricing.averagePrice <= normalizedBudget.max) : null
+                };
+            }).sort((a, b) => b.totalScore - a.totalScore).slice(0, maxResults);
+        const finalDestinations = destinationsWithDistance
+            .map(dest => ({
+                ...dest,
+                preferenceScore: calculatePreferenceScore(dest.type || [], userInterests),
+                totalScore: calculatePreferenceScore(dest.type || [], userInterests) + (radiusKm - dest.distance) / 10
+            })).sort((a, b) => b.totalScore - a.totalScore).slice(0, maxResults);
+        //console.log(`Final candidates: ${finalBusinesses.length} businesses, ${finalDestinations.length} destinations`);
+        //console.log(`All results match action type: ${actionType} and style: ${userStyle}`);
+        const processingTime = Date.now() - startTime;
+        const result = {
+            businesses: finalBusinesses,
+            destinations: finalDestinations,
+            metadata: {
+                processingTimeMs: processingTime,
+                userRegion: userRegion,
+                searchRadius: radiusKm,
+                actionTypeFilter: actionType,
+                subTypeFilter: (actionType === 'shopping' && effectiveTag !== actionType) ? effectiveTag : null,
+                styleFilter: userStyle,
+                budgetFilter: shouldFilterBudget ? { 
+                    original: { min: userBudget.min, max: userBudget.max, currency: userBudget.currency },
+                    normalized: { min: normalizedBudget.min, max: normalizedBudget.max, currency: 'USD' }
+                } : null,
+                totalCandidates: candidateBusinesses.length + candidateDestinations.length,
+                finalResults: finalBusinesses.length + finalDestinations.length,
+                performanceMetrics: {
+                    dbQueryCount: candidateBusinesses.length + candidateDestinations.length,
+                    localDistanceCalculations: businessesWithDistance.length + destinationsWithDistance.length,
+                    googleApiCalls: 0,
+                    readyForEnrichment: finalBusinesses.length + finalDestinations.length
+                }
+            }
+        };
+        // console.log(`Smart proximity completed in ${processingTime}ms (NO Google distance API calls)`);
+        return result;
+    } catch (error) {
+        console.error('Smart proximity search failed:', error);
+        return {businesses: [], destinations: [], metadata: { error: error.message, processingTimeMs: Date.now() - startTime }};
+    }
+}
+
+function deriveCategoryFromType(types) {
+    if (!types || !Array.isArray(types)) return 'Business';    
+    if (types.includes('restaurants')) return 'Restaurant';
+    if (types.includes('hotels')) return 'Hotel';
+    if (types.includes('historical')) return 'Historical Site';
+    if (types.includes('events')) return 'Event';
+    if (types.includes('hidden_gems')) return 'Hidden Gem';
+    if (types.includes('jewelry'))   return 'Jewelry';
+    if (types.includes('mall'))      return 'Mall';
+    if (types.includes('market'))    return 'Market';
+    if (types.includes('clothing'))  return 'Clothing Store';
+    if (types.includes('souvenirs')) return 'Souvenir Shop';
+    if (types.includes('food'))      return 'Food & Gourmet';
+    if (types.includes('food&drink')) return 'Restaurant';
+    if (types.includes('nightlife')) return 'Bar';
+    if (types.includes('cultural')) return 'Cultural Site';
+    if (types.includes('nature')) return 'Natural Attraction';
+    if (types.includes('adventure')) return 'Adventure';
+    return 'Business';
+}
+
+module.exports = { findSmartProximityPlaces, deriveCategoryFromType, discoverabilityFilter };

@@ -1,0 +1,10 @@
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+# Dependencies / build
+node_modules/
+logs/
+*.log
+.DS_Store

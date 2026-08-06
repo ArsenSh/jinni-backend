@@ -1,0 +1,1025 @@
+const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
+
+class EmailService {
+    constructor() {
+        this.transporter = nodemailer.createTransport({
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false,
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_APP_PASSWORD
+            }
+        });
+    }
+    async sendVerificationEmail(email, code, name) {
+        try {
+            const mailOptions = {
+                from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Verify Your Email - Jinni',
+                html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 28px; }
+                            .content { padding: 40px 30px; text-align: center; }
+                            .code-container { background: #f8f9fa; border: 2px dashed #D4AF37; border-radius: 10px; padding: 30px; margin: 30px 0; }
+                            .code { font-size: 36px; font-weight: bold; color: #D4AF37; letter-spacing: 8px; margin: 10px 0; }
+                            .warning { color: #dc3545; font-size: 14px; margin-top: 20px; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h1>Welcome to Jinni</h1>
+                                <p>Verify your email to get started</p>
+                            </div>
+                            <div class="content">
+                                <h2>Hello ${name || 'Explorer'}!</h2>
+                                <p>We are glad seeing you to join this AI. To complete your registration, please enter the verification code below:</p>
+                                <div class="code-container">
+                                    <p>Your verification code is:</p>
+                                    <div class="code">${code}</div>
+                                </div>
+                                <p>Enter this code in the verification form to activate your account.</p>
+                                <p class="warning">This code will expire in 15 minutes and can only be used once.</p>
+                                <p class="warning">If you didn't request this code, please ignore this email.</p>
+                            </div>
+                            <div class="footer">
+                                <p>© 2026 Jinni AI. All rights reserved.</p>
+                                <p>This is an automated message, please do not reply.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `,
+                text: `
+Welcome to Jinni!
+Hello ${name || 'Explorer'}!
+Your verification code is: ${code}
+This code will expire in 15 minutes. Enter it in the verification form to complete your registration.
+If you didn't request this code, please ignore this email.
+© 2026 Jinni
+                `
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Verification email sent to ${email}. Message ID: ${result.messageId}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send verification email:', error);
+            throw new Error('Failed to send verification email');
+        }
+    }
+    async sendPasswordResetEmail(email, code, name) {
+        try {
+            const mailOptions = {
+                from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Reset Your Password - Jinni',
+                html: `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="utf-8">
+                    <style>
+                        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                        .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                        .header h1 { margin: 0; font-size: 28px; }
+                        .content { padding: 40px 30px; text-align: center; }
+                        .code-container { background: #f8f9fa; border: 2px dashed #D4AF37; border-radius: 10px; padding: 30px; margin: 30px 0; }
+                        .code { font-size: 36px; font-weight: bold; color: #D4AF37; letter-spacing: 8px; margin: 10px 0; }
+                        .warning { color: #dc3545; font-size: 14px; margin-top: 20px; }
+                        .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="header">
+                            <h1>Password Reset</h1>
+                            <p>Reset your Jinni account password</p>
+                        </div>
+                        <div class="content">
+                            <h2>Hello ${name || 'Explorer'}!</h2>
+                            <p>We received a request to reset your password. Use the code below to create a new password:</p>
+                            <div class="code-container">
+                                <p>Your password reset code is:</p>
+                                <div class="code">${code}</div>
+                            </div>
+                            <p>Enter this code along with your new password to reset your account.</p>
+                            <p class="warning">This code will expire in 15 minutes and can only be used once.</p>
+                            <p class="warning">If you didn't request this reset, please ignore this email.</p>
+                        </div>
+                        <div class="footer">
+                            <p>© 2026 Jinni AI. All rights reserved.</p>
+                            <p>This is an automated message, please do not reply.</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `,
+                text: `
+Password Reset - Jinni
+Hello ${name || 'Explorer'}!
+Your password reset code is: ${code}
+This code will expire in 15 minutes. Enter it along with your new password to reset your account.
+If you didn't request this reset, please ignore this email.
+© 2026 Jinni
+            `
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Password reset email sent to ${email}. Message ID: ${result.messageId}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send password reset email:', error);
+            throw new Error('Failed to send password reset email');
+        }
+    }
+    async sendChatSessionsDeletedEmail(email, name) {
+        try {
+            const mailOptions = {
+                from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Your Chat Sessions Have Been Deleted - Jinni',
+                html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 28px; }
+                            .content { padding: 40px 30px; text-align: center; }
+                            .icon-box { font-size: 48px; margin: 20px 0; }
+                            .info-box { background: #f8f9fa; border: none; border-radius: 10px; padding: 20px; margin: 25px 0; text-align: left; }
+                            .info-box p { margin: 8px 0; font-size: 14px; color: #495057; }
+                            .warning { color: #dc3545; font-size: 14px; margin-top: 20px; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h1>Jinni</h1>
+                                <p>Chat Sessions Deleted</p>
+                            </div>
+                            <div class="content">
+                                <div class="icon-box">🗑️</div>
+                                <h2>Hello ${name || 'Explorer'}</h2>
+                                <p>All of your chat sessions have been permanently deleted from Jinni.</p>
+                                <div class="info-box">
+                                    <p><strong>What was removed:</strong></p>
+                                    <p>• All conversation history</p>
+                                    <p>• All session data</p>
+                                </div>
+                                <p>Your account and settings remain untouched. You can start fresh conversations anytime.</p>
+                                <p class="warning">If you did not perform this action, please contact support immediately.</p>
+                            </div>
+                            <div class="footer">
+                                <p>© 2026 Jinni AI. All rights reserved.</p>
+                                <p>This is an automated message, please do not reply.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `,
+                text: `
+Chat Sessions Deleted - Jinni
+
+Hello ${name || 'Explorer'}
+
+All of your chat sessions have been permanently deleted from Jinni
+
+What was removed:
+- All conversation history
+- All session data
+
+Your account and settings remain untouched.
+
+If you did not perform this action, please contact support immediately.
+
+© 2026 Jinni
+                `
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Chat sessions deleted email sent to ${email}. Message ID: ${result.messageId}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send chat sessions deleted email:', error);
+            throw new Error('Failed to send chat sessions deleted email');
+        }
+    }
+    async sendAccountDeletedEmail(email, name) {
+        try {
+            const mailOptions = {
+                from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Your Account Has Been Deleted - Jinni',
+                html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #b91c1c, #dc2626); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 28px; }
+                            .content { padding: 40px 30px; text-align: center; }
+                            .icon-box { font-size: 48px; margin: 20px 0; }
+                            .info-box { background: #fff5f5; border: none; border-radius: 10px; padding: 20px; margin: 25px 0; text-align: left; }
+                            .info-box p { margin: 8px 0; font-size: 14px; color: #991b1b; }
+                            .warning { color: #dc3545; font-size: 14px; margin-top: 20px; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h1>Jinni</h1>
+                                <p>Account Deleted</p>
+                            </div>
+                            <div class="content">
+                                <div class="icon-box">🔒</div>
+                                <h2>Hello ${name || 'Explorer'}</h2>
+                                <p>Your Jinni account has been permanently deleted.</p>
+                                <div class="info-box">
+                                    <p><strong>What was removed:</strong></p>
+                                    <p>• Your account and profile</p>
+                                    <p>• All chat sessions and conversation history</p>
+                                    <p>• All preferences and settings</p>
+                                    <p>• All associated data</p>
+                                </div>
+                                <p>This action is permanent and cannot be undone.</p>
+                                <p class="warning">If you did not perform this action, please contact support immediately.</p>
+                            </div>
+                            <div class="footer">
+                                <p>© 2026 Jinni AI. All rights reserved.</p>
+                                <p>This is an automated message, please do not reply.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `,
+                text: `
+Account Deleted - Jinni
+
+Hello ${name || 'Explorer'},
+
+Your Jinni account has been permanently deleted.
+
+What was removed:
+- Your account and profile
+- All chat sessions and conversation history
+- All preferences and settings
+- All associated data
+
+This action is permanent and cannot be undone.
+
+If you did not perform this action, please contact support immediately.
+
+© 2026 Jinni
+                `
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Account deleted email sent to ${email}. Message ID: ${result.messageId}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send account deleted email:', error);
+            throw new Error('Failed to send account deleted email');
+        }
+    }
+    async sendBusinessApprovedEmail(email, businessName, tier) {
+        try {
+            const tierLabel = tier === 'signature' ? 'Jinni Signature' : tier === 'spotlight' ? 'Jinni Spotlight' : 'Jinni Verified'
+            const mailOptions = {
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `🎉 Your listing is live — ${businessName}`,
+                html: `
+                    <!DOCTYPE html><html><head><meta charset="utf-8">
+                    <style>
+                        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                        .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                        .header h1 { margin: 0; font-size: 28px; }
+                        .content { padding: 40px 30px; }
+                        .badge { display: inline-block; background: linear-gradient(45deg, rgba(212,175,55,0.15), rgba(255,140,0,0.15)); color: #c09930; border: none; border-radius: 20px; padding: 6px 16px; font-size: 14px; font-weight: 600; margin: 16px 0; }
+                        .cta { display: inline-block; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 16px; margin: 24px 0; }
+                        .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                    </style></head><body>
+                    <div class="container">
+                        <div class="header"><h1>You're live on Jinni! 🎉</h1><p>Your listing has been approved and activated</p></div>
+                        <div class="content">
+                            <h2>Congratulations!</h2>
+                            <p><strong>${businessName}</strong> has been verified and is now visible to travelers on Jinni.</p>
+                            <div class="badge">✦ ${tierLabel}</div>
+                            <p>Travelers can now discover your business, save it to their lists, and get directions to your location.</p>
+                            <p>Log in to your business dashboard to view your listing and track performance.</p>
+                            <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Go to Dashboard</a>
+                        </div>
+                        <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p></div>
+                    </div></body></html>
+                `,
+                text: `Congratulations! ${businessName} is now live on Jinni as ${tierLabel}. Log in at ${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth to view your dashboard.`
+            }
+            const result = await this.transporter.sendMail(mailOptions)
+            logger.info(`Business approved email sent to ${email}`)
+            return { success: true, messageId: result.messageId }
+        } catch (error) {
+            logger.error('Failed to send business approved email:', error)
+            throw error
+        }
+    }
+
+    /**
+     * Send the "application approved, on the waitlist" email to a Signature
+     * business that has entered the Zone Auction.
+     *
+     * Signature change history: this used to take `(email, businessName, tier,
+     * earliestExpiry)` as a flat 4-arg list. Every caller passed the auction
+     * `highBid` (a dollar amount, e.g. 55) as the 4th argument, which then
+     * got interpreted as `earliestExpiry` and fed into `new Date(55)` →
+     * January 1, 1970. That was the source of the "earliest slot may open
+     * around January 1, 1970" bug.
+     *
+     * The signature is now `(email, businessName, tier, opts)` where opts is
+     * `{ earliestExpiry, currentHighBid }`. We also keep a backwards-compat
+     * shim so old callers that pass a single primitive (Date / ISO string /
+     * number) as the 4th arg still work — a Date or ISO string is treated as
+     * `earliestExpiry`, a finite small number is treated as `currentHighBid`
+     * (auction bids are dollar amounts, not millisecond timestamps).
+     *
+     * `earliestExpiry` is validated: only finite, post-epoch dates are
+     * rendered into the email. Anything else falls back to the generic
+     * "we'll notify you" line — never an epoch date.
+     */
+    async sendBusinessWaitlistedEmail(email, businessName, tier, opts = {}) {
+        try {
+            // ── Backwards-compat shim ────────────────────────────────────
+            // If a non-object was passed (old call shape), figure out which
+            // field it was meant to be. A Date or ISO-string is an expiry; a
+            // small number is a bid; anything else we ignore.
+            let earliestExpiry = null
+            let currentHighBid = null
+            if (opts instanceof Date || typeof opts === 'string') {
+                earliestExpiry = opts
+            } else if (typeof opts === 'number') {
+                // No real timestamp is going to be < year 2001 in ms (≈10^12).
+                // Anything smaller is almost certainly a dollar amount that an
+                // old caller stuck into the expiry slot — interpret as bid.
+                currentHighBid = opts
+            } else if (opts && typeof opts === 'object') {
+                earliestExpiry = opts.earliestExpiry ?? null
+                currentHighBid = opts.currentHighBid ?? null
+            }
+
+            // ── Expiry text — validated, never epoch ─────────────────────
+            // new Date(null) → Invalid Date; new Date(0) → 1970. Reject both.
+            // We require a real Date or parseable string that resolves to a
+            // timestamp strictly after the Unix epoch.
+            let expiryText = 'We will notify you as soon as a slot opens.'
+            if (earliestExpiry != null && earliestExpiry !== '') {
+                const d = earliestExpiry instanceof Date ? earliestExpiry : new Date(earliestExpiry)
+                if (!Number.isNaN(d.getTime()) && d.getTime() > 0) {
+                    const formatted = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                    expiryText = `The earliest slot may open around <strong>${formatted}</strong>.`
+                }
+            }
+
+            // ── High-bid text — only rendered when we have a real number ─
+            const bidText = (typeof currentHighBid === 'number' && currentHighBid > 0)
+                ? `<p>Current high bid in this zone's auction: <strong>$${currentHighBid}/mo</strong>.</p>`
+                : ''
+
+            const mailOptions = {
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `${businessName} — application approved, on the waitlist`,
+                html: `
+                    <!DOCTYPE html><html><head><meta charset="utf-8">
+                    <style>
+                        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                        .header { background: linear-gradient(45deg, #3b82f6, #6366f1); padding: 30px; text-align: center; color: white; }
+                        .header h1 { margin: 0; font-size: 26px; }
+                        .content { padding: 40px 30px; }
+                        .info-box { background: #f0f9ff; border: none; border-radius: 10px; padding: 20px; margin: 20px 0; }
+                        .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                    </style></head><body>
+                    <div class="container">
+                        <div class="header"><h1>Application approved ✓</h1><p>You're on the waitlist for your zone</p></div>
+                        <div class="content">
+                            <h2>Good news — your application passed review!</h2>
+                            <p><strong>${businessName}</strong> has been verified and approved. However, your zone currently has no available slots.</p>
+                            <div class="info-box">
+                                <p><strong>What happens next:</strong></p>
+                                <p>• Your listing is queued and ready to go live</p>
+                                <p>• You will receive an email the moment a slot opens</p>
+                                <p>• ${expiryText}</p>
+                            </div>
+                            ${bidText}
+                            <p>No action needed from you — we'll handle it automatically.</p>
+                        </div>
+                        <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p></div>
+                    </div></body></html>
+                `,
+                text: `Good news — ${businessName} has been approved! Your zone is currently full but you're on the waitlist. ${expiryText.replace(/<\/?strong>/g, '')} We'll email you when a slot opens.`
+            }
+            const result = await this.transporter.sendMail(mailOptions)
+            logger.info(`Business waitlisted email sent to ${email}`)
+            return { success: true, messageId: result.messageId }
+        } catch (error) {
+            logger.error('Failed to send business waitlisted email:', error)
+            throw error
+        }
+    }
+
+    async sendRejectionEmail(email, businessName, reason, businessId = null, options = {}) {
+        try {
+            const { permanent = false } = options;
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+            // Deep-link to dashboard's edit tab. We do NOT route back to /apply
+            // any more — the resubmit flow is now "edit in place," and creating
+            // a fresh application creates a duplicate.
+            const dashboardUrl = businessId
+                ? `${frontendUrl}/business/dashboard?tab=edit`
+                : `${frontendUrl}/business/dashboard`;
+
+            // ── PERMANENT (hard) rejection ───────────────────────────────────
+            // No "fix and resubmit" CTA — the listing can't be resubmitted. We
+            // keep the copy neutral and do NOT reveal that fingerprints were
+            // blocked (that would be an evasion roadmap). The owner is pointed
+            // at support in case of a genuine mistake.
+            if (permanent) {
+                const mailOptions = {
+                    from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                    to: email,
+                    subject: `Update on your Jinni listing — ${businessName}`,
+                    html: `
+                        <!DOCTYPE html><html><head><meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #64748b, #475569); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 26px; }
+                            .content { padding: 40px 30px; }
+                            .reason-box { background: #fafafa; border-left: 4px solid #94a3b8; padding: 16px 20px; margin: 20px 0; border-radius: 0 8px 8px 0; font-size: 14px; color: #444; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                        </style></head><body>
+                        <div class="container">
+                            <div class="header"><h1>Listing review update</h1><p>${businessName}</p></div>
+                            <div class="content">
+                                <h2>We were unable to approve your listing</h2>
+                                <p>After reviewing your application for <strong>${businessName}</strong>, our team is unable to approve it for listing on Jinni.</p>
+                                <div class="reason-box"><strong>Reason:</strong><br>${reason || 'Your application did not meet our verification requirements.'}</div>
+                                <p>If you believe this decision was made in error, please reply to this email and our support team will review it.</p>
+                            </div>
+                            <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p></div>
+                        </div></body></html>
+                    `,
+                    text:
+                        `Update on ${businessName}:\n\n` +
+                        `We were unable to approve your listing.\n\n` +
+                        `Reason: ${reason || 'Did not meet verification requirements.'}\n\n` +
+                        `If you believe this decision was made in error, please reply to this email and our support team will review it.\n`
+                };
+                const result = await this.transporter.sendMail(mailOptions);
+                logger.info(`Permanent-rejection email sent to ${email}`);
+                return { success: true, messageId: result.messageId };
+            }
+
+            const mailOptions = {
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `Update on your Jinni listing — ${businessName}`,
+                html: `
+                    <!DOCTYPE html><html><head><meta charset="utf-8">
+                    <style>
+                        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                        .header { background: linear-gradient(45deg, #64748b, #475569); padding: 30px; text-align: center; color: white; }
+                        .header h1 { margin: 0; font-size: 26px; }
+                        .content { padding: 40px 30px; }
+                        .reason-box { background: #fafafa; border-left: 4px solid #D4AF37; padding: 16px 20px; margin: 20px 0; border-radius: 0 8px 8px 0; font-size: 14px; color: #444; }
+                        .cta-btn { display: inline-block; margin: 24px 0 8px; padding: 14px 32px; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white; text-decoration: none; border-radius: 10px; font-size: 15px; font-weight: bold; }
+                        .next-steps { margin: 18px 0 0; padding: 12px 14px; background: #f8fafc; border-radius: 8px; font-size: 13px; color: #475569; }
+                        .next-steps ul { margin: 6px 0 0; padding-left: 18px; }
+                        .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                    </style></head><body>
+                    <div class="container">
+                        <div class="header"><h1>Listing review update</h1><p>${businessName}</p></div>
+                        <div class="content">
+                            <h2>We were unable to approve your listing</h2>
+                            <p>After reviewing your application for <strong>${businessName}</strong>, our team was unable to verify and approve it at this time.</p>
+                            <div class="reason-box"><strong>Reason:</strong><br>${reason || 'Your application did not meet our verification requirements.'}</div>
+
+                            <p>You can <strong>update the information</strong> the reviewer flagged and resubmit — your listing will go back into review.</p>
+                            <p style="text-align:center;">
+                                <a href="${dashboardUrl}" class="cta-btn">Fix and resubmit</a>
+                            </p>
+
+                            <div class="next-steps">
+                                <strong>What to do next:</strong>
+                                <ul>
+                                    <li>Sign in to your dashboard.</li>
+                                    <li>Open the <em>Edit listing</em> tab.</li>
+                                    <li>Update the field(s) the reviewer mentioned and save.</li>
+                                    <li>Your changes will return to <em>pending</em> for re-review.</li>
+                                </ul>
+                                <p style="margin: 10px 0 0; font-size: 12px; color: #64748b;">
+                                    Please don't submit a new application — that creates a duplicate. The Fix &amp; Resubmit button on your dashboard updates this listing in place.
+                                </p>
+                            </div>
+
+                            <p style="margin-top: 20px;">If you believe this is an error, reply to this email and our support team will look into it.</p>
+                        </div>
+                        <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p></div>
+                    </div></body></html>
+                `,
+                text:
+                    `Update on ${businessName}:\n\n` +
+                    `We were unable to approve your listing.\n\n` +
+                    `Reason: ${reason || 'Did not meet verification requirements.'}\n\n` +
+                    `To fix and resubmit:\n` +
+                    `  1. Sign in: ${dashboardUrl}\n` +
+                    `  2. Open the Edit listing tab\n` +
+                    `  3. Update the flagged field(s) and save\n` +
+                    `  4. Your listing will return to pending for re-review\n\n` +
+                    `Please don't submit a new application — that creates a duplicate.\n`
+            }
+            const result = await this.transporter.sendMail(mailOptions)
+            logger.info(`Rejection email sent to ${email}`)
+            return { success: true, messageId: result.messageId }
+        } catch (error) {
+            logger.error('Failed to send rejection email:', error)
+            throw error
+        }
+    }
+
+    // Sent when an admin downgrades a PERMANENT (hard) rejection back to a soft
+    // one — the owner can now edit + resubmit again. Mirrors the soft-rejection
+    // copy's "fix and resubmit" CTA.
+    async sendRejectionDowngradedEmail(email, businessName, note, businessId = null) {
+        try {
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+            const dashboardUrl = businessId
+                ? `${frontendUrl}/business/dashboard?tab=edit`
+                : `${frontendUrl}/business/dashboard`;
+            const mailOptions = {
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `Your Jinni listing can be resubmitted — ${businessName}`,
+                html: `
+                    <!DOCTYPE html><html><head><meta charset="utf-8">
+                    <style>
+                        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                        .header { background: linear-gradient(45deg, #0ea5e9, #2563eb); padding: 30px; text-align: center; color: white; }
+                        .header h1 { margin: 0; font-size: 26px; }
+                        .content { padding: 40px 30px; }
+                        .reason-box { background: #fafafa; border-left: 4px solid #0ea5e9; padding: 16px 20px; margin: 20px 0; border-radius: 0 8px 8px 0; font-size: 14px; color: #444; }
+                        .cta-btn { display: inline-block; margin: 24px 0 8px; padding: 14px 32px; background: linear-gradient(45deg, #0ea5e9, #2563eb); color: white; text-decoration: none; border-radius: 10px; font-size: 15px; font-weight: bold; }
+                        .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                    </style></head><body>
+                    <div class="container">
+                        <div class="header"><h1>Good news</h1><p>${businessName}</p></div>
+                        <div class="content">
+                            <h2>Your listing can be resubmitted</h2>
+                            <p>We've re-opened your listing for <strong>${businessName}</strong>. You can now update the information and resubmit it for review.</p>
+                            ${note ? `<div class="reason-box"><strong>Note from our team:</strong><br>${note}</div>` : ''}
+                            <p style="text-align:center;">
+                                <a href="${dashboardUrl}" class="cta-btn">Edit and resubmit</a>
+                            </p>
+                        </div>
+                        <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p></div>
+                    </div></body></html>
+                `,
+                text:
+                    `Good news for ${businessName}:\n\n` +
+                    `Your listing has been re-opened and can be resubmitted.\n\n` +
+                    (note ? `Note from our team: ${note}\n\n` : '') +
+                    `Edit and resubmit: ${dashboardUrl}\n`
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Rejection-downgrade email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send rejection-downgrade email:', error);
+            throw error;
+        }
+    }
+
+    async sendBusinessSetupEmail(email, name, businessName, setupUrl) {
+        try {
+            const mailOptions = {
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Set Up Your Jinni Business Account',
+                html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 28px; }
+                            .content { padding: 40px 30px; text-align: center; }
+                            .cta-btn { display: inline-block; margin: 28px 0; padding: 16px 36px; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white; text-decoration: none; border-radius: 10px; font-size: 16px; font-weight: bold; }
+                            .note { color: #888; font-size: 13px; margin-top: 16px; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h1>Welcome to Jinni Business</h1>
+                                <p>Your application has been received</p>
+                            </div>
+                            <div class="content">
+                                <h2>Hello ${name}!</h2>
+                                <p>Thank you for submitting <strong>${businessName}</strong> to Jinni. Our team will review your application within 24 hours.</p>
+                                <p>To access your business dashboard, please set a password for your account by clicking the button below:</p>
+                                <a href="${setupUrl}" class="cta-btn">Set My Password</a>
+                                <p class="note">This link expires in 24 hours and can only be used once.<br>If you did not submit this application, you can safely ignore this email.</p>
+                            </div>
+                            <div class="footer">
+                                <p>© 2026 Jinni AI. All rights reserved.</p>
+                                <p>This is an automated message — do not reply.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `,
+                text: `
+    Welcome to Jinni Business!
+
+    Hello ${name},
+
+    Thank you for submitting "${businessName}" to Jinni. Our team will review your application within 24 hours.
+
+    To access your business dashboard, set your password here:
+    ${setupUrl}
+
+    This link expires in 24 hours and can only be used once.
+
+    © 2026 Jinni
+                `
+            }
+            const result = await this.transporter.sendMail(mailOptions)
+            logger.info(`Business setup email sent to ${email}. Message ID: ${result.messageId}`)
+            return { success: true, messageId: result.messageId }
+        } catch (error) {
+            logger.error('Failed to send business setup email:', error)
+            throw new Error('Failed to send business setup email')
+        }
+    }
+    
+    async sendStaffCredentialsEmail(email, name, tempPassword) {
+        try {
+            const loginUrl = (process.env.FRONTEND_URL || 'https://jinni.ai').replace(/\/$/, '') + '/auth';
+            const mailOptions = {
+                from: `"Jinni" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: 'Your Jinni Staff Account — Credentials Inside',
+                html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <style>
+                            body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                            .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                            .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                            .header h1 { margin: 0; font-size: 26px; }
+                            .header p { margin: 6px 0 0; opacity: 0.95; font-size: 14px; }
+                            .content { padding: 36px 30px; color: #333; }
+                            .content h2 { margin: 0 0 12px; font-size: 20px; }
+                            .content p { line-height: 1.6; font-size: 14px; }
+                            .creds-box { background: #f8f9fa; border: 2px dashed #D4AF37; border-radius: 10px; padding: 20px 22px; margin: 24px 0; }
+                            .creds-row { display: table; width: 100%; padding: 6px 0; font-size: 14px; }
+                            .creds-label { display: table-cell; color: #888; font-weight: 600; width: 110px; text-transform: uppercase; font-size: 12px; letter-spacing: 0.06em; vertical-align: top; }
+                            .creds-value { display: table-cell; font-family: 'Menlo', 'Consolas', monospace; font-size: 15px; color: #333; word-break: break-all; }
+                            .cta-btn { display: inline-block; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white !important; text-decoration: none; padding: 12px 28px; border-radius: 10px; font-weight: 600; font-size: 14px; margin: 8px 0 4px; }
+                            .recommendation { color: #b45309; font-size: 13.5px; margin-top: 22px; padding: 14px 16px; background: #fff7e8; border-radius: 8px; line-height: 1.6; border-left: 4px solid #f59e0b; }
+                            .recommendation strong { color: #92400e; }
+                            .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+                            .info-line { font-size: 13px; color: #666; margin-top: 18px; line-height: 1.55; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h1>Welcome to Jinni Staff</h1>
+                                <p>Your validation account is ready</p>
+                            </div>
+                            <div class="content">
+                                <h2>Hello ${name || 'there'},</h2>
+                                <p>An admin has created a Jinni staff account for you. You can use this account to review and validate business applications.</p>
+                                <div class="creds-box">
+                                    <div class="creds-row">
+                                        <div class="creds-label">Email</div>
+                                        <div class="creds-value">${email}</div>
+                                    </div>
+                                    <div class="creds-row">
+                                        <div class="creds-label">Password</div>
+                                        <div class="creds-value">${tempPassword}</div>
+                                    </div>
+                                </div>
+                                <p style="text-align:center; margin-top: 8px">
+                                    <a class="cta-btn" href="${loginUrl}">Sign in to Jinni</a>
+                                </p>
+                                <div class="recommendation">
+                                    <strong>We strongly recommend changing your password immediately</strong> after your first login. You can do this from the sign-in page using the <em>"Forgot password?"</em> link to receive a reset code at this email address.
+                                </div>
+                                <p class="info-line">
+                                    If you didn't expect this account, please ignore this email and contact us at support@jinni.ai. The account stays dormant until first use.
+                                </p>
+                            </div>
+                            <div class="footer">
+                                <p>© 2026 Jinni AI. All rights reserved.</p>
+                                <p>This is an automated message — do not reply.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `,
+                text: `
+Welcome to Jinni Staff
+
+Hello ${name || 'there'},
+
+An admin has created a Jinni staff account for you. You can use this account
+to review and validate business applications.
+
+Email:    ${email}
+Password: ${tempPassword}
+
+Sign in here: ${loginUrl}
+
+WE STRONGLY RECOMMEND CHANGING YOUR PASSWORD IMMEDIATELY after your first
+login. You can do this from the sign-in page using the "Forgot password?"
+link to receive a reset code at this email address.
+
+If you didn't expect this account, please ignore this email and contact us
+at support@jinni.ai.
+
+© 2026 Jinni AI
+                `
+            };
+            const result = await this.transporter.sendMail(mailOptions);
+            logger.info(`Staff credentials email sent to ${email}. Message ID: ${result.messageId}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send staff credentials email:', error);
+            throw new Error('Failed to send staff credentials email');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ZONE AUCTION EMAILS
+    // Called by services/zoneAuction.js. See plan.txt → "Zone Auction".
+    // All are best-effort: zoneAuction wraps each call and never lets a failed
+    // email break an auction flow.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Shared header/footer styling, gold auction theme.
+    _auctionShell(headerTitle, headerSub, innerHtml) {
+        return `
+            <!DOCTYPE html><html><head><meta charset="utf-8">
+            <style>
+                body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e, #16213e); margin: 0; padding: 20px; }
+                .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+                .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
+                .header h1 { margin: 0; font-size: 26px; }
+                .content { padding: 40px 30px; }
+                .info-box { background: #fffbeb; border: none; border-radius: 10px; padding: 20px; margin: 20px 0; }
+                .alert-box { background: #fef2f2; border: none; border-radius: 10px; padding: 20px; margin: 20px 0; }
+                .bid { font-size: 30px; font-weight: 800; color: #c09930; margin: 8px 0; }
+                .cta { display: inline-block; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 16px; margin: 24px 0; }
+                .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+            </style></head><body>
+            <div class="container">
+                <div class="header"><h1>${headerTitle}</h1><p>${headerSub}</p></div>
+                <div class="content">${innerHtml}</div>
+                <div class="footer"><p>© 2026 Jinni AI. All rights reserved.</p><p>This is an automated message — do not reply.</p></div>
+            </div></body></html>
+        `;
+    }
+
+    _fmtDate(d) {
+        if (!d) return '';
+        try { return new Date(d).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); }
+        catch { return ''; }
+    }
+
+    // 1. A new/raised bid appeared in a sitting Signature's zone.
+    async sendAuctionBidUpdate(email, businessName, zoneKey, currentHighBid) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const inner = `
+                <h2>A challenger is bidding on your zone</h2>
+                <p>Someone wants the slot held by <strong>${businessName}</strong>. The current high bid in your zone's auction is:</p>
+                <div class="bid">$${currentHighBid}/mo</div>
+                <div class="info-box">
+                    <p><strong>What this means:</strong></p>
+                    <p>• Your slot is contested. At your quarterly renewal, the lowest-performing Signature in the zone must beat the high bid to stay.</p>
+                    <p>• You'll get a separate email with a 72-hour window to respond if your listing is the one that must defend.</p>
+                    <p>• Keeping your performance score high is the best protection.</p>
+                </div>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">View Zone Intelligence</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `A challenger is bidding on your zone — ${businessName}`,
+                html: this._auctionShell('Zone auction update', 'A new bid was placed in your zone', inner),
+                text: `A challenger is bidding on your zone. The current high bid is $${currentHighBid}/mo. At your quarterly renewal the lowest-performing Signature must beat it to keep their slot.`
+            });
+            logger.info(`Auction bid-update email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction bid-update email:', error);
+            throw error;
+        }
+    }
+
+    // 2. This listing is the lowest performer — it must defend within 72h.
+    async sendAuctionDefendNotice(email, businessName, zoneKey, bidToBeat, deadline) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const inner = `
+                <h2>Your slot is up for auction — action needed</h2>
+                <p><strong>${businessName}</strong> is currently the lowest-performing Signature listing in its zone, and a challenger has bid for the slot.</p>
+                <div class="alert-box">
+                    <p><strong>To keep your slot, you must bid more than:</strong></p>
+                    <div class="bid">$${bidToBeat}/mo</div>
+                    <p>Matching is not enough — your bid must be strictly higher.</p>
+                    <p><strong>Deadline: ${this._fmtDate(deadline)}</strong> (72 hours). If you don't respond, the slot goes to the highest bidder and your listing is frozen.</p>
+                </div>
+                <p>A frozen listing keeps all its analytics and can bid again on a future opening — but it stops being shown to travelers until then.</p>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Defend My Slot</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `⚠️ Defend your zone slot within 72 hours — ${businessName}`,
+                html: this._auctionShell('Defend your slot', 'Your zone slot is being auctioned', inner),
+                text: `Action needed: ${businessName} is the lowest-performing Signature in its zone. To keep your slot you must bid strictly more than $${bidToBeat}/mo by ${this._fmtDate(deadline)} (72 hours), or the slot goes to the highest bidder and your listing is frozen.`
+            });
+            logger.info(`Auction defend-notice email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction defend-notice email:', error);
+            throw error;
+        }
+    }
+
+    // 3. Incumbent successfully defended — slot kept, price locked.
+    async sendAuctionDefenseWon(email, businessName, lockedPrice, lockUntil) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const inner = `
+                <h2>You kept your slot ✓</h2>
+                <p>Your defense was successful — <strong>${businessName}</strong> keeps its Signature slot.</p>
+                <div class="info-box">
+                    <p><strong>Your monthly price is now:</strong></p>
+                    <div class="bid">$${lockedPrice}/mo</div>
+                    <p>This price is locked until <strong>${this._fmtDate(lockUntil)}</strong> — no challenger can contest your slot before then.</p>
+                </div>
+                <p>Thanks for staying with Jinni. Keep your performance score strong to make future renewals easier.</p>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Go to Dashboard</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `You kept your zone slot — ${businessName}`,
+                html: this._auctionShell('Slot defended ✓', 'Your price is locked for the quarter', inner),
+                text: `Your defense was successful — ${businessName} keeps its Signature slot at $${lockedPrice}/mo, locked until ${this._fmtDate(lockUntil)}.`
+            });
+            logger.info(`Auction defense-won email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction defense-won email:', error);
+            throw error;
+        }
+    }
+
+    // 4. Incumbent forfeited (declined or 72h lapsed) — listing frozen.
+    async sendAuctionForfeitNotice(email, businessName, zoneKey, performanceScore) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const scoreLine = (performanceScore || performanceScore === 0)
+                ? `<p>• Your final performance score for this zone was <strong>${performanceScore}/100</strong>.</p>`
+                : '';
+            const inner = `
+                <h2>Your zone slot has been reassigned</h2>
+                <p><strong>${businessName}</strong> did not outbid the challenger within the 72-hour window, so the slot has gone to the highest bidder.</p>
+                <div class="alert-box">
+                    <p><strong>What this means:</strong></p>
+                    <p>• Your listing is now <strong>frozen</strong> — it is no longer shown to travelers.</p>
+                    ${scoreLine}
+                    <p>• All your analytics are preserved. Nothing is lost.</p>
+                    <p>• You can bid again the next time a slot opens in this zone, using your real performance history.</p>
+                </div>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Bid on a Future Slot</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `Your zone slot has been reassigned — ${businessName}`,
+                html: this._auctionShell('Slot reassigned', 'Your listing has been frozen', inner),
+                text: `${businessName} did not outbid the challenger within 72 hours, so the slot went to the highest bidder. Your listing is now frozen, but all analytics are preserved and you can bid again on a future opening.`
+            });
+            logger.info(`Auction forfeit-notice email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction forfeit-notice email:', error);
+            throw error;
+        }
+    }
+
+    // 5. A bidder won a slot (via forfeit or clean vacancy).
+    async sendAuctionWonNotice(email, businessName, winningPrice, lockUntil) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const inner = `
+                <h2>You won the slot! 🎉</h2>
+                <p>Congratulations — <strong>${businessName}</strong> has won a Signature slot in your zone's auction.</p>
+                <div class="info-box">
+                    <p><strong>Your monthly price:</strong></p>
+                    <div class="bid">$${winningPrice}/mo</div>
+                    <p>This price is locked until <strong>${this._fmtDate(lockUntil)}</strong>. Your listing is now live and visible to travelers.</p>
+                </div>
+                <p>Log in to your dashboard to review your listing and track its performance.</p>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Go to Dashboard</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `🎉 You won your zone slot — ${businessName}`,
+                html: this._auctionShell("You won the auction! 🎉", 'Your listing is now live', inner),
+                text: `Congratulations! ${businessName} won a Signature slot at $${winningPrice}/mo, locked until ${this._fmtDate(lockUntil)}. Your listing is now live on Jinni.`
+            });
+            logger.info(`Auction won-notice email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction won-notice email:', error);
+            throw error;
+        }
+    }
+
+    // 6. A sitting Signature cancelled — the front-runner gets a clean slot.
+    async sendAuctionCleanVacancyNotice(email, businessName, zoneKey, vacancyDate) {
+        if (!email) return { success: false, skipped: true };
+        try {
+            const inner = `
+                <h2>A slot is opening in your zone</h2>
+                <p>Good news for <strong>${businessName}</strong> — a current Signature listing in your target zone has cancelled, and you are the highest bidder.</p>
+                <div class="info-box">
+                    <p><strong>What happens next:</strong></p>
+                    <p>• The slot frees up on <strong>${this._fmtDate(vacancyDate)}</strong>.</p>
+                    <p>• Because this is a voluntary opening, <strong>there is no auction battle</strong> — the slot is yours at your bid price.</p>
+                    <p>• Your listing will go live automatically on that date. No action needed.</p>
+                </div>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">View My Listing</a>
+            `;
+            const result = await this.transporter.sendMail({
+                from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: `A slot is opening in your zone — ${businessName}`,
+                html: this._auctionShell('A slot is opening', "You're first in line — it's yours", inner),
+                text: `Good news — a Signature listing in your target zone cancelled and you are the highest bidder. The slot frees on ${this._fmtDate(vacancyDate)} and is yours at your bid price, with no auction battle. Your listing goes live automatically.`
+            });
+            logger.info(`Auction clean-vacancy email sent to ${email}`);
+            return { success: true, messageId: result.messageId };
+        } catch (error) {
+            logger.error('Failed to send auction clean-vacancy email:', error);
+            throw error;
+        }
+    }
+
+    async testConnection() {
+        try {
+            await this.transporter.verify();
+            logger.info('✅ Gmail service connected successfully');
+            return true;
+        } catch (error) {
+            logger.error('❌ Gmail service connection failed:', error);
+            return false;
+        }
+    }
+}
+module.exports = new EmailService();
