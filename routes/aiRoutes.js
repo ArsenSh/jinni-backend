@@ -6638,6 +6638,20 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             'details.geometry.location.lng': { $gte: centerLng - dLng, $lte: centerLng + dLng },
         }).select('placeId name rating actions primaryType types photos likes dislikes explore details.geometry.location details.formatted_address details.vicinity').lean();
 
+        // Partner-tier glow: match active partner businesses to cached places by
+        // normalized name (a partner's cache entry was created from the same
+        // name the business record carries). One cheap query; purely decorative —
+        // any failure must never break Explore.
+        const normBizName = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const bizTiers = new Map();
+        try {
+            const bizRows = await Business.find({ status: 'active' }).select('name partnership.tier').lean();
+            for (const b of bizRows) {
+                const k = normBizName(b.name);
+                if (k) bizTiers.set(k, b.partnership?.tier || 'verified');
+            }
+        } catch (e) { /* decorative only */ }
+
         const HARD_HIDE = (r) => (r.dislikes || 0) >= 3 && (r.dislikes || 0) > (r.likes || 0) * 2;   // community-buried
         // Auto-quality gate: weak rating or net-negative feedback keeps a place off
         // the browse page (chat can still serve it). Unknown rating passes — most
@@ -6667,6 +6681,7 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
                 distanceKm: Math.round(distKm * 10) / 10,
                 likes: r.likes || 0,
                 verified: modStatus === 'verified',
+                tier: bizTiers.get(normBizName(r.name)) || null,
             };
             // A place can belong to several categories; list it under each it claims.
             for (const c of r.actions || []) if (categories[c]) categories[c].push(card);
