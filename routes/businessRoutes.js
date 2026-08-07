@@ -464,7 +464,10 @@ async function runGoogleVerification(businessData, coordinates) {
                             googleImages = photos.map((_, i) => `/api/media/places/${googlePlaceId}/photo/${i}`)
                         } catch (imgErr) {
                             console.warn('Failed to download Google images:', imgErr.message)
-                            googleImages = photos.map(p => googleService.getPlacePhoto(p, 800)).filter(Boolean)
+                            // Download failed → nothing cached to proxy. Omit rather
+                            // than emit a direct Google URL, which would leak the API
+                            // key to the client and fail the key's IP restriction.
+                            googleImages = []
                         }
                     }
                     if (googleRating) sources.push(`Google rating: ${googleRating}`)

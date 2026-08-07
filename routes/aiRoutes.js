@@ -2196,7 +2196,9 @@ async function getGooglePlaceImages(placeName, location = null) {
             }));
         }
         const images = placeDetails.photos.slice(0, 8).map((photo, index) => ({
-            url: googleService.getPlacePhoto(photo.name || photo.photo_reference, 800),
+            // Proxy through the backend — never a direct Google URL, which would
+            // leak the API key to the browser AND fail the key's IP restriction.
+            url: `/api/ai/place-image/${places[0].place_id}/${index}`,
             title: `${placeName} - View ${index + 1}`,
             caption: generateImageCaption(placeName, index),
             source: 'google_places'
@@ -3500,7 +3502,8 @@ async function getGooglePlaceImages(placeName, location = null) {
             return [];
         }
         const images = placeDetails.photos.slice(0, 8).map((photo, index) => {
-            const imageUrl = googleService.getPlacePhoto(photo.name || photo.photo_reference, 800);
+            // Backend proxy, not a direct Google URL (key leak + IP restriction).
+            const imageUrl = `/api/ai/place-image/${placeId}/${index}`;
             // console.log(`Image ${index + 1} - URL contains photoreference: ${imageUrl.includes('photoreference=')}`);
             return {
                 url: imageUrl, 
@@ -5767,7 +5770,7 @@ router.get('/place-details/:placeId', auth, usageTracker, async (req, res) => {
                 businessStatus: details.business_status,
                 hours: details.opening_hours?.weekday_text || null,
                 isOpenNow: details.opening_hours?.open_now || null,
-                photos: details.photos?.slice(0, 1).map(photo => googleService.getPlacePhoto(photo.name || photo.photo_reference, 800)) || [],
+                photos: details.photos?.slice(0, 1).map((photo, index) => `/api/ai/place-image/${placeId}/${index}`) || [],
                 geometry: details.geometry
             };
             res.json({ success: true, data: formattedDetails });
@@ -6573,4 +6576,127 @@ router.get('/location/detect', auth, async (req, res) => {
 module.exports = router;
 // Shared with itineraryRoutes.js — reuses the PlaceCache-first enrichment
 // pipeline and location/message helpers. No circular require.
+/* ═══════════════════════ EXPLORE (Jinni Eye) ═══════════════════════════════
+ * A browse-by-category view of everything Jinni already knows about the user's
+ * region — served ENTIRELY from PlaceCache (zero Google calls, zero cost), with
+ * the user's disliked places filtered out. Empty region → the honest
+ * "not_explored" signal so the UI can say "Jinni hasn't been there yet".
+ *
+ * Categories map to the cache's `actions[]` array (the same category ids used
+ * across chat/quick-actions), so no new taxonomy is introduced.
+ */
+const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping'];
+// Map a user's free-text interests (from onboarding) onto explore categories,
+// so someone who chose "food" and "history" sees those sections first. Keyword
+// match — an interest can boost more than one category.
+const INTEREST_TO_CATEGORY = [
+    [/food|restaurant|dining|cuisine|culinary|gastro|eat/i, 'restaurants'],
+    [/history|histor|heritage|monument|castle|ruin|ancient|architecture/i, 'historical'],
+    [/museum|art|gallery|culture|cultural/i, 'historical'],
+    [/hidden|local|offbeat|authentic|secret|unique/i, 'hidden_gems'],
+    [/nature|outdoor|hike|hiking|landscape|scenic|view|mountain|lake/i, 'photo_spots'],
+    [/photo|instagram|scenic|viewpoint/i, 'photo_spots'],
+    [/event|festival|concert|nightlife|music|party|show/i, 'events'],
+    [/shop|shopping|market|bazaar|boutique|souvenir/i, 'shopping'],
+    [/hotel|stay|accommodation|lodging|luxury/i, 'hotels'],
+];
+const EXPLORE_RADIUS_KM = Number(process.env.EXPLORE_RADIUS_KM) || 150;   // region-sized; tuned for a small country
+
+function _haversineKm(aLat, aLng, bLat, bLng) {
+    const R = 6371, toRad = d => d * Math.PI / 180;
+    const dLat = toRad(bLat - aLat), dLng = toRad(bLng - aLng);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+router.get('/explore', auth, usageTracker, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('preferences settings isPremium');
+        const messages = getAllMessages(user?.settings?.language || 'en');
+        const eff = await resolveEffectiveLocation(user, null, messages);
+        if (!eff || eff.error === 'location_required' || !Number.isFinite(eff.lat) || !Number.isFinite(eff.lng)) {
+            return res.status(400).json({ success: false, error: 'location_required', message: messages.location_required });
+        }
+        const centerLat = eff.lat, centerLng = eff.lng;
+        // Bounding box first (uses the geo index), haversine-refined below.
+        const dLat = EXPLORE_RADIUS_KM / 111;
+        const dLng = EXPLORE_RADIUS_KM / (111 * Math.cos(centerLat * Math.PI / 180) || 1);
+
+        // Everything this user has disliked anywhere → hidden from Explore.
+        const disliked = new Set(
+            (await PlaceFeedback.find({ userId: req.user.id, vote: 'dislike' }).select('placeId').lean())
+                .map(r => r.placeId).filter(Boolean)
+        );
+
+        const rows = await PlaceCache.find({
+            actions: { $in: EXPLORE_CATEGORIES },
+            'details.geometry.location.lat': { $gte: centerLat - dLat, $lte: centerLat + dLat },
+            'details.geometry.location.lng': { $gte: centerLng - dLng, $lte: centerLng + dLng },
+        }).select('placeId name rating actions primaryType types photos likes dislikes details.geometry.location details.formatted_address details.vicinity').lean();
+
+        const HARD_HIDE = (r) => (r.dislikes || 0) >= 3 && (r.dislikes || 0) > (r.likes || 0) * 2;   // community-buried
+        const categories = {};
+        for (const c of EXPLORE_CATEGORIES) categories[c] = [];
+
+        for (const r of rows) {
+            if (!r.placeId || disliked.has(r.placeId)) continue;
+            if (HARD_HIDE(r)) continue;
+            const loc = r.details?.geometry?.location;
+            if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) continue;
+            const distKm = _haversineKm(centerLat, centerLng, loc.lat, loc.lng);
+            if (distKm > EXPLORE_RADIUS_KM) continue;
+            const hasImage = Array.isArray(r.photos) && r.photos.length > 0;
+            const card = {
+                placeId: r.placeId,
+                name: r.name,
+                rating: Number.isFinite(r.rating) ? r.rating : null,
+                image: hasImage ? `/api/ai/place-image/${r.placeId}/0` : null,
+                region: r.details?.vicinity || r.details?.formatted_address || null,
+                distanceKm: Math.round(distKm * 10) / 10,
+                likes: r.likes || 0,
+            };
+            // A place can belong to several categories; list it under each it claims.
+            for (const c of r.actions || []) if (categories[c]) categories[c].push(card);
+        }
+
+        // ── Preferences: which categories does this user care about? ──
+        const interests = Array.isArray(user?.preferences?.interests) ? user.preferences.interests : [];
+        const interestScore = {};
+        for (const c of EXPLORE_CATEGORIES) interestScore[c] = 0;
+        for (const it of interests) {
+            for (const [re, cat] of INTEREST_TO_CATEGORY) if (re.test(String(it || ''))) interestScore[cat] = (interestScore[cat] || 0) + 1;
+        }
+
+        // Rank each category: rating first, then community likes, cap per category.
+        let total = 0;
+        for (const c of EXPLORE_CATEGORIES) {
+            categories[c].sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.likes || 0) - (a.likes || 0));
+            categories[c] = categories[c].slice(0, 40);
+            total += categories[c].length;
+        }
+
+        // Section order: interest-matching categories first, then the default
+        // order — only for categories that actually have places.
+        const DEFAULT_ORDER = ['restaurants', 'historical', 'hidden_gems', 'photo_spots', 'events', 'shopping', 'hotels'];
+        const order = DEFAULT_ORDER
+            .filter(c => categories[c] && categories[c].length)
+            .sort((a, b) => (interestScore[b] || 0) - (interestScore[a] || 0)
+                || DEFAULT_ORDER.indexOf(a) - DEFAULT_ORDER.indexOf(b));
+
+        return res.json({
+            success: true,
+            location: { city: eff.city || null, country: eff.country || null },
+            categories,
+            order,
+            interests,
+            total,
+            // Nothing cached nearby yet — the UI shows "Jinni hasn't been here yet".
+            explored: total > 0,
+        });
+    } catch (error) {
+        console.error('Explore error:', error);
+        return res.status(500).json({ success: false, error: 'explore_failed' });
+    }
+});
+
 module.exports.shared = { getCachedPlaceDetails, resolveEffectiveLocation, getAllMessages };
