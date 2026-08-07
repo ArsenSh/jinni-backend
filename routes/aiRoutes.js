@@ -6617,11 +6617,17 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('preferences settings isPremium');
         const messages = getAllMessages(user?.settings?.language || 'en');
+        // Explicit search override (the TripAdvisor-style search bar): explore an
+        // arbitrary geocoded point instead of the user's own location. `label` is
+        // display-only, echoed back for the header / empty-state title.
+        const qLat = parseFloat(req.query.lat), qLng = parseFloat(req.query.lng);
+        const hasOverride = Number.isFinite(qLat) && Number.isFinite(qLng) && Math.abs(qLat) <= 90 && Math.abs(qLng) <= 180;
+        const overrideLabel = hasOverride && typeof req.query.label === 'string' ? req.query.label.slice(0, 80) : null;
         const eff = await resolveEffectiveLocation(user, null, messages);
-        if (!eff || eff.error === 'location_required' || !Number.isFinite(eff.lat) || !Number.isFinite(eff.lng)) {
+        if (!hasOverride && (!eff || eff.error === 'location_required' || !Number.isFinite(eff.lat) || !Number.isFinite(eff.lng))) {
             return res.status(400).json({ success: false, error: 'location_required', message: messages.location_required });
         }
-        const centerLat = eff.lat, centerLng = eff.lng;
+        const centerLat = hasOverride ? qLat : eff.lat, centerLng = hasOverride ? qLng : eff.lng;
         // Bounding box first (uses the geo index), haversine-refined below.
         const dLat = EXPLORE_RADIUS_KM / 111;
         const dLng = EXPLORE_RADIUS_KM / (111 * Math.cos(centerLat * Math.PI / 180) || 1);
@@ -6713,7 +6719,9 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
 
         return res.json({
             success: true,
-            location: { city: eff.city || null, country: eff.country || null },
+            location: overrideLabel
+                ? { city: overrideLabel, country: null }
+                : { city: eff?.city || null, country: eff?.country || null },
             categories,
             order,
             interests,
