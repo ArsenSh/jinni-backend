@@ -12,6 +12,7 @@ const googlePrefetch = require('../services/googlePrefetchService');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const { premiumTermEnd } = require('../utils/premium');
+const { parseAddressRegion } = require('../utils/addressRegion');
 const mongoose = require('mongoose');
 const ChatSession = require('../models/ChatSession');
 const Itinerary = require('../models/Itinerary');
@@ -2079,11 +2080,14 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
         // doing so (and then skipping the re-download below) is what silently
         // emptied images on type-refreshed entries.
         const alreadyHasImages = !!(cached && cached.imagesStored && cached.photos && cached.photos[0] && cached.photos[0].imageData);
+        const { country: parsedCountry, city: parsedCity } = parseAddressRegion(details.formatted_address);
         const updateData = {
             placeId,
             searchName: placeIdOrName.toLowerCase().trim(),
             name: details.name,
             details: {formatted_address: details.formatted_address, geometry: details.geometry},
+            country: parsedCountry,
+            city: parsedCity,
             rating: details.rating,
             website: details.website,
             formatted_phone_number: details.formatted_phone_number,
@@ -6632,15 +6636,23 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             actions: { $in: EXPLORE_CATEGORIES },
             'details.geometry.location.lat': { $gte: centerLat - dLat, $lte: centerLat + dLat },
             'details.geometry.location.lng': { $gte: centerLng - dLng, $lte: centerLng + dLng },
-        }).select('placeId name rating actions primaryType types photos likes dislikes details.geometry.location details.formatted_address details.vicinity').lean();
+        }).select('placeId name rating actions primaryType types photos likes dislikes explore details.geometry.location details.formatted_address details.vicinity').lean();
 
         const HARD_HIDE = (r) => (r.dislikes || 0) >= 3 && (r.dislikes || 0) > (r.likes || 0) * 2;   // community-buried
+        // Auto-quality gate: weak rating or net-negative feedback keeps a place off
+        // the browse page (chat can still serve it). Unknown rating passes — most
+        // legit cached places carry one, and punishing "no data" would empty new
+        // regions. 'verified' places are exempt from BOTH auto rules.
+        const AUTO_HIDE = (r) => (Number.isFinite(r.rating) && r.rating < 3.5)
+            || ((r.dislikes || 0) >= 2 && (r.dislikes || 0) > (r.likes || 0));
         const categories = {};
         for (const c of EXPLORE_CATEGORIES) categories[c] = [];
 
         for (const r of rows) {
             if (!r.placeId || disliked.has(r.placeId)) continue;
-            if (HARD_HIDE(r)) continue;
+            const modStatus = r.explore?.status || 'visible';
+            if (modStatus === 'hidden') continue;
+            if (modStatus !== 'verified' && (HARD_HIDE(r) || AUTO_HIDE(r))) continue;
             const loc = r.details?.geometry?.location;
             if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) continue;
             const distKm = _haversineKm(centerLat, centerLng, loc.lat, loc.lng);
@@ -6654,6 +6666,7 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
                 region: r.details?.vicinity || r.details?.formatted_address || null,
                 distanceKm: Math.round(distKm * 10) / 10,
                 likes: r.likes || 0,
+                verified: modStatus === 'verified',
             };
             // A place can belong to several categories; list it under each it claims.
             for (const c of r.actions || []) if (categories[c]) categories[c].push(card);
@@ -6667,10 +6680,10 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             for (const [re, cat] of INTEREST_TO_CATEGORY) if (re.test(String(it || ''))) interestScore[cat] = (interestScore[cat] || 0) + 1;
         }
 
-        // Rank each category: rating first, then community likes, cap per category.
+        // Rank each category: human-verified first, then rating, then community likes.
         let total = 0;
         for (const c of EXPLORE_CATEGORIES) {
-            categories[c].sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.likes || 0) - (a.likes || 0));
+            categories[c].sort((a, b) => (b.verified - a.verified) || (b.rating || 0) - (a.rating || 0) || (b.likes || 0) - (a.likes || 0));
             categories[c] = categories[c].slice(0, 40);
             total += categories[c].length;
         }

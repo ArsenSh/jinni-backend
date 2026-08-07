@@ -38,7 +38,15 @@ const PlaceCacheSchema = new mongoose.Schema({
     details: {
         formatted_address: String,
         geometry: mongoose.Schema.Types.Mixed
-    },    
+    },
+    // ── Region (parsed from formatted_address via utils/addressRegion at write
+    //    time; existing docs backfilled via POST /api/admin/places/backfill-regions).
+    //    Used to scope staff explore-moderation queues — matched case-insensitively,
+    //    same contract as Business.location.country/city. Null = unparsed/unknown,
+    //    which keeps the place outside every staff scope (admin still sees it).
+    country: { type: String, default: null, index: true },
+    city:    { type: String, default: null, index: true },
+
     lastFetched: { type: Date, default: Date.now },
     lastUsed: { type: Date, default: Date.now },
     fetchCount: { type: Number, default: 0 },
@@ -80,7 +88,18 @@ const PlaceCacheSchema = new mongoose.Schema({
     },
     // Feedback counters — net totals across all users and sessions
     likes: { type: Number, default: 0 },
-    dislikes: { type: Number, default: 0 }
+    dislikes: { type: Number, default: 0 },
+    // ── Explore moderation (post-moderation model: everything shows by default) ──
+    // status:
+    //   'visible'  — default; shown on Explore, subject to the auto-quality rules
+    //   'hidden'   — buried by admin/staff; never shown on Explore (chat unaffected)
+    //   'verified' — human-checked; always shown, EXEMPT from auto-quality rules
+    // Legacy docs have no `explore` field at all → read as 'visible' everywhere.
+    explore: {
+        status:     { type: String, enum: ['visible', 'hidden', 'verified'], default: 'visible' },
+        reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        reviewedAt: { type: Date, default: null }
+    }
 }, { timestamps: true });
 
 PlaceCacheSchema.index({ placeId: 1 });

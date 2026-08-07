@@ -1,4 +1,5 @@
 const express = require('express');
+const { parseAddressRegion } = require('../utils/addressRegion');
 const router = express.Router();
 const mongoose = require('mongoose');
 const User = require('../models/User');
@@ -1132,9 +1133,13 @@ router.get('/places', async (req, res) => {
         // this action (the `actions` array is ground-truth, recorded at request time).
         // e.g. action=hotels → only places tagged as hotels in the cache.
         if (action) query.actions = action;
+        // Explore moderation filter: 'hidden' | 'verified' | 'visible'. Legacy docs
+        // have no explore field, so 'visible' must also match its absence.
+        if (req.query.explore === 'hidden' || req.query.explore === 'verified') query['explore.status'] = req.query.explore;
+        else if (req.query.explore === 'visible') query['explore.status'] = { $nin: ['hidden', 'verified'] };
         const sortObj = { [sort]: order === 'asc' ? 1 : -1 };
         const [places, total, summaryAgg] = await Promise.all([
-            PlaceCache.find(query).sort(sortObj).skip(skip).limit(parseInt(limit)).select('placeId name rating details.formatted_address photos.url photos.width photos.height photos.contentType imagesStored hasDetailedInfo fetchCount useCount lastFetched lastUsed createdAt actions likes dislikes eventSchedule priceLevel types primaryType').lean(),
+            PlaceCache.find(query).sort(sortObj).skip(skip).limit(parseInt(limit)).select('placeId name rating details.formatted_address photos.url photos.width photos.height photos.contentType imagesStored hasDetailedInfo fetchCount useCount lastFetched lastUsed createdAt actions likes dislikes eventSchedule priceLevel types primaryType explore').lean(),
             PlaceCache.countDocuments(query),
             PlaceCache.aggregate([
                 { $sort: { createdAt: 1 } },
@@ -1176,6 +1181,48 @@ router.delete('/places/stale/:days', async (req, res) => {
         const filterDesc = neverUsed === 'true' ? `not used in ${days} days AND never used (useCount ≤ 1)` : `not used in ${days} days`;
         res.json({ success: true, deleted: result.deletedCount, message: `Deleted ${result.deletedCount} places: ${filterDesc}` });
     } catch (error) { res.status(500).json({ success: false, error: 'Failed to purge stale places' }) }
+});
+
+// One-shot backfill: parse country / city for cached places that don't have
+// them yet (docs created before the region fields existed). Safe to re-run —
+// only touches docs where `country` is missing/null. Returns scan stats.
+router.post('/places/backfill-regions', async (req, res) => {
+    try {
+        const docs = await PlaceCache.find({ $or: [{ country: null }, { country: { $exists: false } }] })
+            .select('details.formatted_address').lean();
+        const ops = [];
+        for (const d of docs) {
+            const { country, city } = parseAddressRegion(d.details?.formatted_address);
+            if (country || city) ops.push({ updateOne: { filter: { _id: d._id }, update: { $set: { country, city } } } });
+        }
+        if (ops.length) await PlaceCache.bulkWrite(ops, { ordered: false });
+        res.json({ success: true, scanned: docs.length, updated: ops.length, unparsed: docs.length - ops.length });
+    } catch (error) {
+        console.error('Backfill regions error:', error);
+        res.status(500).json({ success: false, error: 'Failed to backfill regions' });
+    }
+});
+
+// Set the Explore moderation status of a cached place.
+// 'hidden' buries it from the Explore page, 'verified' pins it above auto-quality
+// rules, 'visible' returns it to the default (auto-rules apply again).
+router.patch('/places/:placeId/explore-status', async (req, res) => {
+    try {
+        const { status } = req.body || {};
+        if (!['visible', 'hidden', 'verified'].includes(status)) {
+            return res.status(400).json({ success: false, error: 'status must be visible | hidden | verified' });
+        }
+        const doc = await PlaceCache.findOneAndUpdate(
+            { placeId: req.params.placeId },
+            { $set: { 'explore.status': status, 'explore.reviewedBy': req.user?.id || null, 'explore.reviewedAt': new Date() } },
+            { new: true }
+        ).select('placeId name explore').lean();
+        if (!doc) return res.status(404).json({ success: false, error: 'Place not found in cache' });
+        res.json({ success: true, place: doc, message: `"${doc.name}" → ${status}` });
+    } catch (error) {
+        console.error('Explore-status error:', error);
+        res.status(500).json({ success: false, error: 'Failed to update explore status' });
+    }
 });
 
 // Delete a single cached place
@@ -1648,12 +1695,13 @@ router.post('/staff', async (req, res) => {
         const pIn = req.body.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
         let permissions = {
             validateBusinesses: pIn.validateBusinesses !== false,   // default true
-            manageDestinations: pIn.manageDestinations === true     // default false
+            manageDestinations: pIn.manageDestinations === true,    // default false
+            moderateExplore:    pIn.moderateExplore === true        // default false
         };
-        if (!permissions.validateBusinesses && !permissions.manageDestinations) {
+        if (!permissions.validateBusinesses && !permissions.manageDestinations && !permissions.moderateExplore) {
             return res.status(400).json({
                 success: false,
-                error: 'Staff must have at least one permission (validate businesses or manage destinations)'
+                error: 'Staff must have at least one permission (validate businesses, manage destinations, or moderate Explore)'
             });
         }
 
@@ -1761,9 +1809,12 @@ router.patch('/staff/:id/assignment', async (req, res) => {
                     : (current.validateBusinesses !== false),
                 manageDestinations: req.body.permissions.manageDestinations !== undefined
                     ? !!req.body.permissions.manageDestinations
-                    : !!current.manageDestinations
+                    : !!current.manageDestinations,
+                moderateExplore: req.body.permissions.moderateExplore !== undefined
+                    ? !!req.body.permissions.moderateExplore
+                    : !!current.moderateExplore
             };
-            if (!next.validateBusinesses && !next.manageDestinations) {
+            if (!next.validateBusinesses && !next.manageDestinations && !next.moderateExplore) {
                 return res.status(400).json({
                     success: false,
                     error: 'Staff must keep at least one permission enabled'

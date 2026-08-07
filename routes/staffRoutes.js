@@ -26,6 +26,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const Destination = require('../models/Destination');
+const PlaceCache = require('../models/PlaceCache');
 const auth = require('../middleware/auth');
 
 // ── Auth gate ───────────────────────────────────────────────────────────────
@@ -98,8 +99,13 @@ router.get('/me', (req, res) => {
             // Convenience: flatten permissions so the frontend doesn't have to
             // know about the nested location. Admin always gets both true.
             permissions: u.isAdmin
-                ? { validateBusinesses: true, manageDestinations: true }
-                : (u.staffAssignment?.permissions || { validateBusinesses: true, manageDestinations: false })
+                ? { validateBusinesses: true, manageDestinations: true, moderateExplore: true }
+                : {
+                    // Spread over defaults so legacy permission docs (created
+                    // before moderateExplore existed) still yield all three keys.
+                    validateBusinesses: true, manageDestinations: false, moderateExplore: false,
+                    ...(u.staffAssignment?.permissions ? JSON.parse(JSON.stringify(u.staffAssignment.permissions)) : {})
+                  }
         }
     });
 });
@@ -128,6 +134,114 @@ function buildDestinationScopeFilter(user) {
     if (cities.length)    ors.push({ 'location.city':    { $in: cities.map(c    => new RegExp(`^${escape(c)}$`, 'i')) } });
     return { $or: ors };
 }
+
+// Same idea for PlaceCache — its region lives in top-level `country` / `city`
+// (parsed from formatted_address). Same return contract as above.
+function buildPlaceScopeFilter(user) {
+    if (user.isAdmin) return {};
+    const a = user.staffAssignment || {};
+    const countries = (a.countries || []).filter(Boolean);
+    const cities    = (a.cities    || []).filter(Boolean);
+    if (!countries.length && !cities.length) return null;
+
+    const escape = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const ors = [];
+    if (countries.length) ors.push({ country: { $in: countries.map(c => new RegExp(`^${escape(c)}$`, 'i')) } });
+    if (cities.length)    ors.push({ city:    { $in: cities.map(c    => new RegExp(`^${escape(c)}$`, 'i')) } });
+    return { $or: ors };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPLORE MODERATION — hide / verify cached places within the staff's region.
+// Post-moderation queue over PlaceCache: everything is 'visible' by default;
+// staff bury garbage ('hidden') or endorse good places ('verified').
+// ─────────────────────────────────────────────────────────────────────────────
+const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping'];
+
+// GET /api/staff/explore-places
+// Query: page, limit, search, status ('', 'visible', 'hidden', 'verified'),
+//        category (one of EXPLORE_MOD_CATEGORIES).
+// Default sort is suspicion-first (most disliked → lowest rated → newest) so
+// likely garbage surfaces at the top of the queue.
+router.get('/explore-places', requirePermission('moderateExplore'), async (req, res) => {
+    try {
+        const { page = 1, limit = 24, search = '', status = '', category = '' } = req.query;
+        const scope = buildPlaceScopeFilter(req.user);
+        if (scope === null) {
+            return res.json({ success: true, places: [], total: 0, totalPages: 0, noScope: true, counts: { visible: 0, hidden: 0, verified: 0 } });
+        }
+
+        const and = [{ actions: { $in: EXPLORE_MOD_CATEGORIES } }];
+        if (scope.$or) and.push(scope);
+        if (search) {
+            and.push({ $or: [
+                { name: { $regex: search, $options: 'i' } },
+                { 'details.formatted_address': { $regex: search, $options: 'i' } }
+            ] });
+        }
+        if (category && EXPLORE_MOD_CATEGORIES.includes(category)) and.push({ actions: category });
+        if (status === 'hidden' || status === 'verified') and.push({ 'explore.status': status });
+        else if (status === 'visible') and.push({ 'explore.status': { $nin: ['hidden', 'verified'] } });
+
+        const query = { $and: and };
+        const lim = Math.min(parseInt(limit) || 24, 100);
+        const skip = (Math.max(parseInt(page) || 1, 1) - 1) * lim;
+        // Scope-wide status counts (ignores search/category/status filters) for the tab chips.
+        const countBase = [{ actions: { $in: EXPLORE_MOD_CATEGORIES } }, ...(scope.$or ? [scope] : [])];
+
+        const [places, total, hidden, verified, all] = await Promise.all([
+            PlaceCache.find(query)
+                .sort({ dislikes: -1, rating: 1, createdAt: -1 })
+                .skip(skip).limit(lim)
+                .select('placeId name rating country city details.formatted_address imagesStored actions likes dislikes useCount explore createdAt')
+                .lean(),
+            PlaceCache.countDocuments(query),
+            PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'hidden' }] }),
+            PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'verified' }] }),
+            PlaceCache.countDocuments({ $and: countBase }),
+        ]);
+
+        res.json({
+            success: true,
+            places,
+            total,
+            page: Math.max(parseInt(page) || 1, 1),
+            totalPages: Math.ceil(total / lim),
+            counts: { visible: all - hidden - verified, hidden, verified }
+        });
+    } catch (err) {
+        console.error('[staff explore-places] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to load places' });
+    }
+});
+
+// PATCH /api/staff/explore-places/:placeId/status   Body: { status }
+// The scope filter is part of the update query, so staff can only touch
+// places inside their assigned region — out-of-scope placeIds read as 404.
+router.patch('/explore-places/:placeId/status', requirePermission('moderateExplore'), async (req, res) => {
+    try {
+        const { status } = req.body || {};
+        if (!['visible', 'hidden', 'verified'].includes(status)) {
+            return res.status(400).json({ success: false, error: 'status must be visible | hidden | verified' });
+        }
+        const scope = buildPlaceScopeFilter(req.user);
+        if (scope === null) return res.status(403).json({ success: false, error: 'No region assigned yet — ask your admin' });
+
+        const filter = scope.$or
+            ? { $and: [{ placeId: req.params.placeId }, scope] }
+            : { placeId: req.params.placeId };
+        const doc = await PlaceCache.findOneAndUpdate(
+            filter,
+            { $set: { 'explore.status': status, 'explore.reviewedBy': req.user._id || req.user.id || null, 'explore.reviewedAt': new Date() } },
+            { new: true }
+        ).select('placeId name explore').lean();
+        if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });
+        res.json({ success: true, place: doc, message: `"${doc.name}" → ${status}` });
+    } catch (err) {
+        console.error('[staff explore-status] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to update place status' });
+    }
+});
 
 // Checks whether a single destination's location falls inside the user's scope.
 // Used on create/update to refuse out-of-scope writes. Returns true for admin.

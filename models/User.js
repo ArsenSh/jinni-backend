@@ -96,13 +96,17 @@ const userSchema = new mongoose.Schema({
         //   validateBusinesses : can use StaffValidation queue (approve/reject)
         //   manageDestinations : can add / edit / delete destinations within
         //                        their assigned scope (countries / cities)
-        // Both default sensibly:
+        //   moderateExplore    : can hide / verify cached places on the Explore
+        //                        page within their assigned scope
+        // Defaults:
         //   - validateBusinesses true → preserves behaviour for staff created
         //     before this field existed (legacy docs read the default).
-        //   - manageDestinations false → new capability, opt-in by admin.
+        //   - manageDestinations / moderateExplore false → newer capabilities,
+        //     opt-in by admin.
         permissions: {
             validateBusinesses: { type: Boolean, default: true  },
-            manageDestinations: { type: Boolean, default: false }
+            manageDestinations: { type: Boolean, default: false },
+            moderateExplore:    { type: Boolean, default: false }
         }
     },
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', default: null },  // set when user owns a business listing
