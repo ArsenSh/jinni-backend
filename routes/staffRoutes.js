@@ -193,7 +193,7 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
             PlaceCache.find(query)
                 .sort({ dislikes: -1, rating: 1, createdAt: -1 })
                 .skip(skip).limit(lim)
-                .select('placeId name rating country city details.formatted_address imagesStored actions likes dislikes useCount explore createdAt')
+                .select('placeId name rating country city details.formatted_address details.geometry imagesStored actions likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule')
                 .lean(),
             PlaceCache.countDocuments(query),
             PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'hidden' }] }),

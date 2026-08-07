@@ -328,14 +328,21 @@ app.use('/api/auth/resend-verification', emailLimiter);
 const apiLimiter = rateLimit({
     keyGenerator: clientKey,
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: (req) => {
-        if (req.path.includes('/api/ai') || req.path.includes('/api/business')) { return 50 }
-        return 100;
-    },
+    // 100/15min proved far too low in practice: the staff page fires ~12
+    // requests per load, the admin dashboard dozens, and several users often
+    // share one IP (household / office NAT). 2000 ≈ 2.2 req/s sustained —
+    // still a wall against scripted abuse, invisible to real users.
+    // (The old per-path max() and the '/api/health' skip never matched at all:
+    // req.path inside a middleware mounted at '/api' has the mount prefix
+    // stripped — that's why we test req.originalUrl below.)
+    max: 2000,
     message: { status: 'error', message: 'Too many requests from this IP, please try again later' },
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => { return req.path === '/api/health' }
+    // Health checks and cached place images (served from Mongo, no Google
+    // call, Cloudflare-cacheable) don't count — one Explore load pulls 40+
+    // images and would eat the whole budget otherwise.
+    skip: (req) => req.originalUrl === '/api/health' || req.originalUrl.startsWith('/api/ai/place-image')
 });
 app.use('/api/', apiLimiter);
 
@@ -343,7 +350,9 @@ const googleLimiter = rateLimit({
     keyGenerator: clientKey,
     windowMs: 60 * 1000, // 1 minute
     max: 50, // 50 requests/min
-    message: 'Too many Google API requests'
+    message: 'Too many Google API requests',
+    // Stored images don't touch Google — exempt them here too.
+    skip: (req) => req.originalUrl.startsWith('/api/ai/place-image')
 });
 app.use('/api/ai', googleLimiter);
 
