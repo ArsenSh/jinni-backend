@@ -279,7 +279,7 @@ const corsOptions = {
             process.env.FRONTEND_URL,
             'http://localhost:5173',
             'http://127.0.0.1:5173',
-            'http://192.168.1.15:5173',
+            'http://192.168.1.5:5173',
             'http://localhost:5000'
         ].filter(Boolean);
         if (!origin || allowedOrigins.includes(origin)) { callback(null, true) } 

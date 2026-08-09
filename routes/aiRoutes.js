@@ -3387,23 +3387,46 @@ async function handleImageRequestOnly(req, res) {
         }
         // STEP 2: Stream to user - DIFFERENT STRATEGY BASED ON SOURCE
         // console.log(`📤 Streaming ${images.length} images to client...`);
+        let storedInline = false;
         if (fromCache && cachedImageData.length > 0) {
             // CASE 1: We have base64 images - send them ALL in one batch
             // console.log(`🚀 Sending ${cachedImageData.length} cached images as base64 in batch...`);            
             res.write(`data: ${JSON.stringify({ type: 'image_batch', images: cachedImageData, total: cachedImageData.length, fromCache: true, batchDelivery: true })}\n\n`);            
             for (let i = 0; i < cachedImageData.length; i++) { res.write(`data: ${JSON.stringify({ type: 'image_single', image: cachedImageData[i], progress: { current: i + 1, total: cachedImageData.length }, fromCache: true, immediate: true })}\n\n`) }
         } else {
-            // CASE 2: Google images - send one by one
-            // console.log(`⏳ Streaming Google images one by one...`);
+            // CASE 2: fresh from Google — download ALL photos in parallel and
+            // stream each one's real bytes (base64) in index order as soon as
+            // its download lands. Streaming bare proxy URLs here made the
+            // viewer race the background store: unstored slots served the
+            // first photo as a stand-in and flips took seconds.
+            const downloads = images.map(img =>
+                img.photo_reference
+                    ? imageStorageService.downloadPhoto(img.photo_reference).catch(err => { console.error(`Gallery photo download failed: ${err.message}`); return null; })
+                    : Promise.resolve(null)
+            );
+            const inlineStored = [];
             for (let i = 0; i < images.length; i++) {
-                res.write(`data: ${JSON.stringify({ type: 'image_single', image: images[i], progress: { current: i + 1, total: images.length }, fromCache: false })}\n\n`);
-                await new Promise(resolve => setTimeout(resolve, 100));
+                const dl = await downloads[i];
+                inlineStored.push({ photoReference: images[i].photo_reference || null, imageData: dl ? dl.buffer : null, contentType: dl ? dl.contentType : 'image/jpeg', storedAt: new Date() });
+                if (!dl) {
+                    res.write(`data: ${JSON.stringify({ type: 'image_single_error', index: i, error: 'download failed' })}\n\n`);
+                    continue;
+                }
+                const dataUrl = `data:${dl.contentType};base64,${dl.buffer.toString('base64')}`;
+                res.write(`data: ${JSON.stringify({ type: 'image_single', image: { ...images[i], url: dataUrl, isDataUrl: true }, progress: { current: i + 1, total: images.length }, fromCache: false })}\n\n`);
+            }
+            // Persist what we just downloaded — no second download pass needed.
+            storedInline = true;
+            if (placeId && inlineStored.some(p => p.imageData)) {
+                PlaceCache.findOneAndUpdate({ placeId }, { $set: { photos: inlineStored, imagesStored: true } }, { upsert: true })
+                    .catch(err => console.error('Gallery inline store failed:', err));
             }
         }
         res.write(`data: ${JSON.stringify({type: 'image_stream_complete', totalLoaded: images.length, fromCache: fromCache, placeId: placeId, deliveryMode: fromCache ? 'batch_base64' : 'sequential_urls'})}\n\n`);
         res.end();
-        // STEP 3: Store in background ONLY if we fetched from Google AND don't already have a complete gallery
-        if (!fromCache && placeId && images.length > 0) {
+        // STEP 3: Store in background ONLY if we fetched from Google AND didn't
+        // already persist the downloads inline in CASE 2 above.
+        if (!fromCache && !storedInline && placeId && images.length > 0) {
             // console.log(`📦 Background: Will store images after sending to user...`);            
             setTimeout(async () => {
                 try { await storeImagesInBackground(imageRequest.placeName, images, location, placeId) } 
@@ -3469,7 +3492,10 @@ async function fetchImagesForPlace(placeName, location = null) {
         });
         const googleImages = googleImagesResult || [];
         // console.log(`${googleImages.length} images for ${placeName}`);
-        const processedImages = googleImages.slice(0, 8).map((image, index) => ({ url: image.url || image, title: image.title || `${placeName} - View ${index + 1}`, caption: image.caption || generateImageCaption(placeName, index), source: image.source || 'google_places' }));
+        // Keep photo_reference — storeImagesInBackground needs it to download the
+        // full gallery; dropping it here left every place stuck with 1 stored
+        // photo (all 8 viewer slots then serve that same first image).
+        const processedImages = googleImages.slice(0, 8).map((image, index) => ({ url: image.url || image, title: image.title || `${placeName} - View ${index + 1}`, caption: image.caption || generateImageCaption(placeName, index), source: image.source || 'google_places', photo_reference: image.photo_reference || null }));
         return processedImages;
     } catch (error) {
         console.error('Image fetch error:', error);
@@ -3507,7 +3533,11 @@ async function getGooglePlaceImages(placeName, location = null) {
         }
         const images = placeDetails.photos.slice(0, 8).map((photo, index) => {
             // Backend proxy, not a direct Google URL (key leak + IP restriction).
-            const imageUrl = `/api/ai/place-image/${placeId}/${index}`;
+            // The ?v= cache-buster makes each gallery view fetch fresh — it
+            // both heals browsers that cached the substituted-first-photo
+            // responses (pre-fix) and sidesteps the cache while a gallery is
+            // still downloading in the background.
+            const imageUrl = `/api/ai/place-image/${placeId}/${index}?v=${Date.now()}`;
             // console.log(`Image ${index + 1} - URL contains photoreference: ${imageUrl.includes('photoreference=')}`);
             return {
                 url: imageUrl, 
@@ -6123,7 +6153,12 @@ router.get('/place-image/:placeId/:photoIndex', async (req, res) => {
             console.log(`❌ Data is not a Buffer, it's a ${typeof image.data}`);
             return res.status(500).send('Invalid image data format');
         }     
-        res.set({'Content-Type': image.contentType || 'image/jpeg', 'Content-Length': image.data.length, 'Cache-Control': 'public, max-age=2592000', 'Expires': new Date(Date.now() + 2592000000).toUTCString(), 'Access-Control-Allow-Origin': '*'});        
+        // Substituted responses (requested slot not stored yet — e.g. gallery
+        // still downloading) must never be cached: with the 30-day max-age the
+        // browser would pin the first photo into every index for a month.
+        const cacheControl = image.fallback ? 'no-store' : 'public, max-age=2592000';
+        res.set({'Content-Type': image.contentType || 'image/jpeg', 'Content-Length': image.data.length, 'Cache-Control': cacheControl, 'Access-Control-Allow-Origin': '*'});
+        if (!image.fallback) res.set('Expires', new Date(Date.now() + 2592000000).toUTCString());
         res.send(image.data);
         // console.log(`✅ Image sent successfully\n`);        
     } catch (error) {

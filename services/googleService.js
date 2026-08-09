@@ -1,7 +1,15 @@
 const axios = require('axios');
+const https = require('https');
 const { Client } = require("@googlemaps/google-maps-services-js");
 const logger = require('../utils/logger');
 const GoogleApiStats = require('../models/GoogleAPIStats');
+
+// Force IPv4 for outbound HTTPS (process-wide axios default). The Google API
+// key's IP allowlist holds IPv4 addresses (server + home); macOS prefers
+// IPv6 routes whose rotating prefixes are impractical to allowlist, so
+// requests would 403 with API_KEY_IP_ADDRESS_BLOCKED depending on the route
+// picked. Same rationale as the Mongo `family: 4` option in server.js.
+axios.defaults.httpsAgent = new https.Agent({ family: 4 });
 
 // Geocoding API (reverse geocode) is NOT deprecated — keep legacy client for this only
 const geoClient = new Client({});

@@ -65,28 +65,52 @@ class ImageStorageService {
     }
 
     /**
+     * Download a single photo from Google by its reference (New API
+     * "places/.../photos/..." or legacy raw ref). Used by the gallery stream
+     * to send real bytes progressively instead of proxy URLs.
+     */
+    async downloadPhoto(photoReference) {
+        const url = buildPhotoUrl({ photo_reference: photoReference });
+        if (!url) throw new Error('no photo reference');
+        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 12000, maxRedirects: 5 });
+        return { buffer: Buffer.from(response.data), contentType: response.headers['content-type'] || 'image/jpeg' };
+    }
+
+    /**
      * Serve image directly from database (NO API CALLS)
      */
     async serveImage(placeId, photoIndex = 0) {
         try {
-            const cached = await PlaceCache.findOne({ placeId });
+            // Fetch ONLY the requested slot ($slice projection). The full
+            // document carries every photo's binary (often 2-3 MB total), so
+            // reading it whole from Atlas for EACH image request made every
+            // gallery flip cost seconds.
+            const cached = await PlaceCache.findOne({ placeId }, { photos: { $slice: [photoIndex, 1] } }).lean();
             if (!cached) throw new Error('Place not found in cache');
-            if (!cached.photos || !cached.photos.length) throw new Error('Photo not found at index');
 
             const isJson = (p) => p && p.contentType && p.contentType.includes('application/json');
 
-            // Try the requested index first.
-            let photo = cached.photos[photoIndex];
+            // Try the requested index first (slice returns it as element 0).
+            let photo = (cached.photos || [])[0];
             let imageBuffer = (photo && !isJson(photo)) ? this._toBuffer(photo.imageData) : null;
 
             // Fallback: requested slot is missing / null / JSON-poisoned. Serve the
             // first photo that actually has readable bytes, so a poisoned index 0
             // doesn't 404 the whole card. (Self-heals stale cache entries.)
+            // Whether we're substituting a different slot for the requested one.
+            // Callers must NOT let clients cache substituted responses — during a
+            // gallery download the early requests would pin the first photo into
+            // the browser cache for every index (max-age is 30 days).
+            let fallback = false;
             if (!imageBuffer) {
-                const valid = (cached.photos || []).find(p => !isJson(p) && this._toBuffer(p.imageData));
+                // Rare self-heal path: requested slot missing / null / JSON-
+                // poisoned — only now read the full array to find a valid photo.
+                const full = await PlaceCache.findOne({ placeId }).lean();
+                const valid = (full?.photos || []).find(p => !isJson(p) && this._toBuffer(p.imageData));
                 if (valid) {
-                    if (photoIndex !== cached.photos.indexOf(valid)) {
+                    if (photoIndex !== full.photos.indexOf(valid)) {
                         console.warn(`⚠️ ${placeId}/${photoIndex} unreadable — serving first valid photo instead`);
+                        fallback = true;
                     }
                     photo = valid;
                     imageBuffer = this._toBuffer(valid.imageData);
@@ -94,10 +118,10 @@ class ImageStorageService {
             }
 
             if (!imageBuffer) {
-                console.error(`❌ No readable image for ${placeId} (requested index ${photoIndex}) - none of ${cached.photos.length} photo(s) have bytes`);
+                console.error(`❌ No readable image for ${placeId} (requested index ${photoIndex}) — no photo has bytes`);
                 throw new Error('Invalid image data format');
             }
-            return { data: imageBuffer, contentType: photo.contentType || 'image/jpeg' };
+            return { data: imageBuffer, contentType: photo.contentType || 'image/jpeg', fallback };
         } catch (error) {
             console.error('❌ Serve image error:', error.message);
             throw error;
