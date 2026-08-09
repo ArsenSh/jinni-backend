@@ -3001,7 +3001,11 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                     // comes back as an English "Muse" heading in a Russian reply.
                     const dispName = (r.metadata && r.metadata.originalName) || r.name;
                     const desc = (r.description || r.metadata?.originalDescription || '').trim();
-                    restoredText.set(idx, desc ? `**${dispName}**\n${desc}` : `**${dispName}**`);
+                    // ⁣ (invisible separator) marks this bold as a PLACE NAME the
+                    // pipeline verified-then-demoted — the frontend linkifier turns
+                    // marked bolds into click-to-search without any guessing. Invisible
+                    // if a client renders it raw, survives session persistence.
+                    restoredText.set(idx, desc ? `**⁣${dispName}**\n${desc}` : `**⁣${dispName}**`);
                     console.log(`[chat] card "${dispName}" dropped — its text restored as prose`);
                 });
                 recommendations = keptOldIdx.map(oldIdx => recommendations[oldIdx]);
