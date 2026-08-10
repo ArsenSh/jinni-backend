@@ -215,6 +215,32 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
     }
 });
 
+// PATCH /api/staff/explore-places/:placeId/actions   Body: { actions: [...] }
+// Curate which Explore categories a cached place appears under — the AI's
+// original tagging is sometimes wrong (a church tagged 'events'). Same scope
+// enforcement as the status route. An empty array removes the place from
+// Explore entirely (no category → no rail).
+router.patch('/explore-places/:placeId/actions', requirePermission('moderateExplore'), async (req, res) => {
+    try {
+        const actions = Array.isArray(req.body?.actions)
+            ? req.body.actions.filter(a => EXPLORE_MOD_CATEGORIES.includes(a))
+            : null;
+        if (!actions) return res.status(400).json({ success: false, error: 'actions must be an array of valid categories' });
+        const scope = buildPlaceScopeFilter(req.user);
+        if (scope === null) return res.status(403).json({ success: false, error: 'No region assigned yet — ask your admin' });
+        const filter = scope.$or
+            ? { $and: [{ placeId: req.params.placeId }, scope] }
+            : { placeId: req.params.placeId };
+        const doc = await PlaceCache.findOneAndUpdate(filter, { $set: { actions } }, { new: true })
+            .select('placeId name actions').lean();
+        if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });
+        res.json({ success: true, place: doc, message: `"${doc.name}" categories updated` });
+    } catch (err) {
+        console.error('[staff explore-actions] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to update categories' });
+    }
+});
+
 // PATCH /api/staff/explore-places/:placeId/status   Body: { status }
 // The scope filter is part of the update query, so staff can only touch
 // places inside their assigned region — out-of-scope placeIds read as 404.
