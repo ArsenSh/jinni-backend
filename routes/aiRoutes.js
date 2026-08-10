@@ -1135,6 +1135,13 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         } catch (pfErr) {
             console.warn('[chat] PlaceFeedback vote load failed:', pfErr.message);
         }
+        // Validator-blocked places (staff "Block AI" — the AI keeps getting
+        // these wrong) fold into the dislike set, so the existing suppression
+        // paths hide them for EVERY user. The list is tiny and indexed.
+        try {
+            (await PlaceCache.find({ aiBlocked: true }).select('placeId').lean())
+                .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
+        } catch (abErr) { console.warn('[chat] aiBlocked load failed:', abErr.message); }
         // Persist the destination across turns. If THIS message named no new place and
         // we're not in nearby mode, but the conversation already produced
         // recommendations somewhere (e.g. Cyprus hotels), keep centering on that
@@ -3131,12 +3138,14 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
         const CHAT_TAGGABLE_ACTIONS = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'photo_spots', 'shopping']);
         const chatShownPlaceIds = [...new Set(recommendations.map(r => r.placeId).filter(Boolean))];
         if (chatShownPlaceIds.length > 0) {
-            const chatUpdate = { $set: { lastUsed: new Date() }, $inc: { useCount: 1 } };
+            // Popularity/freshness bump for every shown place…
+            PlaceCache.updateMany({ placeId: { $in: chatShownPlaceIds } }, { $set: { lastUsed: new Date() }, $inc: { useCount: 1 } })
+                .catch(err => console.warn('[chat] PlaceCache useCount update failed:', err.message));
+            // …but category tagging skips validator-curated docs (curation lock).
             if (detectedActionType && CHAT_TAGGABLE_ACTIONS.has(detectedActionType)) {
-                chatUpdate.$addToSet = { actions: detectedActionType };
+                PlaceCache.updateMany({ placeId: { $in: chatShownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: detectedActionType } })
+                    .catch(err => console.warn('[chat] PlaceCache tag update failed:', err.message));
             }
-            PlaceCache.updateMany({ placeId: { $in: chatShownPlaceIds } }, chatUpdate)
-                .catch(err => console.warn('[chat] PlaceCache tag/useCount update failed:', err.message));
         }
         res.write(`data: ${JSON.stringify(responseData)}\n\n`);
         res.end();
@@ -4603,6 +4612,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         const rows = await PlaceFeedback.find({ userId, action, vote: 'dislike' }).select('placeId').lean();
                         userDislikedIds = new Set(rows.map(r => r.placeId));
                     } catch (pfErr) { console.warn('[quick-action] dislike-set load failed:', pfErr.message); }
+                    // Validator "Block AI" places — global suppression, same as chat.
+                    try {
+                        (await PlaceCache.find({ aiBlocked: true }).select('placeId').lean())
+                            .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
+                    } catch (abErr) { console.warn('[quick-action] aiBlocked load failed:', abErr.message); }
 
                     // ── Preference gate on the MODEL'S OWN named results ─────────────────
                     // The model proposes names from its training memory, which can include
@@ -4919,7 +4933,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 // filters, so resolved-but-dropped rejects are never tagged.
                 const shownPlaceIds = [...new Set(recommendations.map(r => r.placeId).filter(Boolean))];
                 if (shownPlaceIds.length > 0 && action) {
-                    PlaceCache.updateMany({ placeId: { $in: shownPlaceIds } }, { $addToSet: { actions: action } })
+                    PlaceCache.updateMany({ placeId: { $in: shownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: action } })
                         .catch(err => console.warn('[quick-action] action-tag update failed:', err.message));
                 }
                 // For event places, also persist the event's date onto the cache doc

@@ -157,6 +157,7 @@ function buildPlaceScopeFilter(user) {
 // staff bury garbage ('hidden') or endorse good places ('verified').
 // ─────────────────────────────────────────────────────────────────────────────
 const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping'];
+const EXPLORE_INTEREST_TAGS = ['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink', 'luxury', 'budget'];
 
 // GET /api/staff/explore-places
 // Query: page, limit, search, status ('', 'visible', 'hidden', 'verified'),
@@ -193,7 +194,7 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
             PlaceCache.find(query)
                 .sort({ dislikes: -1, rating: 1, createdAt: -1 })
                 .skip(skip).limit(lim)
-                .select('placeId name rating country city details.formatted_address details.geometry imagesStored actions likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule')
+                .select('placeId name rating country city details.formatted_address details.geometry imagesStored actions interests aiBlocked likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule')
                 .lean(),
             PlaceCache.countDocuments(query),
             PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'hidden' }] }),
@@ -222,17 +223,24 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
 // Explore entirely (no category → no rail).
 router.patch('/explore-places/:placeId/actions', requirePermission('moderateExplore'), async (req, res) => {
     try {
-        const actions = Array.isArray(req.body?.actions)
-            ? req.body.actions.filter(a => EXPLORE_MOD_CATEGORIES.includes(a))
-            : null;
-        if (!actions) return res.status(400).json({ success: false, error: 'actions must be an array of valid categories' });
+        const body = req.body || {};
+        const set = {};
+        if (Array.isArray(body.actions)) {
+            // actionsCurated locks the array against runtime re-tagging — see
+            // the PlaceCache schema comment.
+            set.actions = body.actions.filter(a => EXPLORE_MOD_CATEGORIES.includes(a));
+            set.actionsCurated = true;
+        }
+        if (Array.isArray(body.interests)) set.interests = body.interests.filter(t => EXPLORE_INTEREST_TAGS.includes(t));
+        if (typeof body.aiBlocked === 'boolean') set.aiBlocked = body.aiBlocked;
+        if (!Object.keys(set).length) return res.status(400).json({ success: false, error: 'Nothing to update' });
         const scope = buildPlaceScopeFilter(req.user);
         if (scope === null) return res.status(403).json({ success: false, error: 'No region assigned yet — ask your admin' });
         const filter = scope.$or
             ? { $and: [{ placeId: req.params.placeId }, scope] }
             : { placeId: req.params.placeId };
-        const doc = await PlaceCache.findOneAndUpdate(filter, { $set: { actions } }, { new: true })
-            .select('placeId name actions').lean();
+        const doc = await PlaceCache.findOneAndUpdate(filter, { $set: set }, { new: true })
+            .select('placeId name actions interests aiBlocked').lean();
         if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });
         res.json({ success: true, place: doc, message: `"${doc.name}" categories updated` });
     } catch (err) {

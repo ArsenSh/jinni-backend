@@ -74,6 +74,19 @@ const PlaceCacheSchema = new mongoose.Schema({
     // school that came back for a Historical query then got filtered) are never
     // tagged and therefore never backfilled.
     actions: { type: [String], default: [] },
+    // Curation lock: set when a validator edits `actions` by hand. While true,
+    // the runtime $addToSet tagging (chat + quick-action serves) must NOT
+    // touch `actions` — human curation is authoritative and would otherwise
+    // be silently re-polluted the next time the AI shows the place under a
+    // wrong category. useCount/lastUsed keep updating normally.
+    actionsCurated: { type: Boolean, default: false },
+    // Validator-curated user-interest tags (nature, family, romantic, art, …).
+    // Written only by staff — no runtime process touches these.
+    interests: { type: [String], default: [] },
+    // Staff "Block AI": the AI keeps mis-recommending this place → suppress it
+    // from ALL recommendation pipelines (folded into the dislike sets at
+    // request time). Independent from explore.status (Explore visibility).
+    aiBlocked: { type: Boolean, default: false, index: true },
     // Event schedule — only meaningful for places shown under the 'events' action.
     // Captured at request time from the recommendation an event venue was shown as,
     // so the admin cache view can display WHEN a cached venue was last surfaced as
