@@ -1173,6 +1173,12 @@ router.post('/apply', applyLimiter, conditionalUpload, async (req, res) => {
         // ── Server-side tier enforcement ────────────────────────────────────
         // The tier value comes from the client — we must enforce all tier-specific
         // limits here regardless of what the frontend sent, to prevent spoofing.
+        // TEMPORARY: subscriptions are not configured yet — paid tiers cannot be
+        // purchased, so reject them outright. Remove when payments go live
+        // (also flip PAID_TIERS_LOCKED in BusinessOnboarding.vue).
+        if (tier !== 'verified') {
+            return res.status(400).json({ error: 'Paid subscriptions are under work — only the free Verified tier is available right now' })
+        }
         // Hidden Gem only allowed for signature
         if (isHiddenGem && tier !== 'signature') {return res.status(400).json({ error: 'Hidden Gem status requires Signature tier' })}
         // Strip hidden_gems from type array if not signature
