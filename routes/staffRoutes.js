@@ -190,12 +190,28 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
         // Scope-wide status counts (ignores search/category/status filters) for the tab chips.
         const countBase = [{ actions: { $in: EXPLORE_MOD_CATEGORIES } }, ...(scope.$or ? [scope] : [])];
 
+        // Aggregation with an EARLY projection: cached docs carry megabytes of
+        // photo bytes, and sorting whole docs blew Mongo's 32MB sort memory
+        // once skip+limit grew past ~3 pages (500s on deeper pages). Dropping
+        // `photos` before $sort makes the sort work on slim docs.
+        const listFields = {
+            placeId: 1, name: 1, rating: 1, country: 1, city: 1,
+            'details.formatted_address': 1, 'details.geometry': 1,
+            imagesStored: 1, actions: 1, interests: 1, aiBlocked: 1,
+            likes: 1, dislikes: 1, useCount: 1, fetchCount: 1, explore: 1,
+            createdAt: 1, lastUsed: 1, website: 1,
+            formatted_phone_number: 1, international_phone_number: 1,
+            'opening_hours.weekday_text': 1, types: 1, primaryType: 1,
+            priceLevel: 1, eventSchedule: 1,
+        };
         const [places, total, hidden, verified, all] = await Promise.all([
-            PlaceCache.find(query)
-                .sort({ dislikes: -1, rating: 1, createdAt: -1 })
-                .skip(skip).limit(lim)
-                .select('placeId name rating country city details.formatted_address details.geometry imagesStored actions interests aiBlocked likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule')
-                .lean(),
+            PlaceCache.aggregate([
+                { $match: query },
+                { $project: listFields },
+                { $sort: { dislikes: -1, rating: 1, createdAt: -1 } },
+                { $skip: skip },
+                { $limit: lim },
+            ]).allowDiskUse(true),
             PlaceCache.countDocuments(query),
             PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'hidden' }] }),
             PlaceCache.countDocuments({ $and: [...countBase, { 'explore.status': 'verified' }] }),
