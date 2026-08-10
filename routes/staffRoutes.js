@@ -278,7 +278,7 @@ const ALLOWED_FIELDS = [
 // `mine=true` further restricts to destinations the staff member created.
 router.get('/destinations', destGate, async (req, res) => {
     try {
-        const { page = 1, limit = 20, search = '', filter = '', mine = '' } = req.query;
+        const { page = 1, limit = 20, search = '', filter = '', mine = '', types = '' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         const scope = buildDestinationScopeFilter(req.user);
@@ -299,6 +299,11 @@ router.get('/destinations', destGate, async (req, res) => {
         if (filter === 'inactive')   query.isActive = false;
         if (filter === 'hidden_gem') query.isHiddenGem = true;
         if (mine === 'true' && !req.user.isAdmin) query.createdBy = req.user.id;
+        // Type/preference filter — comma-separated tags from the `type` array
+        // (category like 'restaurants' and/or preference like 'romantic');
+        // $all so combining both narrows the list.
+        const typeTags = String(types).split(',').map(s => s.trim()).filter(Boolean).slice(0, 5);
+        if (typeTags.length) query.type = { $all: typeTags };
 
         const [destinations, total, summaryAgg] = await Promise.all([
             Destination.find(query)

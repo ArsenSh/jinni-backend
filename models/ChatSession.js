@@ -35,6 +35,11 @@ const recommendationSchema = new mongoose.Schema({
   photos: [String],
   verifiedId: String,
   partnerTier: String,
+  // 'business' | 'destination' — which collection verifiedId points to.
+  // Destinations must NOT get the partner badge; without persisting this the
+  // frontend's "is it a destination?" check dies on reload and every
+  // verifiedId rec falls back to a wrong "Jinni Verified" label.
+  _verifiedModel: String,
   // Event-specific fields. Only set for recommendations whose business
   // type includes 'events'; null/absent for everything else. Persisted so
   // the rec card's date/time row still renders after a session is reloaded
