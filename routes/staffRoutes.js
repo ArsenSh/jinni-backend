@@ -339,6 +339,65 @@ router.get('/destinations', destGate, async (req, res) => {
 // ── POST /api/staff/destinations ────────────────────────────────────────────
 // Creates a destination. Location must fall inside the staff's scope; admin
 // has no such restriction. `createdBy` is stamped server-side.
+// ── Destination images: mirror + auto-fetch ─────────────────────────────────
+// Option A — validator-provided URLs are downloaded at save time and their
+// BYTES stored under a synthetic PlaceCache entry (placeId `dest_<id>`), then
+// dest.images points at our own proxy (/api/ai/place-image/dest_<id>/<i>).
+// The external host can die later without anyone noticing — and a URL that is
+// broken TODAY fails right here, where the validator can see it.
+// Option B — no URLs given → look the place up on Google by name + address
+// and store ITS photos the same way. URLs always take precedence, so a wrong
+// Google match can be corrected by simply pasting the right URLs.
+const EXTERNAL_URL = (u) => /^https?:\/\//i.test(u) && !u.includes('/api/ai/place-image/');
+const hasRealImages = (arr) => Array.isArray(arr) && arr.some(u => String(u || '').trim());
+
+async function storeDestinationUrlImages(destId, urls) {
+    const axios = require('axios');
+    const clean = (urls || []).map(u => String(u || '').trim()).filter(EXTERNAL_URL).slice(0, 8);
+    if (!clean.length) return { stored: 0, failed: [] };
+    const failed = [];
+    const photos = [];
+    for (const u of clean) {
+        try {
+            const r = await axios.get(u, { responseType: 'arraybuffer', timeout: 12000, maxRedirects: 5, headers: { 'User-Agent': 'Mozilla/5.0 (Jinni image mirror)' } });
+            const ct = r.headers['content-type'] || '';
+            if (!ct.startsWith('image/')) { failed.push(u); continue; }
+            photos.push({ photoReference: u, imageData: Buffer.from(r.data), contentType: ct, storedAt: new Date() });
+        } catch (e) { failed.push(u); }
+    }
+    if (photos.length) {
+        const key = `dest_${destId}`;
+        await PlaceCache.findOneAndUpdate({ placeId: key }, { $set: { name: `dest:${destId}`, photos, imagesStored: true } }, { upsert: true });
+        await Destination.findByIdAndUpdate(destId, { $set: { images: photos.map((_, i) => `/api/ai/place-image/${key}/${i}`) } });
+    }
+    if (failed.length) console.warn(`[dest-images] ${failed.length} URL(s) failed to mirror for ${destId}:`, failed.map(f => f.slice(0, 60)));
+    return { stored: photos.length, failed };
+}
+
+async function autoFetchDestinationImages(destId, src) {
+    try {
+        const googleService = require('../services/googleService');
+        const imageStorageService = require('../services/imageStorageService');
+        const q = [src.name, src.location?.address, src.location?.city, src.location?.country].filter(Boolean).join(', ');
+        const c = src.location?.coordinates;
+        const coords = (c && Number.isFinite(+c.lat) && Number.isFinite(+c.lng) && +c.lat !== 0) ? { lat: +c.lat, lng: +c.lng } : null;
+        const places = await googleService.findPlaces(q, coords);
+        if (!places || !places.length) { console.log(`[dest-images] Google found nothing for "${q}"`); return 0; }
+        const placeId = places[0].place_id;
+        const details = await googleService.getPlaceDetails(placeId, false);
+        if (!details || !details.photos || !details.photos.length) { console.log(`[dest-images] no Google photos for "${src.name}"`); return 0; }
+        const stored = await imageStorageService.downloadAndStoreImages(placeId, details.photos, 8);
+        const ok = Array.isArray(stored) ? stored.filter(p => p && p.imageData).length : 0;
+        if (!ok) return 0;
+        await Destination.findByIdAndUpdate(destId, { $set: { images: Array.from({ length: ok }, (_, i) => `/api/ai/place-image/${placeId}/${i}`) } });
+        console.log(`[dest-images] "${src.name}" → ${ok} Google photos stored (${placeId})`);
+        return ok;
+    } catch (e) {
+        console.warn('[dest-images] auto-fetch failed:', e.message);
+        return 0;
+    }
+}
+
 router.post('/destinations', destGate, async (req, res) => {
     try {
         const payload = {};
@@ -359,10 +418,15 @@ router.post('/destinations', destGate, async (req, res) => {
 
         payload.createdBy = req.user.id;
         const dest = await Destination.create(payload);
+        // Provided URLs → mirror their bytes now (Option A). None provided
+        // (or none mirrored successfully) → fetch from Google by name+address.
+        let imageReport = null;
+        if (hasRealImages(payload.images)) { imageReport = await storeDestinationUrlImages(dest._id, payload.images); }
+        if (!imageReport || !imageReport.stored) { await autoFetchDestinationImages(dest._id, payload); }
         const populated = await Destination.findById(dest._id)
             .populate('createdBy', 'name email role')
             .lean();
-        res.json({ success: true, data: populated });
+        res.json({ success: true, data: populated, imageReport });
     } catch (err) {
         console.error('[staff destination create] error:', err);
         res.status(500).json({ success: false, error: err.message || 'Failed to create destination' });
@@ -396,10 +460,21 @@ router.patch('/destinations/:id', destGate, async (req, res) => {
             });
         }
 
-        const updated = await Destination.findByIdAndUpdate(
+        let updated = await Destination.findByIdAndUpdate(
             req.params.id, { $set: updates }, { new: true, runValidators: true }
         ).populate('createdBy', 'name email role');
-        res.json({ success: true, data: updated });
+        // New external URLs → mirror their bytes (Option A). Images cleared /
+        // still empty → refill from Google by name + address.
+        let imageReport = null;
+        if (updated && Array.isArray(updated.images) && updated.images.some(u => EXTERNAL_URL(String(u || '')))) {
+            imageReport = await storeDestinationUrlImages(updated._id, updated.images);
+            if (imageReport.stored) updated = await Destination.findById(updated._id).populate('createdBy', 'name email role');
+        }
+        if (updated && !hasRealImages(updated.images)) {
+            const n = await autoFetchDestinationImages(updated._id, updated);
+            if (n) updated = await Destination.findById(updated._id).populate('createdBy', 'name email role');
+        }
+        res.json({ success: true, data: updated, imageReport });
     } catch (err) {
         console.error('[staff destination update] error:', err);
         res.status(500).json({ success: false, error: err.message || 'Failed to update destination' });
