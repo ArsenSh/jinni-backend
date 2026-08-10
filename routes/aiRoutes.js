@@ -1135,13 +1135,16 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         } catch (pfErr) {
             console.warn('[chat] PlaceFeedback vote load failed:', pfErr.message);
         }
-        // Validator-blocked places (staff "Block AI" — the AI keeps getting
-        // these wrong) fold into the dislike set, so the existing suppression
-        // paths hide them for EVERY user. The list is tiny and indexed.
+        // Validator-suppressed places fold into the dislike set, so the
+        // existing suppression paths hide them for EVERY user:
+        //   • aiBlocked        — staff "Block AI" button
+        //   • explore hidden   — staff "Hide": per product decision, hiding a
+        //     place suppresses it EVERYWHERE (Explore + chat + quick-action),
+        //     not just on the browse page.
         try {
-            (await PlaceCache.find({ aiBlocked: true }).select('placeId').lean())
+            (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }] }).select('placeId').lean())
                 .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
-        } catch (abErr) { console.warn('[chat] aiBlocked load failed:', abErr.message); }
+        } catch (abErr) { console.warn('[chat] suppression-set load failed:', abErr.message); }
         // Persist the destination across turns. If THIS message named no new place and
         // we're not in nearby mode, but the conversation already produced
         // recommendations somewhere (e.g. Cyprus hotels), keep centering on that
@@ -4612,11 +4615,12 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         const rows = await PlaceFeedback.find({ userId, action, vote: 'dislike' }).select('placeId').lean();
                         userDislikedIds = new Set(rows.map(r => r.placeId));
                     } catch (pfErr) { console.warn('[quick-action] dislike-set load failed:', pfErr.message); }
-                    // Validator "Block AI" places — global suppression, same as chat.
+                    // Validator-suppressed places (Block AI + Hidden) — global
+                    // suppression, same rule as chat.
                     try {
-                        (await PlaceCache.find({ aiBlocked: true }).select('placeId').lean())
+                        (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }] }).select('placeId').lean())
                             .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
-                    } catch (abErr) { console.warn('[quick-action] aiBlocked load failed:', abErr.message); }
+                    } catch (abErr) { console.warn('[quick-action] suppression-set load failed:', abErr.message); }
 
                     // ── Preference gate on the MODEL'S OWN named results ─────────────────
                     // The model proposes names from its training memory, which can include

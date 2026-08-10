@@ -109,7 +109,9 @@ const PlaceCacheSchema = new mongoose.Schema({
     //   'verified' — human-checked; always shown, EXEMPT from auto-quality rules
     // Legacy docs have no `explore` field at all → read as 'visible' everywhere.
     explore: {
-        status:     { type: String, enum: ['visible', 'hidden', 'verified'], default: 'visible' },
+        // Indexed: hidden places are looked up on EVERY chat/quick-action
+        // request (suppression set) — see the $or query in aiRoutes.
+        status:     { type: String, enum: ['visible', 'hidden', 'verified'], default: 'visible', index: true },
         reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         reviewedAt: { type: Date, default: null }
     }
