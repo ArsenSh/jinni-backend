@@ -31,7 +31,7 @@ const auth = require('../middleware/auth');
 // Offline coordinate -> IANA timezone. Shared with businessRoutes so a
 // validator-added event and an owner-registered one resolve their venue
 // timezone through identical code, anywhere in the world.
-const { resolveTimezone } = require('../utils/timezone');
+const { resolveTimezone, endOfDayInZone } = require('../utils/timezone');
 
 // ── Auth gate ───────────────────────────────────────────────────────────────
 // Allows admin (full access) or active staff. Always hydrates the user via
@@ -393,7 +393,23 @@ function normalizeEventSchedule(rawSchedule, type, location) {
     if (endDate && endDate.getTime() <= startDate.getTime()) {
         return { error: 'The event must end after it starts' };
     }
-    return { value: { startDate, endDate: endDate || undefined, isRecurring: false, timezone } };
+
+    // ── Implicit end: close of the start day, in the event's own timezone ────
+    //
+    // An end time is optional, and most validators won't type one — "the
+    // concert starts at 20:00" is the whole story they have. Without an
+    // explicit end we default to 23:59:59 on the start date rather than
+    // leaving endDate empty, because the expiry rule falls back to startDate
+    // when there is no end. That fallback would hide a 20:00 concert at 20:00
+    // sharp, while people are still travelling to it — and would hide an
+    // all-day event (start = local midnight) for the entire day it runs.
+    //
+    // Net effect: leave the end blank and the event stays listed for the rest
+    // of that day, then disappears overnight. Multi-day and precise-end events
+    // are unaffected — an explicit end always wins.
+    const resolvedEnd = endDate || endOfDayInZone(startDate, timezone);
+
+    return { value: { startDate, endDate: resolvedEnd || undefined, isRecurring: false, timezone } };
 }
 
 // ── GET /api/staff/destinations ─────────────────────────────────────────────

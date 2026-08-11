@@ -3,6 +3,9 @@ const express = require('express');
 const router = express.Router();
 const { validate } = require('../utils/validation');
 const authController = require('../controllers/authController');
+// Shared with the email-signup path so both ways of creating an account agree
+// on what counts as a supported language.
+const { normalizeLanguage } = authController;
 const auth = require('../middleware/auth');
 const User = require('../models/User');
 const jwt = require('jsonwebtoken')
@@ -76,8 +79,13 @@ router.patch('/onboarding', auth, async (req, res) => {
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/auth/google/callback`
-},  async (accessToken, refreshToken, profile, done) => {
+    callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/auth/google/callback`,
+    // Needed to read the language the visitor chose before being bounced to
+    // Google. It round-trips through the OAuth `state` parameter — the server
+    // never sees the browser's localStorage, so there is no other way to know
+    // it by the time the account is created.
+    passReqToCallback: true
+},  async (req, accessToken, refreshToken, profile, done) => {
     try {
         // console.log('Google OAuth Profile:', profile)
         let user = await User.findOne({ $or: [{ googleId: profile.id },{ email: profile.emails[0].value }] })
@@ -96,6 +104,11 @@ passport.use(new GoogleStrategy({
                 isEmailVerified: true,
                 password: crypto.randomBytes(32).toString('hex')
             })
+            // Start the account in the language they were browsing in. Applied
+            // to NEW accounts only — a returning user's saved preference must
+            // never be overwritten by whatever the current tab happens to be.
+            const signupLanguage = normalizeLanguage(req.query?.state)
+            if (signupLanguage) user.settings.language = signupLanguage
             await user.save()
         }
         return done(null, user)
@@ -113,7 +126,16 @@ passport.deserializeUser(async (id, done) => {
 })
 router.get('/google', (req, res, next) => {
     console.log('Initiating Google OAuth...')
-    passport.authenticate('google', {scope: ['profile', 'email']})(req, res, next)
+    // Carry the visitor's chosen UI language across the Google round-trip via
+    // the standard OAuth `state` parameter, so a brand-new account is created
+    // in that language instead of defaulting to English. Normalised here so
+    // only a language we ship can ever reach the callback; anything else is
+    // dropped and `state` is simply omitted.
+    const lang = normalizeLanguage(req.query?.lang)
+    passport.authenticate('google', {
+        scope: ['profile', 'email'],
+        ...(lang ? { state: lang } : {})
+    })(req, res, next)
 })
 router.get('/google/callback',
     passport.authenticate('google', {failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:5173'}?error=google_failed`,session: false}),

@@ -1,7 +1,20 @@
 const Joi = require('joi');
 
+// Languages the app ships. Must stay in step with User.settings.language's enum
+// — a value that passes here but fails there would throw on save at the very
+// end of signup, after the verification email has already gone out.
+const SUPPORTED_LANGUAGES = ['en', 'ru', 'zh', 'hy', 'fr', 'ar'];
+
+// The UI language the visitor picked on the landing page, carried through
+// signup so their account starts in that language instead of defaulting to
+// English. Optional: older clients and direct API callers simply omit it.
+// Joi.object() rejects unknown keys by default, so this MUST be declared here
+// or the whole request 400s the moment the client starts sending it.
+const languageField = Joi.string().valid(...SUPPORTED_LANGUAGES).optional();
+
 const schemas = {
     sendVerification: Joi.object({
+        language: languageField,
         name: Joi.string()
             .min(2)
             .max(50)
@@ -116,5 +129,8 @@ module.exports = {
     isValidEmail,
     isStrongPassword,
     validateRateLimit,
-    schemas
+    schemas,
+    // Exported so the auth controller and the Google OAuth callback can reject
+    // an unsupported language without re-declaring the list.
+    SUPPORTED_LANGUAGES
 };

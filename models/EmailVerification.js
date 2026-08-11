@@ -28,7 +28,14 @@ const emailVerificationSchema = new mongoose.Schema({
     },
     userData: {
         name: String,
-        password: String
+        password: String,
+        // UI language the visitor had selected when they started signing up
+        // (chosen on the landing page). Parked here because signup is a
+        // two-step flow — the account is not created until the emailed code
+        // comes back — and without carrying it across the gap the new user
+        // would be created with the schema's default 'en' and land in an
+        // English app despite having browsed the site in their own language.
+        language: String
     }
 }, {
     timestamps: true

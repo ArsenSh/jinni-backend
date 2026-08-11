@@ -12,9 +12,29 @@ exports.checkIPBlock = async (req, res, next) => {
     if (blocked) {return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((blocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true})}
     next();
 };
+// ── Signup language ─────────────────────────────────────────────────────────
+//
+//  A visitor picks their language on the landing page before they ever create
+//  an account. That choice lives only in the browser, so unless we carry it
+//  into the account at signup the new user is created with the schema default
+//  ('en') — and because JinniChat reads settings.language ahead of the browser
+//  copy, the app flips to English the moment they arrive from onboarding.
+//  Which is exactly the bug this exists to prevent.
+//
+//  Returns undefined for anything unrecognised so the caller falls through to
+//  the schema default rather than writing a value the enum would reject.
+//
+const { SUPPORTED_LANGUAGES } = require('../utils/validation');
+function normalizeLanguage(lang) {
+    if (typeof lang !== 'string') return undefined;
+    const code = lang.trim().toLowerCase().split('-')[0];   // 'ru-RU' -> 'ru'
+    return SUPPORTED_LANGUAGES.includes(code) ? code : undefined;
+}
+exports.normalizeLanguage = normalizeLanguage;
+
 exports.sendVerificationEmail = async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password, language } = req.body;
         if (!name || !email || !password) {return res.status(400).json({ error: 'Name, email, and password are required' })}
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {return res.status(400).json({ error: 'Email already registered' })}
@@ -23,7 +43,7 @@ exports.sendVerificationEmail = async (req, res) => {
         const verificationCode = generateVerificationCode();
         const hashedPassword = await bcrypt.hash(password, 10);
         await EmailVerification.deleteMany({ email: email.toLowerCase() });
-        const verification = new EmailVerification({email: email.toLowerCase(), code: verificationCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000), userData: {name: name.trim(), password: hashedPassword}});
+        const verification = new EmailVerification({email: email.toLowerCase(), code: verificationCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000), userData: {name: name.trim(), password: hashedPassword, language: normalizeLanguage(language)}});
         await verification.save();
         await emailService.sendVerificationEmail(email.toLowerCase(), verificationCode, name.trim());
         res.status(200).json({message: 'Verification code sent to your email', email: email.toLowerCase(), expiresIn: '15 minutes'});
@@ -74,12 +94,26 @@ exports.verifyEmailAndRegister = async (req, res) => {
             await EmailVerification.deleteOne({ _id: verification._id });
             return res.status(400).json({ error: 'Email already registered' });
         }
+        // Language the account starts in. Prefer what the client sends NOW —
+        // the visitor may have switched language while the code was in their
+        // inbox — and fall back to what they had when they began signing up.
+        // Both are ignored unless they name a language we actually ship.
+        const signupLanguage = normalizeLanguage(req.body.language)
+            || normalizeLanguage(verification.userData.language);
+
         const user = new User({name: verification.userData.name, email: email.toLowerCase(), password: verification.userData.password});
+        // Assigned after construction so an absent/unsupported value leaves the
+        // schema default ('en') untouched rather than writing undefined over it.
+        if (signupLanguage) user.settings.language = signupLanguage;
         user.isModified = () => false;
         await user.save();
         await EmailVerification.deleteOne({ _id: verification._id });
         const token = jwt.sign({ userId: user._id.toString() }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.status(201).json({message: 'Account created successfully', token, user: {id: user._id, name: user.name, email: user.email, onboardingCompleted: user.onboardingCompleted, preferences: user.preferences, isAdmin: user.isAdmin || false, role: user.role || 'user'}});
+        // `settings` is included so the client can adopt the account's language
+        // immediately, without waiting for a /me round-trip. Previously absent,
+        // which left the freshly-created user's language unknown to the app at
+        // the exact moment it starts rendering.
+        res.status(201).json({message: 'Account created successfully', token, user: {id: user._id, name: user.name, email: user.email, onboardingCompleted: user.onboardingCompleted, preferences: user.preferences, settings: user.settings, isAdmin: user.isAdmin || false, role: user.role || 'user'}});
     } catch (error) {
         console.error('Email verification error:', error);
         res.status(500).json({ error: 'Verification failed' });
