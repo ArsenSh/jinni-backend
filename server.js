@@ -672,6 +672,15 @@ async function runAuctionSweep() {
     }
 }
 
+// ── Finished event destinations ──────────────────────────────────────────────
+// Staff-added event destinations (concerts, festivals) are editorial content
+// with no owner, so once they have happened they are deleted outright rather
+// than parked in a status the way an owner's event business is. The sweep also
+// clears the mirrored images those destinations left in PlaceCache. Runs on its
+// own schedule with a grace window — see services/eventCleanup.js.
+const { startEventCleanup } = require('./services/eventCleanup');
+startEventCleanup();
+
 let auctionSweepTimer = null;
 if (AUCTION_SCHEDULER_ENABLED) {
     // First sweep shortly after startup (give Mongo time to connect), then on interval.
