@@ -29,25 +29,58 @@ const currencyService = require('./currencyService');
  * Returns the clauses as an object so callers can merge into a larger query
  * with their own `$and` constraints (region filter, type filter, etc.).
  */
-function discoverabilityFilter() {
+/**
+ * The event-freshness half of the filter above, on its own.
+ *
+ * Split out because Destination documents need the SAME date gate but have no
+ * `status` field to check — they are editorial content with an `isActive`
+ * soft-delete flag and nothing else. A validator-curated event destination
+ * (a city concert added from the Verifier page) must stop being served the
+ * moment it ends, exactly like an owner-registered event business.
+ *
+ * Model-agnostic: it only touches `type` and `eventSchedule.*`, which both
+ * Business and Destination now carry in the same shape.
+ *
+ * Note the difference in enforcement between the two models. A Business also
+ * gets lazily flipped to status:'expired' when someone GETs it, so there are
+ * two overlapping defenses. A Destination has no status to flip, so THIS
+ * clause is the only thing standing between an ended event and a traveler —
+ * every destination query that can surface events must include it.
+ */
+function eventFreshnessClause() {
     const now = new Date();
     return {
+        $or: [
+            // Non-events: nothing to check
+            { type: { $nin: ['events'] } },
+            // Recurring events are perpetually relevant
+            { 'eventSchedule.isRecurring': true },
+            // One-time events with an endDate that's still in the future
+            { 'eventSchedule.endDate': { $gte: now } },
+            // One-time events with only a startDate (no end), still upcoming
+            { $and: [
+                { 'eventSchedule.endDate':   { $in: [null, undefined] } },
+                { 'eventSchedule.startDate': { $gte: now } }
+            ]},
+            // Events carrying NO schedule at all. These are pre-feature docs —
+            // chiefly destinations that were tagged 'events' back when the tag
+            // was the only thing an event had. There is no date to compare, so
+            // date-gating them would silently delete existing content from
+            // discovery. Treated as evergreen, which is also exactly what
+            // isEventExpired() reports for them (no end/start → not expired),
+            // so the query and the model method agree.
+            { $and: [
+                { 'eventSchedule.startDate': { $in: [null, undefined] } },
+                { 'eventSchedule.endDate':   { $in: [null, undefined] } }
+            ]}
+        ]
+    };
+}
+
+function discoverabilityFilter() {
+    return {
         status: 'active',
-        $and: [{
-            $or: [
-                // Non-events: status: 'active' is sufficient
-                { type: { $nin: ['events'] } },
-                // Recurring events are perpetually relevant
-                { 'eventSchedule.isRecurring': true },
-                // One-time events with an endDate that's still in the future
-                { 'eventSchedule.endDate': { $gte: now } },
-                // One-time events with only a startDate (no end), still upcoming
-                { $and: [
-                    { 'eventSchedule.endDate':   { $in: [null, undefined] } },
-                    { 'eventSchedule.startDate': { $gte: now } }
-                ]}
-            ]
-        }]
+        $and: [eventFreshnessClause()]
     };
 }
 
@@ -195,7 +228,12 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // clearly-labeled section rather than mixing them into the typed results.
         const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping'];
         const PHOTO_DEST_TAGS = ['photo_spots', 'nature', 'art', 'cultural', 'history', 'historical', 'hidden_gems'];
-        const destinationQuery = { isActive: true };
+        // Event freshness applies here too. Destinations tagged 'events' are
+        // validator-curated concerts/festivals with a real date, and once that
+        // date passes they must stop surfacing — same rule as event businesses.
+        // Unlike Business there is no status to lazily flip, so this clause is
+        // the sole enforcement point (see eventFreshnessClause's comment).
+        const destinationQuery = { isActive: true, $and: [eventFreshnessClause()] };
         if (actionType === 'photo_spots') {
             // Only visually-relevant destinations — excludes e.g. a destination
             // tagged solely 'restaurants', includes parks/viewpoints/heritage/art.
@@ -334,4 +372,4 @@ function deriveCategoryFromType(types) {
     return 'Business';
 }
 
-module.exports = { findSmartProximityPlaces, deriveCategoryFromType, discoverabilityFilter };
+module.exports = { findSmartProximityPlaces, deriveCategoryFromType, discoverabilityFilter, eventFreshnessClause };

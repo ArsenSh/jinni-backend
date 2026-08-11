@@ -106,6 +106,28 @@ const destinationSchema = new mongoose.Schema({
         performanceUpdatedAt: Date
     },
     isActive: { type: Boolean, default: true },
+    // ── Event schedule (destinations tagged 'events' only) ────────────────────
+    // Mirrors Business.eventSchedule field-for-field so a validator-curated
+    // event (a city concert, a one-off festival) behaves exactly like an
+    // owner-registered one: same storage shape, same expiry rule, same
+    // rendering on every surface.
+    //
+    // startDate/endDate are absolute UTC instants. They only mean a wall-clock
+    // time when paired with `timezone` — the venue's IANA zone, resolved from
+    // the coordinates at save time via utils/timezone. Storing both is what
+    // lets a Yerevan concert read as "20:00" to a traveler in London.
+    //
+    // `default: undefined` keeps the field off non-event destinations entirely
+    // rather than writing an object full of nulls onto every park and museum.
+    eventSchedule: {
+        type: {
+            startDate: Date,
+            endDate:   Date,
+            isRecurring: { type: Boolean, default: false },
+            timezone: { type: String, default: 'UTC' }
+        },
+        default: undefined
+    },
     bestTimeToVisit: String,
     nearbyBusinesses: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Business' }],
     popularity: { type: Number, default: 0 },
@@ -116,6 +138,35 @@ const destinationSchema = new mongoose.Schema({
     // panel can show "added by …".
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
+
+// ── Event expiry detection ───────────────────────────────────────────────────
+//
+//  Identical rule to Business.isEventExpired() — deliberately duplicated rather
+//  than shared, because the two models are queried independently and a single
+//  helper would need a model-agnostic shim for no real gain. If you change the
+//  rule here, change it there too.
+//
+//  Returns true when this destination is a non-recurring event whose end (or
+//  start, if there's no end) is in the past. Recurring destinations never
+//  expire — a weekly Sunday market is perpetually upcoming.
+//
+//  Note the asymmetry with Business: destinations have no `status` field, so
+//  there is nothing to flip to 'expired'. Expiry is enforced purely at query
+//  time by proximityService.eventFreshnessClause(), which drops ended events
+//  from discovery. This method exists for display flags (_isExpired) and for
+//  the staff table's "Ended" badge.
+//
+destinationSchema.methods.isEventExpired = function () {
+    if (!Array.isArray(this.type) || !this.type.includes('events')) return false;
+    if (this.eventSchedule?.isRecurring) return false;
+    const end = this.eventSchedule?.endDate || this.eventSchedule?.startDate;
+    if (!end) return false;
+    return new Date(end).getTime() < Date.now();
+};
+
+// Supports the event-freshness clause on the Events quick-action query: the
+// discovery filter narrows by `type` then bounds on the schedule dates.
+destinationSchema.index({ type: 1, 'eventSchedule.endDate': 1, 'eventSchedule.startDate': 1 });
 
 // ── Performance Score (same formula as Business.recalcPerformanceScore) ──────
 // Kept identical so a destination and a business with the same engagement

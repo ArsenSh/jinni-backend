@@ -15,24 +15,12 @@ const imageStorageService = require('../services/imageStorageService')
 const zoneAuction = require('../services/zoneAuction')
 const blocklistService = require('../services/blocklistService')
 
-// tz-lookup: offline coordinate -> IANA timezone resolver (no API key, no
-// network). Used to stamp event listings with their venue's home timezone so
-// event times are stored and shown unambiguously regardless of who registered
-// or who is viewing. Install with: npm install tz-lookup
-const tzLookup = require('tz-lookup')
-
-// Resolve a venue's IANA timezone (e.g. "Europe/Moscow") from its coordinates.
-// Falls back to 'UTC' when coordinates are missing or the lookup fails, so a
-// listing is never left without a usable timezone.
-function resolveTimezone(coordinates) {
-  try {
-    const lat = coordinates?.lat, lng = coordinates?.lng
-    if (typeof lat === 'number' && typeof lng === 'number') {
-      return tzLookup(lat, lng)
-    }
-  } catch (_e) { /* fall through to UTC */ }
-  return 'UTC'
-}
+// Offline coordinate -> IANA timezone resolver (no API key, no network). Used
+// to stamp event listings with their venue's home timezone so event times are
+// stored and shown unambiguously regardless of who registered or who is
+// viewing. Shared with staffRoutes (validator-added event destinations) — see
+// utils/timezone.js for why it lives there rather than in this file.
+const { resolveTimezone } = require('../utils/timezone')
 
 // ── Multer for application image uploads (no auth, memory storage) ────────────
 const applyUpload = multer({

@@ -28,6 +28,10 @@ const User = require('../models/User');
 const Destination = require('../models/Destination');
 const PlaceCache = require('../models/PlaceCache');
 const auth = require('../middleware/auth');
+// Offline coordinate -> IANA timezone. Shared with businessRoutes so a
+// validator-added event and an owner-registered one resolve their venue
+// timezone through identical code, anywhere in the world.
+const { resolveTimezone } = require('../utils/timezone');
 
 // ── Auth gate ───────────────────────────────────────────────────────────────
 // Allows admin (full access) or active staff. Always hydrates the user via
@@ -317,8 +321,80 @@ const destGate = requirePermission('manageDestinations');
 const ALLOWED_FIELDS = [
     'name', 'type', 'location', 'contact', 'description', 'images',
     'openingHours', 'pricing', 'bestTimeToVisit',
-    'nearbyBusinesses', 'popularity', 'isHiddenGem', 'isActive'
+    'nearbyBusinesses', 'popularity', 'isHiddenGem', 'isActive',
+    // Events only — validated and normalised by normalizeEventSchedule below.
+    'eventSchedule'
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Event schedule normalisation
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  A destination tagged 'events' is a validator-curated concert / festival /
+//  one-off happening. It carries the same eventSchedule as an event Business
+//  so it expires the same way (see Destination.isEventExpired and
+//  proximityService.eventFreshnessClause).
+//
+//  The client sends absolute UTC instants — it converts the wall-clock time the
+//  validator typed against the event's own timezone before submitting, exactly
+//  as BusinessOnboarding and AdminDashboard already do. We re-validate here
+//  because the API is reachable without the UI.
+//
+//  Rules (mirroring the /apply route for event businesses):
+//    - non-events              → the field is stripped entirely
+//    - recurring events        → dates cleared; the weekly pattern lives in
+//                                openingHours, so a fixed date is meaningless
+//    - one-time events         → startDate REQUIRED; endDate optional but must
+//                                be after startDate when present
+//    - timezone                → taken from the client when it's a zone Intl
+//                                can actually format with, otherwise resolved
+//                                from the coordinates. tz-lookup covers the
+//                                whole globe, so this works for a listing in
+//                                any country.
+//
+//  Returns { error } on rejection, or { value } — where `value` is undefined
+//  when the field should be removed from the document.
+//
+function normalizeEventSchedule(rawSchedule, type, location) {
+    const isEvent = Array.isArray(type) && type.includes('events');
+    if (!isEvent) return { value: undefined };
+
+    const src = rawSchedule || {};
+    const isRecurring = !!src.isRecurring;
+
+    // A timezone is part of the schedule's identity — without it the stored
+    // instants can't be rendered back as the local time attendees will see.
+    let timezone = typeof src.timezone === 'string' && src.timezone.trim()
+        ? src.timezone.trim()
+        : resolveTimezone(location?.coordinates);
+    // Reject anything Intl can't actually format with, so a typo'd zone can't
+    // poison every later render. Falls back to the coordinate-derived zone.
+    try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }); }
+    catch (_e) { timezone = resolveTimezone(location?.coordinates); }
+
+    if (isRecurring) {
+        // Perpetual — never expires, so it needs no dates at all.
+        return { value: { startDate: undefined, endDate: undefined, isRecurring: true, timezone } };
+    }
+
+    const parse = (v) => {
+        if (!v) return null;
+        const d = new Date(v);
+        return isNaN(d.getTime()) ? null : d;
+    };
+    const startDate = parse(src.startDate);
+    if (!startDate) {
+        return { error: 'Events need a start date — pick one, or mark the event as repeating weekly' };
+    }
+    const endDate = parse(src.endDate);
+    if (src.endDate && !endDate) {
+        return { error: 'The event end date could not be read — please re-enter it' };
+    }
+    if (endDate && endDate.getTime() <= startDate.getTime()) {
+        return { error: 'The event must end after it starts' };
+    }
+    return { value: { startDate, endDate: endDate || undefined, isRecurring: false, timezone } };
+}
 
 // ── GET /api/staff/destinations ─────────────────────────────────────────────
 // Lists destinations within the staff member's scope. Supports the same
@@ -471,6 +547,12 @@ router.post('/destinations', destGate, async (req, res) => {
             });
         }
 
+        // Events carry a schedule; everything else must not. Assigning
+        // `undefined` leaves the field off the created document entirely.
+        const sched = normalizeEventSchedule(payload.eventSchedule, payload.type, payload.location);
+        if (sched.error) return res.status(400).json({ success: false, error: sched.error });
+        payload.eventSchedule = sched.value;
+
         payload.createdBy = req.user.id;
         const dest = await Destination.create(payload);
         // Provided URLs → mirror their bytes now (Option A). None provided
@@ -515,8 +597,51 @@ router.patch('/destinations/:id', destGate, async (req, res) => {
             });
         }
 
+        // ── Event schedule ──────────────────────────────────────────────────
+        // Only re-derived when this PATCH actually touches the schedule or the
+        // type tags. A validator fixing a typo in the description of a legacy
+        // 'events' destination that predates this feature (and so has no
+        // schedule) must not be forced to invent a date to save the edit.
+        //
+        // When it IS touched, the schedule is validated against the document's
+        // FINAL type and location — merging what the request carries over what
+        // is already stored — so untagging 'events' clears the schedule and
+        // moving the pin across a border re-resolves the timezone.
+        const unset = {};
+        if (req.body.eventSchedule !== undefined) {
+            // A schedule was explicitly supplied — validate it against the
+            // document's FINAL type and location, merging what the request
+            // carries over what is already stored, so untagging 'events'
+            // clears the schedule and moving the pin re-resolves the timezone.
+            const finalType     = updates.type     !== undefined ? updates.type     : dest.type;
+            const finalLocation = updates.location !== undefined ? updates.location : dest.location;
+            const sched = normalizeEventSchedule(updates.eventSchedule, finalType, finalLocation);
+            if (sched.error) return res.status(400).json({ success: false, error: sched.error });
+            if (sched.value === undefined) {
+                // No longer an event — $set with undefined is a no-op in Mongo,
+                // so the stale schedule would survive. Remove it explicitly.
+                delete updates.eventSchedule;
+                unset.eventSchedule = '';
+            } else {
+                updates.eventSchedule = sched.value;
+            }
+        } else {
+            // No schedule in this request — never let a partial body clear one.
+            // This is also what keeps pre-feature destinations tagged 'events'
+            // (which have no schedule at all) editable: the validator can fix a
+            // typo without being forced to invent a date first.
+            delete updates.eventSchedule;
+            // The one exception: the 'events' chip was just removed, so any
+            // stored schedule is now meaningless and must not linger.
+            const untagged = updates.type !== undefined
+                && !(Array.isArray(updates.type) && updates.type.includes('events'));
+            if (untagged && dest.eventSchedule) unset.eventSchedule = '';
+        }
+
         let updated = await Destination.findByIdAndUpdate(
-            req.params.id, { $set: updates }, { new: true, runValidators: true }
+            req.params.id,
+            Object.keys(unset).length ? { $set: updates, $unset: unset } : { $set: updates },
+            { new: true, runValidators: true }
         ).populate('createdBy', 'name email role');
         // New external URLs → mirror their bytes (Option A). Images cleared /
         // still empty → refill from Google by name + address.

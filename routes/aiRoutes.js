@@ -3576,9 +3576,27 @@ function generateImageCaption(placeName, index) {
 }
 
 function formatDestinationDetails(destination) {
+    // Same event-expiry computation as formatBusinessDetails. Destinations
+    // tagged 'events' are validator-curated concerts/festivals and carry the
+    // identical eventSchedule shape, so the rec card can render the date row
+    // and an "Ended" badge without knowing which collection the place came
+    // from. The rule lives canonically on Destination.isEventExpired(); we
+    // repeat it inline here because these docs arrive via .lean() (plain
+    // objects, no model methods attached).
+    const isEvent = Array.isArray(destination.type) && destination.type.includes('events');
+    let isExpired = false;
+    if (isEvent && !destination.eventSchedule?.isRecurring) {
+        const end = destination.eventSchedule?.endDate || destination.eventSchedule?.startDate;
+        if (end) isExpired = new Date(end).getTime() < Date.now();
+    }
     return {
         source: 'database',
         type: destination.type,
+        // Event-specific — null for the parks/monuments/viewpoints that make up
+        // most destinations. The chat UI guards on isEventRec() before showing
+        // the schedule row, so emitting null is harmless.
+        eventSchedule: destination.eventSchedule || null,
+        _isExpired: isExpired,
         id: destination._id,
         name: destination.name,
         description: destination.description,
@@ -5773,11 +5791,12 @@ router.get('/place-details/:placeId', auth, usageTracker, async (req, res) => {
                 // Build a rich response from DB fields
                 // For events, also pass eventSchedule and a computed _isExpired
                 // flag so the modal can show the date/time and an "Ended" badge
-                // without re-implementing the rule client-side. recordType
-                // is 'business' here; destinations don't have eventSchedule.
+                // without re-implementing the rule client-side. Applies to BOTH
+                // record types: destinations tagged 'events' are validator-
+                // curated concerts/festivals and carry the same schedule shape
+                // as event businesses.
                 let _isExpired = false;
-                if (recordType === 'business'
-                    && Array.isArray(dbRecord.type) && dbRecord.type.includes('events')
+                if (Array.isArray(dbRecord.type) && dbRecord.type.includes('events')
                     && !dbRecord.eventSchedule?.isRecurring) {
                     const end = dbRecord.eventSchedule?.endDate || dbRecord.eventSchedule?.startDate;
                     if (end) _isExpired = new Date(end).getTime() < Date.now();
@@ -5800,7 +5819,7 @@ router.get('/place-details/:placeId', auth, usageTracker, async (req, res) => {
                     geometry: dbRecord.location?.coordinates ? { location: { lat: dbRecord.location.coordinates.lat, lng: dbRecord.location.coordinates.lng } } : null,
                     // Event-specific (null when irrelevant). Modal renders the
                     // Event Schedule row only when eventSchedule is truthy.
-                    eventSchedule: recordType === 'business' ? (dbRecord.eventSchedule || null) : null,
+                    eventSchedule: dbRecord.eventSchedule || null,
                     _isExpired,
                     type: Array.isArray(dbRecord.type) ? dbRecord.type : null,
                     source: 'database'
