@@ -175,6 +175,52 @@ router.get('/users/:id', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, error: 'Failed to fetch user' }) }
 });
 
+// ─── CHAT TRANSCRIPTS (READ-ONLY) ─────────────────────────────────────────────
+// Support/debugging view: what a given user actually saw in a session.
+// Strictly read-only — no admin route may create, edit or delete a session.
+// Sessions are private user data; access is admin-gated by router.use(auth, admin).
+
+// List a user's sessions (titles + counts only, no message bodies).
+router.get('/users/:id/chat-sessions', async (req, res) => {
+    try {
+        const { page = 1, limit = 20 } = req.query;
+        const lim = Math.min(parseInt(limit) || 20, 50);
+        const skip = (Math.max(parseInt(page) || 1, 1) - 1) * lim;
+        const q = { userId: req.params.id };
+        const [sessions, total] = await Promise.all([
+            ChatSession.aggregate([
+                { $match: { userId: new mongoose.Types.ObjectId(req.params.id) } },
+                { $project: {
+                    title: 1, createdAt: 1, updatedAt: 1,
+                    messageCount: { $size: { $ifNull: ['$messages', []] } },
+                } },
+                { $sort: { updatedAt: -1 } },
+                { $skip: skip }, { $limit: lim },
+            ]),
+            ChatSession.countDocuments(q),
+        ]);
+        res.json({ success: true, data: { sessions, total, page: parseInt(page) || 1, totalPages: Math.ceil(total / lim) } });
+    } catch (error) {
+        console.error('[admin chat-sessions] error:', error);
+        res.status(500).json({ success: false, error: 'Failed to load chat sessions' });
+    }
+});
+
+// Full transcript of one session — messages, their recommendation cards and
+// the content-part ordering, exactly as the user's chat rendered them.
+router.get('/chat-sessions/:id', async (req, res) => {
+    try {
+        const session = await ChatSession.findById(req.params.id)
+            .populate('userId', 'name email')
+            .lean();
+        if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
+        res.json({ success: true, data: session });
+    } catch (error) {
+        console.error('[admin chat-session] error:', error);
+        res.status(500).json({ success: false, error: 'Failed to load session' });
+    }
+});
+
 // Toggle user premium status
 router.patch('/users/:id/premium', async (req, res) => {
     try {
