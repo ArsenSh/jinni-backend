@@ -85,6 +85,95 @@ function discoverabilityFilter() {
 }
 
 /**
+ * ── Effective price ──────────────────────────────────────────────────────────
+ *
+ * One number standing in for "what this place costs", derived from whichever
+ * pricing fields the owner or validator actually filled in. Listings are rarely
+ * fully specified — plenty carry only a minimum ("from $12") and nothing else —
+ * and before this, anything other than a complete min+max pair was invisible to
+ * budget matching.
+ *
+ * Priority, most specific first:
+ *   isFree        → 0        (free entry is inside every budget)
+ *   average       → average  (the owner's own answer; trust it over derived)
+ *   min AND max   → midpoint (the representative point of the stated range)
+ *   min only      → min      ← "from $12": the cheapest way in, so it is what
+ *                              decides whether the place is reachable at all
+ *   max only      → max      (symmetric; a ceiling is better than nothing)
+ *   nothing set   → null     → NOT filtered. An unpriced listing must never be
+ *                              hidden just for being unpriced; silence about
+ *                              price is not evidence of being expensive.
+ *
+ * NOTE: this replaces reads of `pricing.averagePrice`, a field that exists in
+ * neither the Business nor the Destination schema. Every document therefore
+ * matched the old `$exists: false` escape hatch, which meant budget filtering
+ * had been silently doing nothing at all.
+ */
+function effectivePrice(pricing) {
+    if (!pricing) return null;
+    if (pricing.isFree === true) return 0;
+    if (pricing.average != null) return pricing.average;
+    if (pricing.min != null && pricing.max != null) return (pricing.min + pricing.max) / 2;
+    if (pricing.min != null) return pricing.min;
+    if (pricing.max != null) return pricing.max;
+    return null;
+}
+
+/**
+ * The same rule as a Mongo clause, so filtering happens in the database rather
+ * than after the fact. `$expr` is required because the effective price is
+ * derived from several fields rather than stored — the trade-off is that this
+ * clause can't be index-served, which is acceptable since it only applies when
+ * the user actually set a budget, and the query is already narrowed by type,
+ * region and status by the time it runs.
+ *
+ * Matches when the price is unknown (keep the listing) OR the effective price
+ * falls inside the budget band. Note the band is two-sided, matching how
+ * `average` has always been treated: a place far below the budget floor is
+ * filtered out too, on the assumption that a stated budget expresses a
+ * preferred bracket rather than a ceiling alone.
+ */
+function budgetMatchClause(budget) {
+    const nn = (field) => ({ $gt: [field, null] });   // non-null AND present
+    return {
+        $expr: {
+            $let: {
+                vars: {
+                    eff: {
+                        $switch: {
+                            branches: [
+                                { case: { $eq: ['$pricing.isFree', true] }, then: 0 },
+                                { case: nn('$pricing.average'), then: '$pricing.average' },
+                                { case: { $and: [nn('$pricing.min'), nn('$pricing.max')] },
+                                  then: { $divide: [{ $add: ['$pricing.min', '$pricing.max'] }, 2] } },
+                                { case: nn('$pricing.min'), then: '$pricing.min' },
+                                { case: nn('$pricing.max'), then: '$pricing.max' }
+                            ],
+                            default: null
+                        }
+                    }
+                },
+                in: {
+                    $or: [
+                        { $eq: ['$$eff', null] },
+                        // Free is affordable at every budget. It must bypass
+                        // the band, not just sit at 0 — the band has a FLOOR,
+                        // so a $30–$60 budget would otherwise hide free places
+                        // for being "too cheap", which is never what a traveler
+                        // means when they name a price range.
+                        { $eq: ['$$eff', 0] },
+                        { $and: [
+                            { $gte: ['$$eff', budget.min] },
+                            { $lte: ['$$eff', budget.max] }
+                        ]}
+                    ]
+                }
+            }
+        }
+    };
+}
+
+/**
  * Smart proximity-based place finder with preference matching (NO Google enrichment)
  * @param {Object} userLocation - { lat: number, lng: number }
  * @param {Object} preferences - { interests: string[], travelStyle: string }
@@ -172,13 +261,10 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             $and: [...discFilter.$and]
         };
         if (shouldFilterBudget && normalizedBudget) {
-            baseQuery.$and.push({
-                $or: [
-                    { 'pricing.averagePrice': { $gte: normalizedBudget.min, $lte: normalizedBudget.max } },
-                    { 'pricing.averagePrice': { $exists: false } },
-                    { 'pricing.averagePrice': null }
-                ]
-            });
+            // Derives one representative price from whatever pricing fields are
+            // filled in, so a listing carrying only a minimum ("from $12") is
+            // budget-matched instead of ignored. See effectivePrice().
+            baseQuery.$and.push(budgetMatchClause(normalizedBudget));
         }
         if (userRegion?.country) {
             const countryVariations = [userRegion.country, userRegion.region, userRegion.city].filter(Boolean);
@@ -302,12 +388,21 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         }
         const finalBusinesses = businessesWithDistance
             .map(business => {
-                const prefScore = calculatePreferenceScore(business.type || [], userInterests, business.pricing?.averagePrice, normalizedBudget);
+                // Same derived price the Mongo filter used, so scoring and
+                // filtering can never disagree about what a listing costs.
+                const price = effectivePrice(business.pricing);
+                const prefScore = calculatePreferenceScore(business.type || [], userInterests, price, normalizedBudget);
                 return {
                     ...business,
                     preferenceScore: prefScore,
                     totalScore: prefScore + (radiusKm - business.distance) / 10,
-                    withinBudget: shouldFilterBudget && business.pricing?.averagePrice && normalizedBudget ? (business.pricing.averagePrice >= normalizedBudget.min && business.pricing.averagePrice <= normalizedBudget.max) : null
+                    // null when the price is unknown or no budget was given —
+                    // "not applicable", distinct from "outside the budget".
+                    // `price != null` rather than a truthiness test so a free
+                    // listing (0) reports withinBudget instead of null.
+                    withinBudget: shouldFilterBudget && price != null && normalizedBudget
+                        ? (price === 0 || (price >= normalizedBudget.min && price <= normalizedBudget.max))
+                        : null
                 };
             }).sort((a, b) => b.totalScore - a.totalScore).slice(0, maxResults);
         const finalDestinations = destinationsWithDistance
@@ -372,4 +467,4 @@ function deriveCategoryFromType(types) {
     return 'Business';
 }
 
-module.exports = { findSmartProximityPlaces, deriveCategoryFromType, discoverabilityFilter, eventFreshnessClause };
+module.exports = { findSmartProximityPlaces, deriveCategoryFromType, discoverabilityFilter, eventFreshnessClause, effectivePrice, budgetMatchClause };
