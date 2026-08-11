@@ -37,6 +37,9 @@ const User = require('../models/User');
 const AppConfig = require('../models/AppConfig');
 const AiProviderDailyStats = require('../models/AiProviderDailyStats');
 const Itinerary = require('../models/Itinerary');
+// Itinerary completions are logged as quick_action_used so they appear in the
+// admin's quick-action chart next to the other actions from the chat.
+const Analytics = require('../models/Analytics');
 const PlaceFeedback = require('../models/PlaceFeedback');
 const SavedPlace = require('../models/SavedPlace');
 const PlaceCache = require('../models/PlaceCache');
@@ -1028,6 +1031,25 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     doc.status = 'ready';
     doc.markModified('days');
     await doc.save();
+    // Itinerary is one of the chat's quick actions, but unlike the other seven
+    // it runs through its own route and was never recorded — so it showed as
+    // zero usage in the admin panel no matter how much it was used. Logged
+    // with the same shape as the others (aiRoutes' quick_action_used) so it
+    // sits alongside them in the same chart rather than needing its own.
+    // Fire-and-forget: analytics must never fail a completed itinerary.
+    Analytics.create({
+      type: 'quick_action_used',
+      userId: req.user?._id || req.user?.id,
+      metadata: {
+        sessionId: 'itinerary_stream',
+        action: 'itinerary',
+        subType: null,
+        value: doc.days?.length || 0,      // days planned
+        count: doc.days?.length || 0,
+        hasLocation: !!(dest?.lat && dest?.lng)
+      }
+    }).catch(err => console.warn('[itinerary] analytics log failed:', err.message));
+
     sse.send({ type: 'complete', itinerary: doc.toObject() });
     sse.end();
   } catch (error) {

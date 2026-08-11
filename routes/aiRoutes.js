@@ -4887,6 +4887,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     sessionId: 'stream_session',
                     value: recommendations.length,
                     action: action,
+                    // Shopping resolves to a concrete sub-type (jewelry, market,
+                    // …) before any search runs, and that choice is the actual
+                    // signal — "Shopping" alone says nothing about what people
+                    // are looking for. Null for every other action.
+                    subType: subType || null,
                     count: requestedCount,
                     hasLocation: !!effectiveLocation,
                     locationInfo: effectiveLocation ? { source: effectiveLocation.source, city: effectiveLocation.city, country: effectiveLocation.country, privacyMode: effectiveLocation.privacyMode } : null,

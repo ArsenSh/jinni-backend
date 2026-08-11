@@ -1496,23 +1496,53 @@ router.get('/google-usage/daily', async (req, res) => {
 
 router.get('/quick-action-stats', async (req, res) => {
     try {
+        // Must mirror JinniChat.vue's `quickActions` list. When the chat gained
+        // Photo Spots, Shopping and Itinerary, this map wasn't updated — so
+        // those actions were dropped from the chart AND from quickActionTotal,
+        // which understated grandTotal and inflated every percentage on the
+        // panel, including the AI Chat Stream share. The usage was being
+        // recorded in Analytics the whole time (aiRoutes stores the raw action
+        // id in metadata.action); only this map was behind.
         const ACTION_META = {
-           restaurants:  { label: 'Restaurants',   icon: 'restaurant' },
+            restaurants:  { label: 'Restaurants',   icon: 'restaurant' },
             hotels:       { label: 'Hotels',         icon: 'hotel' },
             hidden_gems:  { label: 'Hidden Gems',    icon: 'gem' },
             historical:   { label: 'Historical',     icon: 'historical' },
             events:       { label: 'Local Events',   icon: 'events' },
+            photo_spots:  { label: 'Photo Spots',    icon: 'photo_spots' },
+            shopping:     { label: 'Shopping',       icon: 'shopping' },
+            itinerary:    { label: 'Itinerary',      icon: 'itinerary' },
         };
-        const [quickActionAgg, chatAgg] = await Promise.all([
+        // Sub-types the user picks after tapping Shopping. Reported separately
+        // so "Shopping" stays one comparable bar next to the other actions
+        // while still showing what people actually shop for.
+        const SHOPPING_SUBTYPE_LABELS = {
+            souvenirs: 'Souvenirs', clothing: 'Clothing', market: 'Markets',
+            mall: 'Malls', jewelry: 'Jewelry', food: 'Food & Drink'
+        };
+        const [quickActionAgg, chatAgg, subTypeAgg] = await Promise.all([
            Analytics.aggregate([{ $match: { type: 'quick_action_used' } }, { $group: { _id: '$metadata.action', count: { $sum: 1 } } }]),
-           Analytics.aggregate([{ $match: { type: 'ai_chat_interaction', 'metadata.actionType': 'stream_chat' } }, { $group: { _id: 'chat_stream', count: { $sum: 1 } } }])
+           Analytics.aggregate([{ $match: { type: 'ai_chat_interaction', 'metadata.actionType': 'stream_chat' } }, { $group: { _id: 'chat_stream', count: { $sum: 1 } } }]),
+           Analytics.aggregate([
+               { $match: { type: 'quick_action_used', 'metadata.action': 'shopping', 'metadata.subType': { $nin: [null, ''] } } },
+               { $group: { _id: '$metadata.subType', count: { $sum: 1 } } },
+               { $sort: { count: -1 } }
+           ])
         ]);
         const qaCountMap = {};
         quickActionAgg.forEach(r => { if (r._id) qaCountMap[r._id] = r.count; });
         const actions = Object.entries(ACTION_META).map(([key, meta]) => ({action: key, label: meta.label, icon: meta.icon, count: qaCountMap[key] || 0})).sort((a, b) => b.count - a.count);
+        // Shopping breakdown. Only populated for searches made after subType
+        // started being recorded, so it can legitimately be empty while the
+        // Shopping bar itself is not.
+        const shoppingSubTypes = subTypeAgg.map(r => ({
+            subType: r._id,
+            label: SHOPPING_SUBTYPE_LABELS[r._id] || r._id,
+            count: r.count
+        }));
         const chatStreamCount = chatAgg[0]?.count || 0;
         const quickActionTotal = actions.reduce((s, a) => s + a.count, 0);
-        res.json({success: true, data: {actions,chatStream: { label: 'Chat (AI Stream)', icon: 'chat', count: chatStreamCount },quickActionTotal,chatStreamTotal: chatStreamCount,grandTotal: quickActionTotal + chatStreamCount}});
+        res.json({success: true, data: {actions,shoppingSubTypes,chatStream: { label: 'Chat (AI Stream)', icon: 'chat', count: chatStreamCount },quickActionTotal,chatStreamTotal: chatStreamCount,grandTotal: quickActionTotal + chatStreamCount}});
     } catch (error) {
         console.error('Quick action stats error:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch feature usage stats' });
