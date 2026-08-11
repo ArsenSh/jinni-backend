@@ -1782,7 +1782,12 @@ router.get('/', auth, async (req, res) => {
 });
 
 router.get('/:id', auth, async (req, res) => {
-  const doc = await Itinerary.findOne({ _id: req.params.id, userId: req.user.id }).lean();
+  // Owner-scoped by default. Admins may READ any itinerary — the admin chat
+  // transcript viewer restores itineraries by id — but this exception is
+  // read-only: PATCH/DELETE below keep the strict userId filter.
+  const isAdmin = req.user?.isAdmin === true || req.user?.role === 'admin';
+  const query = isAdmin ? { _id: req.params.id } : { _id: req.params.id, userId: req.user.id };
+  const doc = await Itinerary.findOne(query).lean();
   if (!doc) return res.status(404).json({ success: false, error: 'not_found' });
   // A server restart mid-generation can strand status:'generating'. Anything
   // older than 3 minutes is definitely not still streaming — downgrade so the
