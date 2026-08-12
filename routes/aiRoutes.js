@@ -4896,7 +4896,36 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // an unresolved placeholder; instead we keep it as a DATE-CARD (no map,
                     // no distance — just name + date). Finally, drop anything already past.
                     if (action === 'events' && eventDateByName.size) {
-                        const startOfTodayUTC = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
+                        /* Start of TODAY IN THE USER'S OWN TIMEZONE, expressed as a
+                         * UTC-midnight stamp so it compares directly against a date-only
+                         * event (which is stored as UTC midnight of its date).
+                         *
+                         * Using UTC midnight here was wrong: Yerevan is UTC+4, so at 02:15
+                         * on the 13th the server still called it the 12th and yesterday's
+                         * all-day events were served as current. Any zone ahead of UTC hit
+                         * this for its first hours of every day.
+                         *
+                         * en-CA formats as YYYY-MM-DD, which parses without ambiguity.
+                         * Falls back to UTC when the client sends no timezone. */
+                        const startOfTodayUTC = (() => {
+                            const tz = req.body.userTimezone || 'UTC';
+                            try {
+                                const [y, m, d] = new Intl.DateTimeFormat('en-CA', {
+                                    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+                                }).format(new Date()).split('-').map(Number);
+                                return Date.UTC(y, m - 1, d);
+                            } catch { /* fall through to the longitude estimate */ }
+                            /* No usable timezone from the client. Falling back to UTC would
+                             * reinstate the very bug above for every user east of Greenwich,
+                             * and this app is used worldwide — so estimate the offset from
+                             * longitude (15° per hour). It can be an hour off at a zone edge
+                             * and ignores DST, but it puts the day boundary within an hour of
+                             * correct anywhere on earth, instead of up to 14 hours off. */
+                            const n = new Date();
+                            const lng = effectiveLocation && Number.isFinite(effectiveLocation.lng) ? effectiveLocation.lng : 0;
+                            const local = new Date(n.getTime() + Math.round(lng / 15) * 3600000);
+                            return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+                        })();
                         for (const rec of recommendations) {
                             /* ── An event is never renamed to its venue ───────────────────
                              * Enrichment replaces a rec's name with the Google result's
@@ -5032,7 +5061,21 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const venueRadiusKm = userRadius || (nearbyMode ? 5 : 50);
                             let resolvedByVenue = 0, resolvedByAddress = 0;
                             for (const rec of needVenue) {
-                                const attempts = [rec._eventVenue, rec._eventAddress].filter(Boolean);
+                                /* Drop placeholder venues before they reach Google. The model
+                                 * writes "Various venues" for a city-wide festival and things
+                                 * like "Armenian Apostolic Churches" for a nationwide feast —
+                                 * both were being geocoded as if they were addresses, costing a
+                                 * Places call and pinning the event on whatever came back. A
+                                 * plural or vague venue is a statement that there is no single
+                                 * location, so it should stay a date-card. */
+                                const PLACEHOLDER_VENUE = /^(various|multiple|several|many|different|citywide|city-wide|nationwide|tba|tbd|n\/?a|online|virtual)\b|\b(venues|locations|churches|theatres|theaters|cinemas|halls|sites)\s*$/i;
+                                const attempts = [rec._eventVenue, rec._eventAddress]
+                                    .filter(Boolean)
+                                    .filter(v => {
+                                        if (!PLACEHOLDER_VENUE.test(v.trim())) return true;
+                                        console.log(`[quick-action] event "${rec.name}": skipped placeholder venue "${v}" (no single location — keeping as a date-card)`);
+                                        return false;
+                                    });
                                 for (let i = 0; i < attempts.length; i++) {
                                     try {
                                         const v = await getCachedPlaceDetails(attempts[i], false, requestId, center);
