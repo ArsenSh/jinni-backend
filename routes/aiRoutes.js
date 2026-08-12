@@ -4436,7 +4436,14 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const cleanName = parts[0];
                             const start = parts[1] && ISO_DATE.test(parts[1]) ? parts[1] : null;
                             const end = parts[2] && ISO_DATE.test(parts[2]) ? parts[2] : null;
-                            if (cleanName && start) eventDateByName.set(cleanName.toLowerCase().trim(), { start, end });
+                            // Fields 4 and 5 (venue / address) are new and optional — an
+                            // older or sloppier reply that stops after the dates still
+                            // parses exactly as before, it just resolves no venue.
+                            const venue = parts[3] || null;
+                            const address = parts[4] || null;
+                            if (cleanName && (start || venue || address)) {
+                                eventDateByName.set(cleanName.toLowerCase().trim(), { start, end, venue, address });
+                            }
                             return { ...b, name: cleanName };
                         }).filter(b => b.name && b.name.length > 0);
                     }
@@ -4810,16 +4817,84 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     if (action === 'events' && eventDateByName.size) {
                         const startOfTodayUTC = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
                         for (const rec of recommendations) {
-                            const dates = eventDateByName.get((rec.name || '').toLowerCase().trim());
-                            if (!dates || !dates.start) continue;
-                            rec.eventSchedule = {
-                                startDate: `${dates.start}T00:00:00.000Z`,
-                                ...(dates.end ? { endDate: `${dates.end}T00:00:00.000Z` } : {})
-                            };
-                            rec.category = 'Event';
-                            // Never resolved to a real place → serve as a date-card so the
-                            // coordinate-drop below keeps it instead of discarding it.
-                            if (rec.latitude == null || rec.longitude == null) rec._isDateCard = true;
+                            const meta = eventDateByName.get((rec.name || '').toLowerCase().trim());
+                            if (!meta) continue;
+                            if (meta.start) {
+                                rec.eventSchedule = {
+                                    startDate: `${meta.start}T00:00:00.000Z`,
+                                    ...(meta.end ? { endDate: `${meta.end}T00:00:00.000Z` } : {})
+                                };
+                                rec.category = 'Event';
+                            }
+                            // Carried to the venue-resolution pass below, then stripped
+                            // before the response is sent.
+                            rec._eventVenue = meta.venue || null;
+                            rec._eventAddress = meta.address || null;
+                        }
+
+                        /* ── Venue resolution ────────────────────────────────────────
+                         * An event is not a Google place — "Yerevan Book Festival" has
+                         * no listing, so it resolves to nothing and lands here with no
+                         * coordinates, no image and no address: the empty card users
+                         * see today. But the VENUE it is held at almost always is a
+                         * Google place, and a street is at least geocodable. So we
+                         * resolve the venue instead of the event, and the card inherits
+                         * its pin, address, photo, phone, website and hours.
+                         *
+                         * Runs ONLY for events that already failed to resolve, so a
+                         * working card can never be changed by this pass. Bounded on
+                         * purpose: at most two lookups per event (venue, then address),
+                         * no retries, no loops — a stubborn event stays a date-card
+                         * rather than spending the request's Google budget on itself.
+                         *
+                         * The event KEEPS ITS OWN NAME — only location data is adopted
+                         * from the venue. Out-of-area matches are rejected by the same
+                         * radius the rest of the pipeline uses, so a wrong venue match
+                         * falls back to the date-card instead of misplacing the pin.
+                         */
+                        const needVenue = recommendations.filter(r =>
+                            (r.latitude == null || r.longitude == null) && (r._eventVenue || r._eventAddress)
+                        );
+                        if (needVenue.length && effectiveLocation && Number.isFinite(effectiveLocation.lat)) {
+                            const center = { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
+                            const venueRadiusKm = userRadius || (nearbyMode ? 5 : 50);
+                            let resolvedByVenue = 0, resolvedByAddress = 0;
+                            for (const rec of needVenue) {
+                                const attempts = [rec._eventVenue, rec._eventAddress].filter(Boolean);
+                                for (let i = 0; i < attempts.length; i++) {
+                                    try {
+                                        const v = await getCachedPlaceDetails(attempts[i], false, requestId, center);
+                                        const loc = v && v.geometry && v.geometry.location;
+                                        if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) continue;
+                                        const distKm = _haversineKm(center.lat, center.lng, loc.lat, loc.lng);
+                                        if (distKm > venueRadiusKm) continue;   // wrong city — reject, keep the date-card
+                                        rec.latitude = loc.lat;
+                                        rec.longitude = loc.lng;
+                                        rec.distanceKm = Math.round(distKm * 10) / 10;
+                                        if (v.place_id) rec.placeId = rec.placeId || v.place_id;
+                                        if (!rec.image && v.place_id && Array.isArray(v.photos) && v.photos.length) {
+                                            rec.image = `/api/ai/place-image/${v.place_id}/0`;
+                                        }
+                                        rec.location = v.formatted_address || rec.location || null;
+                                        rec.region = v.vicinity || v.formatted_address || rec.region || null;
+                                        rec.website = rec.website || v.website || null;
+                                        rec.phone = rec.phone || v.formatted_phone_number || v.international_phone_number || null;
+                                        if (!Number.isFinite(rec.rating) && Number.isFinite(v.rating)) rec.rating = v.rating;
+                                        if (i === 0) resolvedByVenue++; else resolvedByAddress++;
+                                        break;   // one success is enough — never try the second query
+                                    } catch (vErr) {
+                                        console.warn(`[quick-action] venue resolution failed for "${attempts[i]}":`, vErr.message);
+                                    }
+                                }
+                            }
+                            const stillUnresolved = needVenue.length - resolvedByVenue - resolvedByAddress;
+                            console.log(`[quick-action] event venue resolution: ${resolvedByVenue} by venue, ${resolvedByAddress} by address, ${stillUnresolved} still date-card(s) of ${needVenue.length} attempted`);
+                        }
+
+                        // Anything still without coordinates becomes a date-card, so the
+                        // coordinate-drop below keeps it instead of discarding it.
+                        for (const rec of recommendations) {
+                            if (rec.eventSchedule && (rec.latitude == null || rec.longitude == null)) rec._isDateCard = true;
                         }
                         const beforePast = recommendations.length;
                         recommendations = recommendations.filter(rec => {
@@ -5149,7 +5224,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             if (!isClientDisconnected()) {
                 // Strip internal-only fields (used by the type sanity filter) so they
                 // don't bloat the payload sent to the client.
-                recommendations.forEach(r => { delete r.placeTypes; delete r.placePrimaryType; delete r.requestedName; delete r._isDateCard; });
+                recommendations.forEach(r => { delete r.placeTypes; delete r.placePrimaryType; delete r.requestedName; delete r._isDateCard; delete r._eventVenue; delete r._eventAddress; });
                 // console.log('\n📤 Sending completion with recommendations...');
                 const completionPayload = {
                     type: 'complete',
@@ -5473,8 +5548,11 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
         - ongoing family-friendly places and activities (parks, museums, theatres, attractions) that are open to visit any day.${interestHint}${candidateText}
         Favor real, well-known places and events you are confident exist in ${searchContext}. Do NOT refuse and do NOT explain — it is fine to mix a few dated events with ongoing venues, and fine to return fewer if you are unsure.
         RESPONSE FORMAT — output ONLY bracketed items, nothing else:
-        [Event or place name | START_DATE | END_DATE]
+        [Event or place name | START_DATE | END_DATE | VENUE | ADDRESS]
         - START_DATE / END_DATE are ISO dates (YYYY-MM-DD). Include END_DATE only for multi-day events; for a single-day event use [Name | START_DATE]; for an ongoing place or activity with no specific date use just [Name].
+        - VENUE is WHERE THE EVENT ACTUALLY TAKES PLACE — the hall, museum, park, or street it is held at (e.g. "Cafesjian Center for the Arts", "Saryan Street"). It is NOT the organizing company or its office. Leave it empty if you are not sure.
+        - ADDRESS is the street address or district of that venue, if you know it. Leave it empty if you are not sure.
+        - Never invent a venue or address. An empty field is always better than a guessed one — the place is looked up afterwards, and a wrong venue puts the event on the map in the wrong spot.
         - Only include dated events on or after ${todayISO}; never list past events.${excludeText}`;
     }
 
