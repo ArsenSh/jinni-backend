@@ -51,6 +51,22 @@ const recommendationSchema = new mongoose.Schema({
   },
   // true when a non-recurring event's end (or start) is already in the past
   _isExpired: { type: Boolean, default: false },
+  // The listing page the event's date was read from (visityerevan.am, tkt.am,
+  // ticket-am.com…). Powers the card's "check the listing" link, which is how a
+  // user verifies a date we cannot verify ourselves — so it has to survive a
+  // reload, or the date outlives the evidence for it.
+  sourceUrl: String,
+  // An event is not a place: it keeps its own name and borrows the venue's
+  // geography. venueName is where it is held; venuePlaceId is the venue's Google
+  // id, deliberately NOT copied into placeId (identity everywhere in this app
+  // keys on placeId, so sharing it would make disliking an event suppress the
+  // venue itself).
+  venueName: String,
+  venuePlaceId: String,
+  // Which fields came from the source listing rather than the model's recall,
+  // e.g. { startDate: 'listing', image: 'listing' }. Mixed because the key set
+  // grows as more fields become source-verified.
+  provenance: { type: mongoose.Schema.Types.Mixed, default: undefined },
   // Action this rec was produced under — a quick-action ('events', 'hotels', …)
   // or the type detected from a chat message ('restaurants', …, 'general').
   // Echoed back by the client on like/dislike so the vote lands in PlaceFeedback

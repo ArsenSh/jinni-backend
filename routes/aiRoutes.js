@@ -3904,6 +3904,277 @@ function formatBusinessDetails(business) {
     };
 }
 
+/* ═══════════════════ schema.org/Event listing fetch ═══════════════════════
+ * The model is a good DISCOVERER of events and an unreliable REPORTER of their
+ * dates: of three events verified by hand against the live web, two were wrong
+ * (Blessing of Grapes a day early; the Shéné concert three weeks early — it is
+ * Sept 5, and it is hip-hop, not pop). It also has no artwork at all, while the
+ * listing pages carry official posters — ticket-am.com serves the LOBODA image.
+ *
+ * The model already reports the page it read as SOURCE_URL. This fetches that
+ * page and reads its schema.org/Event JSON-LD, which is machine-written by the
+ * ticketing platform rather than recalled — so the date comes from the seller.
+ * Whatever the listing states OVERRIDES the model, and each overridden field is
+ * stamped in rec.provenance so the origin of every date stays inspectable.
+ *
+ * A VALIDATOR's record still outranks a listing; this pass only ever touches
+ * AI-discovered events (source !== 'database').
+ *
+ * ── Fetching a model-supplied URL is an SSRF sink ───────────────────────────
+ * The URL is chosen by a language model out of web-search results, so it is
+ * attacker-influenceable in principle and must never be able to reach our own
+ * network. Guards: http/https only, default ports only, DNS resolved UP FRONT
+ * with every returned address checked against private/loopback/link-local/CGNAT
+ * ranges (169.254.169.254 — the cloud metadata endpoint — included), redirects
+ * followed MANUALLY so each hop is re-validated (a 302 to localhost is the
+ * classic bypass), hard timeout, byte cap, and HTML-ish content types only.
+ * Residual risk: DNS rebinding between our lookup and the connect, which needs
+ * a custom agent/socket-level check to close; noted rather than silently
+ * assumed away. No response body is ever echoed back to the user — only parsed
+ * dates, an image URL and a venue string.
+ */
+/* A venue string that names no single location. The model writes "Various
+ * venues" for a city-wide festival and "Armenian Apostolic Churches" for a
+ * nationwide feast; both were being geocoded as if they were addresses, costing
+ * a Places call and pinning the event on whatever came back. Such an event
+ * should stay a date-card.
+ *
+ * Hoisted to module scope so the listing pass and the venue pass apply the SAME
+ * rule — it previously lived inside the venue loop, so a placeholder arriving
+ * from a listing would have bypassed it. No /g flag, so it carries no lastIndex
+ * state between the two call sites. */
+const PLACEHOLDER_VENUE_RE = /^(various|multiple|several|many|different|citywide|city-wide|nationwide|tba|tbd|n\/?a|online|virtual)\b|\b(venues|locations|churches|theatres|theaters|cinemas|halls|sites)\s*$/i;
+
+const EVENT_LISTING_TIMEOUT_MS   = 4500;
+const EVENT_LISTING_MAX_BYTES    = 1500000;    // ~1.5 MB of HTML is plenty for a <head> full of JSON-LD
+const EVENT_LISTING_MAX_REDIRECTS = 3;
+const EVENT_LISTING_CONCURRENCY  = 4;          // polite, and bounds worst-case added latency
+const EVENT_LISTING_TTL_MS       = 6 * 60 * 60 * 1000;
+const EVENT_LISTING_CACHE_MAX    = 500;
+
+// url → { at, data }. Listing pages change rarely and the same few URLs recur
+// across taps and users, so this removes almost all repeat fetches.
+const _eventListingCache = new Map();
+
+function _isPrivateIpAddress(ip) {
+    const net = require('net');
+    if (net.isIPv4(ip)) {
+        const [a, b] = ip.split('.').map(Number);
+        if (a === 0 || a === 10 || a === 127) return true;              // this-host, private, loopback
+        if (a === 172 && b >= 16 && b <= 31) return true;               // private
+        if (a === 192 && b === 168) return true;                        // private
+        if (a === 169 && b === 254) return true;                        // link-local (cloud metadata)
+        if (a === 100 && b >= 64 && b <= 127) return true;              // CGNAT
+        if (a >= 224) return true;                                      // multicast + reserved
+        return false;
+    }
+    if (net.isIPv6(ip)) {
+        const s = ip.toLowerCase().replace(/^\[|\]$/g, '');
+        if (s === '::1' || s === '::') return true;                     // loopback / unspecified
+        if (/^fe[89ab]/.test(s)) return true;                           // link-local
+        if (/^f[cd]/.test(s)) return true;                              // unique-local
+        const mapped = s.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);         // IPv4-mapped
+        if (mapped) return _isPrivateIpAddress(mapped[1]);
+        return false;
+    }
+    return true;   // unparseable → refuse rather than resolve
+}
+
+async function _assertPublicHttpUrl(raw) {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(`blocked scheme ${url.protocol}`);
+    if (url.port && url.port !== '80' && url.port !== '443') throw new Error(`blocked port ${url.port}`);
+    if (url.username || url.password) throw new Error('blocked credentials in URL');
+    const dns = require('dns').promises;
+    const addrs = await dns.lookup(url.hostname, { all: true });
+    if (!addrs.length) throw new Error('no DNS result');
+    for (const a of addrs) {
+        if (_isPrivateIpAddress(a.address)) throw new Error(`blocked private address ${a.address}`);
+    }
+    return url;
+}
+
+async function _fetchListingHtml(rawUrl) {
+    let target = rawUrl;
+    for (let hop = 0; hop <= EVENT_LISTING_MAX_REDIRECTS; hop++) {
+        const url = await _assertPublicHttpUrl(target);   // re-validated on EVERY hop
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), EVENT_LISTING_TIMEOUT_MS);
+        let res;
+        try {
+            res = await fetch(url, {
+                redirect: 'manual',
+                signal: ac.signal,
+                headers: {
+                    // Identify honestly; some ticketing sites 403 an empty UA.
+                    'User-Agent': 'JinniTravelBot/1.0 (+https://jinni.travel; event listing date verification)',
+                    'Accept': 'text/html,application/xhtml+xml,application/ld+json;q=0.9,*/*;q=0.1',
+                    'Accept-Language': 'en,hy;q=0.8,ru;q=0.8'
+                }
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+            const loc = res.headers.get('location');
+            if (!loc) return null;
+            target = new URL(loc, url).toString();
+            continue;                                     // loop re-validates the new host
+        }
+        if (!res.ok) return null;
+        const ct = res.headers.get('content-type') || '';
+        if (!/text\/html|application\/xhtml|application\/ld\+json/i.test(ct)) return null;
+
+        // Streamed with a byte cap: Content-Length can lie or be absent, so the
+        // cap has to be enforced on what actually arrives.
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.length;
+            if (received > EVENT_LISTING_MAX_BYTES) { await reader.cancel().catch(() => {}); break; }
+            chunks.push(value);
+        }
+        return Buffer.concat(chunks).toString('utf8');
+    }
+    return null;   // redirect budget exhausted
+}
+
+// schema.org Event and its subtypes. Anchored so "EventVenue" can't match.
+const _LD_EVENT_TYPE = /^(Event|MusicEvent|Festival|MusicFestival|TheaterEvent|DanceEvent|ComedyEvent|SportsEvent|ScreeningEvent|ExhibitionEvent|EducationEvent|SocialEvent|FoodEvent|LiteraryEvent|BusinessEvent|ChildrensEvent|VisualArtsEvent|DeliveryEvent|PublicationEvent|Hackathon)$/;
+
+function _collectLdEvents(node, out, depth = 0) {
+    if (!node || depth > 8 || out.length > 200) return;
+    if (Array.isArray(node)) { for (const n of node) _collectLdEvents(n, out, depth + 1); return; }
+    if (typeof node !== 'object') return;
+    const t = node['@type'];
+    const types = Array.isArray(t) ? t : [t];
+    if (types.some(x => typeof x === 'string' && _LD_EVENT_TYPE.test(x.replace(/^.*\//, '')))) out.push(node);
+    // Containers a listing page wraps its events in.
+    for (const key of ['@graph', 'itemListElement', 'item', 'subEvent', 'subEvents', 'events', 'mainEntity', 'mainEntityOfPage']) {
+        if (node[key]) _collectLdEvents(node[key], out, depth + 1);
+    }
+}
+
+function _extractLdEvents(html) {
+    const out = [];
+    const re = /<script[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+        const raw = m[1].trim().replace(/^<!--/, '').replace(/-->$/, '').trim();
+        if (!raw) continue;
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { continue; }   // one malformed block never kills the rest
+        _collectLdEvents(parsed, out);
+    }
+    return out;
+}
+
+/* A date-ONLY value must stay date-only: the past-event filter reads "exactly
+ * midnight UTC" as "all day, so it lives out its whole day", and a real clock
+ * time as "expires at that instant". A timed value that happens to land on
+ * midnight UTC is nudged 1 ms so it cannot masquerade as all-day. */
+function _ldDate(v) {
+    const s = typeof v === 'string' ? v.trim() : (typeof v?.['@value'] === 'string' ? v['@value'].trim() : '');
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00.000Z`;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return null;
+    let ms = d.getTime();
+    if (ms % 86400000 === 0) ms += 1;
+    return new Date(ms).toISOString();
+}
+
+function _ldImage(v, depth = 0) {
+    if (!v || depth > 4) return null;
+    if (typeof v === 'string') return /^https?:\/\//i.test(v.trim()) ? v.trim() : null;
+    if (Array.isArray(v)) { for (const i of v) { const r = _ldImage(i, depth + 1); if (r) return r; } return null; }
+    if (typeof v === 'object') return _ldImage(v.contentUrl || v.url || v['@id'], depth + 1);
+    return null;
+}
+
+function _ldText(v) {
+    if (typeof v === 'string') return v.trim() || null;
+    if (Array.isArray(v)) { for (const i of v) { const r = _ldText(i); if (r) return r; } return null; }
+    if (v && typeof v === 'object') return _ldText(v['@value'] ?? v.name);
+    return null;
+}
+
+function _ldAddress(a) {
+    if (!a) return null;
+    if (typeof a === 'string') return a.trim() || null;
+    if (Array.isArray(a)) return _ldAddress(a[0]);
+    if (typeof a === 'object') {
+        const parts = [a.streetAddress, a.addressLocality, a.addressRegion, a.addressCountry]
+            .map(p => _ldText(p)).filter(Boolean);
+        return parts.length ? parts.join(', ') : null;
+    }
+    return null;
+}
+
+function _normalizeLdEvent(node) {
+    const loc = Array.isArray(node.location) ? node.location[0] : node.location;
+    return {
+        name: _ldText(node.name),
+        startDate: _ldDate(node.startDate),
+        endDate: _ldDate(node.endDate),
+        image: _ldImage(node.image),
+        venueName: loc && typeof loc === 'object' ? _ldText(loc.name) : _ldText(loc),
+        venueAddress: loc && typeof loc === 'object' ? _ldAddress(loc.address) : null
+    };
+}
+
+/* Fetch one listing URL and return the schema.org Event that best corresponds
+ * to `eventName`. A ticketing page often lists MANY events (a "what's on" rail
+ * in the footer), so taking the first one would import a neighbouring concert's
+ * date — worse than the model's guess. Requires a name match; falls back to the
+ * page's single event only when the page has exactly one. */
+// Global fetch + web streams need Node 18+. Nothing in this repo pins a Node
+// version (no Dockerfile, .nvmrc or engines field), so an older runtime is not
+// impossible. The try/catch below would already swallow it, but that would mean
+// one confusing warning per URL per tap; check once and degrade to model dates
+// with a single honest line instead.
+let _listingFetchUnavailable = typeof fetch !== 'function';
+if (_listingFetchUnavailable) {
+    console.warn('[listing] global fetch() unavailable on this Node runtime (needs 18+) — event dates will fall back to model recall');
+}
+
+async function fetchEventListing(rawUrl, eventName) {
+    if (_listingFetchUnavailable) return null;
+    const key = String(rawUrl).slice(0, 500);
+    const hit = _eventListingCache.get(key);
+    if (hit && (Date.now() - hit.at) < EVENT_LISTING_TTL_MS) return hit.data;
+
+    let data = null;
+    try {
+        const html = await _fetchListingHtml(rawUrl);
+        if (html) {
+            const nodes = _extractLdEvents(html);
+            const normalized = nodes.map(_normalizeLdEvent).filter(e => e.startDate || e.image);
+            if (normalized.length === 1) {
+                data = normalized[0];
+            } else if (normalized.length > 1) {
+                data = normalized.find(e => e.name && namesPlausiblyMatch(eventName, e.name)) || null;
+                if (!data) console.log(`[listing] ${nodes.length} events on page, none matching "${eventName}" — ignoring rather than guessing`);
+            }
+        }
+    } catch (err) {
+        // Never let a slow, hostile or malformed third-party page fail the tap.
+        console.warn(`[listing] fetch failed for ${String(rawUrl).slice(0, 120)}: ${err.message}`);
+        data = null;
+    }
+
+    if (_eventListingCache.size >= EVENT_LISTING_CACHE_MAX) {
+        // Cheap FIFO trim — insertion order is Map's iteration order.
+        const oldest = _eventListingCache.keys().next().value;
+        _eventListingCache.delete(oldest);
+    }
+    _eventListingCache.set(key, { at: Date.now(), data });
+    return data;
+}
+
 let quickActionCallCount = 0;
 router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
     // ── Client disconnect ────────────────────────────────────────────────
@@ -4908,13 +5179,35 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * en-CA formats as YYYY-MM-DD, which parses without ambiguity.
                          * Falls back to UTC when the client sends no timezone. */
                         const startOfTodayUTC = (() => {
-                            const tz = req.body.userTimezone || 'UTC';
-                            try {
-                                const [y, m, d] = new Intl.DateTimeFormat('en-CA', {
-                                    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
-                                }).format(new Date()).split('-').map(Number);
-                                return Date.UTC(y, m - 1, d);
-                            } catch { /* fall through to the longitude estimate */ }
+                            /* Only an ACTUALLY-SENT timezone is trusted here.
+                             *
+                             * This previously read `req.body.userTimezone || 'UTC'`, which
+                             * looked like a harmless default and was in fact the bug: 'UTC'
+                             * is a VALID zone, so the try below always succeeded and the
+                             * longitude fallback underneath was unreachable dead code. The
+                             * quick-action request bodies never carried userTimezone at all
+                             * (only chat-stream did), so EVERY events tap silently ran on UTC.
+                             *
+                             * At 02:35 in Yerevan on Aug 13 that makes "today" Aug 12, and an
+                             * all-day Aug-12 event is stored at exactly Aug-12T00:00Z — so
+                             * `t >= startOfTodayUTC` held, three stale cards shipped, and
+                             * because nothing was dropped no `dropped N past event(s)` line
+                             * was ever logged. The absent log line WAS the symptom.
+                             *
+                             * The client now sends the zone (JinniChat.vue), but cached old
+                             * frontends will keep omitting it, so the estimate below has to be
+                             * genuinely reachable rather than nominally present. */
+                            const tz = typeof req.body.userTimezone === 'string' && req.body.userTimezone.trim()
+                                ? req.body.userTimezone.trim()
+                                : null;
+                            if (tz) {
+                                try {
+                                    const [y, m, d] = new Intl.DateTimeFormat('en-CA', {
+                                        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+                                    }).format(new Date()).split('-').map(Number);
+                                    return Date.UTC(y, m - 1, d);
+                                } catch { /* client sent a bogus zone — fall through to the estimate */ }
+                            }
                             /* No usable timezone from the client. Falling back to UTC would
                              * reinstate the very bug above for every user east of Greenwich,
                              * and this app is used worldwide — so estimate the offset from
@@ -4993,6 +5286,70 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             if (meta.sourceUrl && rec.source !== 'database') rec.sourceUrl = meta.sourceUrl;
                         }
 
+                        /* ── Trust the listing over the model's memory ────────────────
+                         * Runs BEFORE venue resolution, dedupe and the past-event filter,
+                         * because every one of those reads the date: resolving a venue for
+                         * an event that the listing proves already ended is wasted Google
+                         * budget, and deduping on a date the model misremembered by three
+                         * weeks matches nothing.
+                         *
+                         * Only AI events with a sourceUrl are fetched — a curated record is
+                         * the validator's own work and outranks any listing.
+                         */
+                        {
+                            const toFetch = recommendations.filter(r =>
+                                r && r.sourceUrl && r.source !== 'database'
+                            );
+                            if (toFetch.length) {
+                                let corrected = 0, imaged = 0, checked = 0;
+                                // Bounded concurrency: a handful of workers draining a shared
+                                // queue, so N slow pages cost one timeout, not N.
+                                const queue = toFetch.slice();
+                                const worker = async () => {
+                                    while (queue.length) {
+                                        const rec = queue.shift();
+                                        const ld = await fetchEventListing(rec.sourceUrl, rec.name);
+                                        checked++;
+                                        if (!ld) continue;
+                                        rec.provenance = rec.provenance || {};
+                                        if (ld.startDate) {
+                                            const was = rec.eventSchedule?.startDate || null;
+                                            rec.eventSchedule = {
+                                                startDate: ld.startDate,
+                                                ...(ld.endDate ? { endDate: ld.endDate } : {})
+                                            };
+                                            rec.category = 'Event';
+                                            rec.provenance.startDate = 'listing';
+                                            if (ld.endDate) rec.provenance.endDate = 'listing';
+                                            if (was && was.slice(0, 10) !== ld.startDate.slice(0, 10)) {
+                                                corrected++;
+                                                console.log(`[listing] "${rec.name}": date corrected ${was.slice(0, 10)} → ${ld.startDate.slice(0, 10)} (from ${rec.sourceUrl})`);
+                                            }
+                                        }
+                                        // The poster the model could never supply. Only fills a
+                                        // gap — a Google venue photo already chosen stays.
+                                        if (ld.image && !rec.image) {
+                                            rec.image = ld.image;
+                                            rec.provenance.image = 'listing';
+                                            imaged++;
+                                        }
+                                        // A listing's venue beats the model's guess as the query
+                                        // for the venue pass below (JazZara → "Zazoo Rooftop
+                                        // Lounge" was internally consistent and simply wrong).
+                                        if (ld.venueName && !PLACEHOLDER_VENUE_RE.test(ld.venueName.trim())) {
+                                            rec._eventVenue = ld.venueName;
+                                            rec.provenance.venue = 'listing';
+                                        }
+                                        if (ld.venueAddress) rec._eventAddress = ld.venueAddress;
+                                    }
+                                };
+                                await Promise.all(
+                                    Array.from({ length: Math.min(EVENT_LISTING_CONCURRENCY, toFetch.length) }, worker)
+                                );
+                                console.log(`[quick-action] listing check: ${checked} source page(s) read, ${corrected} date(s) corrected, ${imaged} image(s) adopted`);
+                            }
+                        }
+
                         /* ── Venue resolution ────────────────────────────────────────
                          * An event is not a Google place — "Yerevan Book Festival" has
                          * no listing, so it resolves to nothing and lands here with no
@@ -5013,46 +5370,6 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * radius the rest of the pipeline uses, so a wrong venue match
                          * falls back to the date-card instead of misplacing the pin.
                          */
-                        /* ── A curated event beats the AI's copy of it ────────────────
-                         * A validator entered LOBODA by hand — right venue (Jrvezh Park),
-                         * right time (20:00), verified from the organizer. The model then
-                         * named the same concert as "LOBODA Live Concert", which dedupe
-                         * missed: the names are not equal and the ids are different
-                         * (a Destination _id vs a Google placeId), so both shipped — the
-                         * curated one correct, the AI one at the wrong hall and dateless
-                         * ("All day"). For events, match on containment plus overlapping
-                         * dates instead of equality, and always keep the human record:
-                         * it carries the time and the venue the AI can only guess at.
-                         */
-                        {
-                            const normEvt = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-                            const sameDay = (a, b) => {
-                                if (!a || !b) return true;   // one side undated → name match alone decides
-                                const da = new Date(a), db = new Date(b);
-                                if (isNaN(da) || isNaN(db)) return true;
-                                return Math.abs(da.getTime() - db.getTime()) <= 36 * 60 * 60 * 1000;   // same-ish day
-                            };
-                            const curated = recommendations.filter(r => r && r.source === 'database' && r.eventSchedule);
-                            if (curated.length) {
-                                const before = recommendations.length;
-                                recommendations = recommendations.filter(rec => {
-                                    if (!rec || rec.source === 'database' || !rec.eventSchedule) return true;
-                                    const a = normEvt(rec.name);
-                                    if (!a) return true;
-                                    const dup = curated.find(c => {
-                                        const b = normEvt(c.name);
-                                        if (!b) return false;
-                                        const contained = a === b || a.includes(b) || b.includes(a);
-                                        return contained && sameDay(rec.eventSchedule.startDate, c.eventSchedule?.startDate);
-                                    });
-                                    if (dup) console.log(`[quick-action] dropped AI event "${rec.name}" — already curated as "${dup.name}" (validator record wins)`);
-                                    return !dup;
-                                });
-                                const droppedDupes = before - recommendations.length;
-                                if (droppedDupes > 0) console.log(`[quick-action] events: ${droppedDupes} AI duplicate(s) of curated events dropped`);
-                            }
-                        }
-
                         const needVenue = recommendations.filter(r =>
                             (r.latitude == null || r.longitude == null) && (r._eventVenue || r._eventAddress)
                         );
@@ -5061,18 +5378,12 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const venueRadiusKm = userRadius || (nearbyMode ? 5 : 50);
                             let resolvedByVenue = 0, resolvedByAddress = 0;
                             for (const rec of needVenue) {
-                                /* Drop placeholder venues before they reach Google. The model
-                                 * writes "Various venues" for a city-wide festival and things
-                                 * like "Armenian Apostolic Churches" for a nationwide feast —
-                                 * both were being geocoded as if they were addresses, costing a
-                                 * Places call and pinning the event on whatever came back. A
-                                 * plural or vague venue is a statement that there is no single
-                                 * location, so it should stay a date-card. */
-                                const PLACEHOLDER_VENUE = /^(various|multiple|several|many|different|citywide|city-wide|nationwide|tba|tbd|n\/?a|online|virtual)\b|\b(venues|locations|churches|theatres|theaters|cinemas|halls|sites)\s*$/i;
+                                /* Drop placeholder venues before they reach Google — see
+                                 * PLACEHOLDER_VENUE_RE at module scope for why. */
                                 const attempts = [rec._eventVenue, rec._eventAddress]
                                     .filter(Boolean)
                                     .filter(v => {
-                                        if (!PLACEHOLDER_VENUE.test(v.trim())) return true;
+                                        if (!PLACEHOLDER_VENUE_RE.test(v.trim())) return true;
                                         console.log(`[quick-action] event "${rec.name}": skipped placeholder venue "${v}" (no single location — keeping as a date-card)`);
                                         return false;
                                     });
@@ -5116,6 +5427,124 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             }
                             const stillUnresolved = needVenue.length - resolvedByVenue - resolvedByAddress;
                             console.log(`[quick-action] event venue resolution: ${resolvedByVenue} by venue, ${resolvedByAddress} by address, ${stillUnresolved} still date-card(s) of ${needVenue.length} attempted`);
+                        }
+
+                        /* ── A curated event beats the AI's copy of it ────────────────
+                         * A validator entered LOBODA by hand — right venue (Jrvezh Park),
+                         * right time (20:00), verified from the organizer. The model then
+                         * named the same concert as "LOBODA Live Concert", which dedupe
+                         * missed: the names are not equal and the ids are different
+                         * (a Destination _id vs a Google placeId), so both shipped — the
+                         * curated one correct, the AI one at the wrong hall and dateless
+                         * ("All day"). For events, match on containment plus overlapping
+                         * dates instead of equality, and always keep the human record:
+                         * it carries the time and the venue the AI can only guess at.
+                         *
+                         * ── Why NAME matching alone is not enough ─────────────────────
+                         * It let the same concert through twice. The model called it "Pop
+                         * concert at Altezza by Armenian Helicopters" (Aug 15, Jrvezh) —
+                         * that IS the curated LOBODA event, and the two strings share not
+                         * one significant word. Name matching only ever worked when the
+                         * model happened to say the artist's name.
+                         *
+                         * An event is pinned down by WHERE and WHEN, not by what someone
+                         * chose to call it: same venue + same date ⇒ same event. So three
+                         * independent matchers now run, any one of which is sufficient:
+                         *
+                         *   1. NAME     — containment, as before (catches a renamed venue).
+                         *   2. VENUE    — the model's venue string against the curated
+                         *                 event's name or address (LOBODA: "Jrvezh").
+                         *   3. GEOGRAPHY— resolved coordinates within DEDUPE_VENUE_KM of
+                         *                 the curated pin. The strongest signal, and the
+                         *                 reason this block now runs AFTER venue
+                         *                 resolution: before it, an AI event has no
+                         *                 coordinates to compare and this matcher is blind.
+                         *
+                         * Matchers 2 and 3 require BOTH sides to carry a real date that
+                         * agrees. Name matching can afford to let an undated event through
+                         * on the name alone; venue and geography cannot — a concert hall
+                         * hosts a different act every night, so "same venue, date unknown"
+                         * is not evidence of anything.
+                         *
+                         * Accepted trade-off: two genuinely different events at one venue
+                         * on one day will collapse to the curated one. That is rare, it is
+                         * the direction the governing principle points (the human record is
+                         * authoritative; the AI copy is unverified), and every drop is
+                         * logged with the matcher that fired so it stays diagnosable.
+                         */
+                        {
+                            const DEDUPE_VENUE_KM = 0.4;   // one venue's footprint — a park and its stage, a hall and its car park
+                            const normEvt = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+                            const sameDay = (a, b) => {
+                                if (!a || !b) return true;   // one side undated → name match alone decides
+                                const da = new Date(a), db = new Date(b);
+                                if (isNaN(da) || isNaN(db)) return true;
+                                return Math.abs(da.getTime() - db.getTime()) <= 36 * 60 * 60 * 1000;   // same-ish day
+                            };
+                            // Stricter than sameDay: BOTH sides must be present, parseable
+                            // and on the same calendar day. Used by the venue/geography
+                            // matchers, where a missing date must never count as agreement.
+                            const definitelySameDay = (a, b) => {
+                                if (!a || !b) return false;
+                                const da = new Date(a), db = new Date(b);
+                                if (isNaN(da) || isNaN(db)) return false;
+                                return Math.abs(da.getTime() - db.getTime()) <= 36 * 60 * 60 * 1000;
+                            };
+                            const curated = recommendations.filter(r => r && r.source === 'database' && r.eventSchedule);
+                            if (curated.length) {
+                                const before = recommendations.length;
+                                recommendations = recommendations.filter(rec => {
+                                    if (!rec || rec.source === 'database' || !rec.eventSchedule) return true;
+                                    let how = null;
+                                    const a = normEvt(rec.name);
+                                    // Everything the AI side can say about "where": the model's
+                                    // venue string, the listing's venue, and the resolved name.
+                                    const aVenues = [rec._eventVenue, rec.venueName, rec._eventAddress]
+                                        .filter(Boolean).map(normEvt).filter(Boolean);
+                                    const dup = curated.find(c => {
+                                        const b = normEvt(c.name);
+                                        // 1. NAME
+                                        if (a && b) {
+                                            const contained = a === b || a.includes(b) || b.includes(a);
+                                            if (contained && sameDay(rec.eventSchedule.startDate, c.eventSchedule?.startDate)) {
+                                                how = 'name+date';
+                                                return true;
+                                            }
+                                        }
+                                        if (!definitelySameDay(rec.eventSchedule.startDate, c.eventSchedule?.startDate)) return false;
+                                        // 2. VENUE — the curated event's own name and address are
+                                        //    the only "where" a validator records.
+                                        const cWheres = [c.name, c.location, c.region]
+                                            .filter(Boolean).map(normEvt).filter(Boolean);
+                                        for (const av of aVenues) {
+                                            for (const cw of cWheres) {
+                                                // Containment either way, plus the shared-token test
+                                                // that already guards venue resolution — so
+                                                // "Jrvezh" matches "Jrvezh Park" and
+                                                // "Arno Babajanyan Concert Hall" matches its street.
+                                                if (av.includes(cw) || cw.includes(av) || namesPlausiblyMatch(av, cw)) {
+                                                    how = `venue+date ("${av}" ≈ "${cw}")`;
+                                                    return true;
+                                                }
+                                            }
+                                        }
+                                        // 3. GEOGRAPHY
+                                        if (Number.isFinite(rec.latitude) && Number.isFinite(rec.longitude)
+                                            && Number.isFinite(c.latitude) && Number.isFinite(c.longitude)) {
+                                            const km = _haversineKm(rec.latitude, rec.longitude, c.latitude, c.longitude);
+                                            if (km <= DEDUPE_VENUE_KM) {
+                                                how = `coords+date (${Math.round(km * 1000)} m apart)`;
+                                                return true;
+                                            }
+                                        }
+                                        return false;
+                                    });
+                                    if (dup) console.log(`[quick-action] dropped AI event "${rec.name}" — already curated as "${dup.name}" via ${how} (validator record wins)`);
+                                    return !dup;
+                                });
+                                const droppedDupes = before - recommendations.length;
+                                if (droppedDupes > 0) console.log(`[quick-action] events: ${droppedDupes} AI duplicate(s) of curated events dropped`);
+                            }
                         }
                         // Per-item outcome — one table instead of reconstructing the run
                         // from scattered drop counters.
@@ -5161,7 +5590,13 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             return dateOnly ? t >= startOfTodayUTC : t >= nowMs;
                         });
                         const droppedPast = beforePast - recommendations.length;
-                        if (droppedPast > 0) { console.log(`[quick-action] dropped ${droppedPast} past event(s)`); }
+                        /* Logged UNCONDITIONALLY, including the zero case. Previously this
+                         * only spoke up when it dropped something, so "no line in the log"
+                         * was ambiguous between "the filter kept everything correctly" and
+                         * "the filter was comparing against the wrong day" — which is exactly
+                         * the ambiguity that hid the UTC bug above for a whole round. Print
+                         * the day boundary and where it came from so one line settles it. */
+                        console.log(`[quick-action] past-event filter: dropped ${droppedPast} of ${beforePast} | today=${new Date(startOfTodayUTC).toISOString().slice(0, 10)} | tz=${req.body.userTimezone || 'NOT SENT → longitude estimate'}`);
                     }
 
                     // ── Drop unresolved placeholders (no coordinates) ────────────────────
@@ -6601,6 +7036,16 @@ router.patch('/chat-sessions/:id', auth, async (req, res) => {
                 // Absent on non-event recs — the spread keeps the doc clean.
                 ...(rec.eventSchedule && { eventSchedule: rec.eventSchedule }),
                 ...(rec._isExpired != null && { _isExpired: rec._isExpired }),
+                // The listing the date came from, the venue the event is held at,
+                // and which fields the listing (rather than the model) supplied.
+                // Without these in the whitelist a reloaded session silently loses
+                // its "check the listing" link and its date provenance, while the
+                // eventSchedule above survives — leaving a date on screen with no
+                // way to tell where it came from.
+                ...(rec.sourceUrl && { sourceUrl: rec.sourceUrl }),
+                ...(rec.venueName && { venueName: rec.venueName }),
+                ...(rec.venuePlaceId && { venuePlaceId: rec.venuePlaceId }),
+                ...(rec.provenance && { provenance: rec.provenance }),
                 feedback: rec.feedback || null
               }));
               // console.log(`💾 Saved ${messageData.recommendations.length} recommendations without re-enrichment`); // ⬅️ FIXED: Changed from backtick to parentheses
