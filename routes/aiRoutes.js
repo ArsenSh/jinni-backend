@@ -4173,24 +4173,19 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             const smartProximityResults = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount, userRegion, requestId, subType);
             nearbyBusinesses = smartProximityResults.businesses;
             nearbyDestinations = smartProximityResults.destinations;
-            /* ── Events means things HAPPENING, not things to do ──────────────────
-             * Destinations tagged 'events' include permanent activities — paragliding,
-             * wakeboarding, zip lines, horse riding — which are open any day and carry
-             * no schedule. They filled the Events grid with undated cards labeled
-             * "Event" while the one real concert sat among them. For this action a
-             * destination has to actually be scheduled: a start date, or an explicitly
-             * recurring weekly happening. Everything else belongs under its own
-             * category, and is still reachable there. Only the events action is
-             * touched; every other action keeps the full destination pool.
+            /* ── Curated destinations are NOT filtered by schedule ────────────────
+             * These were filed under 'events' by a validator on purpose: paragliding,
+             * wakeboarding, zip lines and horse riding run almost every day, so from a
+             * traveler's side they ARE things happening — they just have no single
+             * date to print. A schedule filter here was removing deliberate human
+             * classification, which is the opposite of the rule the rest of this
+             * pipeline follows (a validator's decision beats an inferred one).
+             *
+             * The undated-venue problem this briefly "fixed" had a different source:
+             * PlaceCache entries tagged 'events' automatically because a venue was
+             * once shown under an event. That inference is gone (see the tagger and
+             * findCachedBackfill), which is the correct place to solve it.
              */
-            if (action === 'events') {
-                const beforeDest = nearbyDestinations.length;
-                nearbyDestinations = nearbyDestinations.filter(d =>
-                    d && d.eventSchedule && (d.eventSchedule.startDate || d.eventSchedule.isRecurring === true)
-                );
-                const droppedDest = beforeDest - nearbyDestinations.length;
-                if (droppedDest > 0) console.log(`[quick-action] events: dropped ${droppedDest} unscheduled destination(s) — kept ${nearbyDestinations.length} with a real schedule`);
-            }
             // ── Google candidate prefetch (flag-gated, per-action) ──────────────
             // One Text Search → a shortlist of REAL places the model ranks/filters,
             // instead of recalling local names. Kept names carry a real placeId so
@@ -5215,14 +5210,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // userRegion is passed through, so this adds no Google API calls
                             // (region detection is skipped and distances are computed locally).
                             const backfillPool = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount * 3, userRegion, requestId);
-                            // Same rule as the primary destination pull: under 'events', a
-                            // DB place only qualifies if it is actually scheduled. Without
-                            // this the backfill re-admitted the permanent activities
-                            // (paragliding, zip lines) the main filter had just removed.
-                            const backfillDestinations = action === 'events'
-                                ? (backfillPool.destinations || []).filter(d => d && d.eventSchedule && (d.eventSchedule.startDate || d.eventSchedule.isRecurring === true))
-                                : (backfillPool.destinations || []);
-                            const spares = [...(backfillPool.businesses || []), ...backfillDestinations]
+                            // Destinations are validator-curated, so their category is
+                            // taken at face value here too — no schedule filter (see the
+                            // note at the primary destination pull).
+                            const spares = [...(backfillPool.businesses || []), ...(backfillPool.destinations || [])]
                                 .filter(p => {
                                     if (!p || !p.name) return false;
                                     const nm = p.name.toLowerCase().trim();
