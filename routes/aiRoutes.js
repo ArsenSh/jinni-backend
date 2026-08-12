@@ -3420,6 +3420,15 @@ function extractChatRecommendations(aiResponse) {
 const normalizePlaceName = (s) => (s || '')
     .toLowerCase()
     .trim()
+    // Fold diacritics before stripping punctuation: decompose to base letter +
+    // combining mark, then drop the marks. Without this, "Shene" and "Shéné" are
+    // different words and the name guard rejects a CORRECT venue — which is what
+    // happened to a real Yerevan open-air venue, and would happen to any accented
+    // French, Turkish or transliterated Armenian name. Latin-script only by
+    // construction: Armenian and Cyrillic letters carry no combining marks here,
+    // so they pass through untouched.
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
     .replace(/[^\p{L}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -4492,8 +4501,16 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // parses exactly as before, it just resolves no venue.
                             const venue = parts[3] || null;
                             const address = parts[4] || null;
-                            if (cleanName && (start || venue || address)) {
-                                eventDateByName.set(cleanName.toLowerCase().trim(), { start, end, venue, address });
+                            /* SOURCE_URL — the page the model says it read. Two of three
+                             * events in a live test carried WRONG dates from recall (a
+                             * feast a day early, a concert three weeks early), so the
+                             * card must be able to show where a claim came from. Accepted
+                             * only as a plain http(s) URL; anything else is dropped rather
+                             * than shown, since a fabricated link is worse than none. */
+                            let sourceUrl = null;
+                            if (parts[5] && /^https?:\/\/[^\s"'<>]+$/i.test(parts[5])) sourceUrl = parts[5];
+                            if (cleanName && (start || venue || address || sourceUrl)) {
+                                eventDateByName.set(cleanName.toLowerCase().trim(), { start, end, venue, address, sourceUrl });
                             }
                             return { ...b, name: cleanName };
                         }).filter(b => b.name && b.name.length > 0);
@@ -4928,6 +4945,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // before the response is sent.
                             rec._eventVenue = meta.venue || null;
                             rec._eventAddress = meta.address || null;
+                            // Survives to the card: lets the user check a date we cannot
+                            // verify ourselves. Only ever set for AI-named events — a
+                            // curated destination carries the validator's own data.
+                            if (meta.sourceUrl && rec.source !== 'database') rec.sourceUrl = meta.sourceUrl;
                         }
 
                         /* ── Venue resolution ────────────────────────────────────────
@@ -5749,10 +5770,11 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
         If the week is genuinely thin, you may reach up to a month ahead rather than pad the list with permanent attractions. Returning fewer real events is better than filling space.${interestHint}${candidateText}
         Favor real events you are confident are actually scheduled in ${searchContext}. Do NOT refuse and do NOT explain.
         RESPONSE FORMAT — output ONLY bracketed items, nothing else:
-        [Event or place name | START_DATE | END_DATE | VENUE | ADDRESS]
+        [Event or place name | START_DATE | END_DATE | VENUE | ADDRESS | SOURCE_URL]
         - START_DATE is REQUIRED and is an ISO date (YYYY-MM-DD) — an item with no date is not an event; leave it out. END_DATE only for multi-day events: [Name | START_DATE | | VENUE | ADDRESS] for a single day.
         - VENUE is REQUIRED whenever you know it, and is WHERE THE EVENT ACTUALLY TAKES PLACE — the hall, museum, park, or street it is held at (e.g. "Cafesjian Center for the Arts", "Saryan Street"). It is NOT the organizing company or its office. Leave it empty if you are not sure.
         - ADDRESS is the street address or district of that venue, if you know it. Leave it empty if you are not sure.
+        - SOURCE_URL is the listing or official page you actually SAW in your search results for this event — the page the date came from. Copy it exactly. Leave it empty if the event comes from memory rather than a page you just read; never construct or guess a URL.
         - Never invent a venue or address. An empty field is always better than a guessed one — the place is looked up afterwards, and a wrong venue puts the event on the map in the wrong spot.
         - Only include dated events on or after ${todayISO}; never list past events.${excludeText}`;
     }
