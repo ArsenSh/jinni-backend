@@ -4363,6 +4363,19 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         responseText = claudeResult.text;
                         qaSearchCount = claudeResult.searchCount || 0;
                         console.log(`[provider] quick-action=claude model=${cfg.claudeModel} searches=${claudeResult.searchCount}`);
+                        /* ── Trace: what it searched, what it read, what it said ──────
+                         * Off unless AI_TRACE=1. Diagnosing a wrong card previously meant
+                         * inferring the model's answer from the Google lookups it caused;
+                         * these three lines show it directly. No extra API cost — the
+                         * queries and result URLs already arrive in the response.
+                         */
+                        if (process.env.AI_TRACE === '1') {
+                            for (const s of (claudeResult.searches || [])) {
+                                const urls = (s.results || []).slice(0, 6).map(r => r.url).filter(Boolean);
+                                console.log(`[trace] search ${JSON.stringify(s.query)} → ${(s.results || []).length} result(s)${urls.length ? ':\n  ' + urls.join('\n  ') : ''}`);
+                            }
+                            console.log(`[trace] model answer (${action}):\n${String(responseText || '').trim().slice(0, 1500)}`);
+                        }
                         // claudeResult.searchCount available here for per-request billing logging
                     } else {
                         const completion = await openai.chat.completions.create({
@@ -5006,6 +5019,18 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             }
                             const stillUnresolved = needVenue.length - resolvedByVenue - resolvedByAddress;
                             console.log(`[quick-action] event venue resolution: ${resolvedByVenue} by venue, ${resolvedByAddress} by address, ${stillUnresolved} still date-card(s) of ${needVenue.length} attempted`);
+                        }
+                        // Per-item outcome — one table instead of reconstructing the run
+                        // from scattered drop counters.
+                        if (process.env.AI_TRACE === '1') {
+                            console.log('[trace] event outcomes:');
+                            for (const rec of recommendations) {
+                                const m = eventDateByName.get(String(rec.requestedName || rec.name || '').toLowerCase().trim());
+                                if (!m && !rec.eventSchedule) continue;
+                                const when = rec.eventSchedule ? String(rec.eventSchedule.startDate).slice(0, 10) : 'no-date';
+                                const where = rec.latitude != null ? `${rec.venueName || rec.location || 'located'} (${rec.distance || '?'})` : 'DATE-CARD (unlocated)';
+                                console.log(`  • ${rec.name} | ${when} | model-venue: ${m?.venue || '—'} | model-address: ${m?.address || '—'} | → ${where}`);
+                            }
                         }
 
                         // Anything still without coordinates becomes a date-card, so the

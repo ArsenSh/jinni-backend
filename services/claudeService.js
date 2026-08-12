@@ -168,9 +168,32 @@ async function complete({
     let usage = { input_tokens: 0, output_tokens: 0 };
     let searchCount = 0;
     let guard = 0;
+    // ── Search provenance ───────────────────────────────────────────────────
+    // The response already carries WHAT was searched (server_tool_use blocks)
+    // and WHICH pages came back (web_search_tool_result blocks). We kept only
+    // the count and dropped both, which left every "why did it say that?"
+    // question unanswerable from the logs. Collected here so the caller can log
+    // the queries and the sources behind an answer. Costs nothing extra — this
+    // data is already in the response being paid for.
+    const searches = [];
 
     while (true) {
         const resp = await anthropic.messages.create({ ...baseParams, messages: convoLoop });
+
+        for (const b of (resp.content || [])) {
+            if (b.type === 'server_tool_use' && b.name === 'web_search') {
+                searches.push({ query: b.input?.query || null, results: [] });
+            } else if (b.type === 'web_search_tool_result') {
+                // .content is the result list on success, or an error object on failure.
+                const rows = Array.isArray(b.content) ? b.content : [];
+                const sources = rows
+                    .filter(r => r && r.type === 'web_search_result')
+                    .map(r => ({ url: r.url || null, title: r.title || null }));
+                const open = searches[searches.length - 1];
+                if (open && !open.results.length) open.results = sources;
+                else searches.push({ query: null, results: sources });
+            }
+        }
 
         text += (resp.content || [])
             .filter(b => b.type === 'text')
@@ -188,7 +211,9 @@ async function complete({
         break;
     }
 
-    return { text, usage, searchCount };
+    // `searches` is additive — existing callers destructuring { text, usage,
+    // searchCount } are unaffected.
+    return { text, usage, searchCount, searches };
 }
 
 /**
