@@ -4854,6 +4854,36 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                 rec.venueName = rec.name;
                                 rec.name = rec.requestedName;
                             }
+                            /* ── An event name is not a place name ────────────────────────
+                             * Enrichment resolves every rec through Google Text Search. For
+                             * an event that search has no correct answer — "LOBODA Live
+                             * Concert" is not a listing — so Google returns whatever venues
+                             * look vaguely similar and the picker takes the best of a bad
+                             * set. That is how a Jrvezh Park concert was placed at Aram
+                             * Khachaturian Concert Hall, and how "Tropical Night Party"
+                             * became "Tropica Inn".
+                             *
+                             * So a resolution obtained from the EVENT name is only trusted
+                             * when it matches the venue the model actually named. Otherwise
+                             * the geography is discarded and the venue pass below re-resolves
+                             * from the venue string — the field that is meant to answer
+                             * "where", and the one that produced every correct result so far.
+                             * With no venue named at all, a coincidental establishment match
+                             * is worse than an honest date-card.
+                             */
+                            if (rec.latitude != null && rec.source !== 'database') {
+                                const resolvedPlaceName = rec.venueName || null;
+                                const venueTrusted = resolvedPlaceName && meta.venue
+                                    && namesPlausiblyMatch(meta.venue, resolvedPlaceName);
+                                if (resolvedPlaceName && !venueTrusted) {
+                                    console.log(`[quick-action] event "${rec.name}": discarded name-resolution to "${resolvedPlaceName}" (model named venue "${meta.venue || '—'}") — re-resolving from the venue`);
+                                    rec.latitude = null; rec.longitude = null;
+                                    rec.distanceKm = null; rec.distance = null;
+                                    rec.placeId = null; rec.venuePlaceId = null;
+                                    rec.image = null; rec.location = null; rec.region = null;
+                                    rec.venueName = null;
+                                }
+                            }
                             if (meta.start) {
                                 rec.eventSchedule = {
                                     startDate: `${meta.start}T00:00:00.000Z`,
@@ -4887,6 +4917,46 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * radius the rest of the pipeline uses, so a wrong venue match
                          * falls back to the date-card instead of misplacing the pin.
                          */
+                        /* ── A curated event beats the AI's copy of it ────────────────
+                         * A validator entered LOBODA by hand — right venue (Jrvezh Park),
+                         * right time (20:00), verified from the organizer. The model then
+                         * named the same concert as "LOBODA Live Concert", which dedupe
+                         * missed: the names are not equal and the ids are different
+                         * (a Destination _id vs a Google placeId), so both shipped — the
+                         * curated one correct, the AI one at the wrong hall and dateless
+                         * ("All day"). For events, match on containment plus overlapping
+                         * dates instead of equality, and always keep the human record:
+                         * it carries the time and the venue the AI can only guess at.
+                         */
+                        {
+                            const normEvt = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+                            const sameDay = (a, b) => {
+                                if (!a || !b) return true;   // one side undated → name match alone decides
+                                const da = new Date(a), db = new Date(b);
+                                if (isNaN(da) || isNaN(db)) return true;
+                                return Math.abs(da.getTime() - db.getTime()) <= 36 * 60 * 60 * 1000;   // same-ish day
+                            };
+                            const curated = recommendations.filter(r => r && r.source === 'database' && r.eventSchedule);
+                            if (curated.length) {
+                                const before = recommendations.length;
+                                recommendations = recommendations.filter(rec => {
+                                    if (!rec || rec.source === 'database' || !rec.eventSchedule) return true;
+                                    const a = normEvt(rec.name);
+                                    if (!a) return true;
+                                    const dup = curated.find(c => {
+                                        const b = normEvt(c.name);
+                                        if (!b) return false;
+                                        const contained = a === b || a.includes(b) || b.includes(a);
+                                        return contained && sameDay(rec.eventSchedule.startDate, c.eventSchedule?.startDate);
+                                    });
+                                    if (dup) console.log(`[quick-action] dropped AI event "${rec.name}" — already curated as "${dup.name}" (validator record wins)`);
+                                    return !dup;
+                                });
+                                const droppedDupes = before - recommendations.length;
+                                if (droppedDupes > 0) console.log(`[quick-action] events: ${droppedDupes} AI duplicate(s) of curated events dropped`);
+                            }
+                        }
+
                         const needVenue = recommendations.filter(r =>
                             (r.latitude == null || r.longitude == null) && (r._eventVenue || r._eventAddress)
                         );
