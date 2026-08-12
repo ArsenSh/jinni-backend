@@ -4871,7 +4871,19 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         rec.latitude = loc.lat;
                                         rec.longitude = loc.lng;
                                         rec.distanceKm = Math.round(distKm * 10) / 10;
-                                        if (v.place_id) rec.placeId = rec.placeId || v.place_id;
+                                        // The CARD reads `distance` (a display string); `distanceKm`
+                                        // alone renders as "Distance unavailable". The distance pass
+                                        // ran before this resolution, so it never saw these places.
+                                        rec.distance = `${rec.distanceKm} km`;
+                                        // ── The event does NOT take the venue's identity ──────────
+                                        // `placeId` is identity everywhere in this app: votes
+                                        // (PlaceFeedback), saves, dedupe, cache tagging and the staff
+                                        // validator all key on it. Giving "The Firebird" the concert
+                                        // hall's placeId would make a dislike of the concert suppress
+                                        // the HALL for that user, collide with the hall's own card in
+                                        // dedupe, and make one card's image button fire on both.
+                                        // So we borrow the venue's PHOTO and address, never its id.
+                                        rec.venuePlaceId = v.place_id || null;
                                         if (!rec.image && v.place_id && Array.isArray(v.photos) && v.photos.length) {
                                             rec.image = `/api/ai/place-image/${v.place_id}/0`;
                                         }
@@ -5539,12 +5551,17 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
     // the model is told explicitly not to refuse.
     if (action === 'events') {
         const todayISO = new Date().toISOString().slice(0, 10);
+        // Travelers plan the week in front of them, not the season. A festival two
+        // months out is trivia; something on Saturday is a plan. So the window is
+        // the next 7 days, with anything further out allowed only as a fallback
+        // when the week is genuinely empty.
+        const weekEndISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
         const softInterests = (preferences.interests || []).filter(Boolean);
         const interestHint = softInterests.length
             ? `\n        If it fits, lean toward things that suit these interests (a soft preference, not a filter): ${softInterests.join(', ')}.`
             : '';
         return `As a local what's-on guide for ${searchContext}, suggest up to ${requestedCount} things to do — a mix of:
-        - upcoming public events happening on or after today (${todayISO}): festivals, concerts, exhibitions, shows, seasonal celebrations; and
+        - public events happening in the NEXT 7 DAYS (${todayISO} to ${weekEndISO}): festivals, concerts, exhibitions, shows, seasonal celebrations. Prefer this week strongly — a traveler is deciding what to do now. Only reach further ahead if this week genuinely has too little to fill the list, and never past a month out; and
         - ongoing family-friendly places and activities (parks, museums, theatres, attractions) that are open to visit any day.${interestHint}${candidateText}
         Favor real, well-known places and events you are confident exist in ${searchContext}. Do NOT refuse and do NOT explain — it is fine to mix a few dated events with ongoing venues, and fine to return fewer if you are unsure.
         RESPONSE FORMAT — output ONLY bracketed items, nothing else:
