@@ -5064,10 +5064,29 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             if (rec.eventSchedule && (rec.latitude == null || rec.longitude == null)) rec._isDateCard = true;
                         }
                         const beforePast = recommendations.length;
+                        /* ── Same expiry instant the cleanup service uses ─────────────
+                         * eventCleanup deletes a curated event the moment it expires,
+                         * with no grace, and an event with no end date expires at its
+                         * START (a 20:00 concert stops showing at 20:00). This filter
+                         * compared against START-OF-DAY instead, so between 20:00 and
+                         * midnight the curated record was already deleted while an AI
+                         * copy of the same concert — wrong venue, no time — survived
+                         * here and became the only card. Now the two agree.
+                         *
+                         * A DATE-ONLY event (midnight UTC, i.e. the model gave a day and
+                         * no time) still lives out its whole day: "sometime on Saturday"
+                         * has not passed at 00:01 on Saturday. Only a real time expires
+                         * at that time — matching the rule the client encodes when it
+                         * sends an explicit 23:59 for all-day events.
+                         */
+                        const nowMs = Date.now();
                         recommendations = recommendations.filter(rec => {
                             if (!rec.eventSchedule) return true;
                             const ref = rec.eventSchedule.endDate || rec.eventSchedule.startDate;
-                            return new Date(ref).getTime() >= startOfTodayUTC;
+                            const t = new Date(ref).getTime();
+                            if (!Number.isFinite(t)) return true;          // unparseable → keep, as before
+                            const dateOnly = t % 86400000 === 0;           // exactly midnight UTC
+                            return dateOnly ? t >= startOfTodayUTC : t >= nowMs;
                         });
                         const droppedPast = beforePast - recommendations.length;
                         if (droppedPast > 0) { console.log(`[quick-action] dropped ${droppedPast} past event(s)`); }
