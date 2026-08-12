@@ -4160,6 +4160,24 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             const smartProximityResults = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount, userRegion, requestId, subType);
             nearbyBusinesses = smartProximityResults.businesses;
             nearbyDestinations = smartProximityResults.destinations;
+            /* ── Events means things HAPPENING, not things to do ──────────────────
+             * Destinations tagged 'events' include permanent activities — paragliding,
+             * wakeboarding, zip lines, horse riding — which are open any day and carry
+             * no schedule. They filled the Events grid with undated cards labeled
+             * "Event" while the one real concert sat among them. For this action a
+             * destination has to actually be scheduled: a start date, or an explicitly
+             * recurring weekly happening. Everything else belongs under its own
+             * category, and is still reachable there. Only the events action is
+             * touched; every other action keeps the full destination pool.
+             */
+            if (action === 'events') {
+                const beforeDest = nearbyDestinations.length;
+                nearbyDestinations = nearbyDestinations.filter(d =>
+                    d && d.eventSchedule && (d.eventSchedule.startDate || d.eventSchedule.isRecurring === true)
+                );
+                const droppedDest = beforeDest - nearbyDestinations.length;
+                if (droppedDest > 0) console.log(`[quick-action] events: dropped ${droppedDest} unscheduled destination(s) — kept ${nearbyDestinations.length} with a real schedule`);
+            }
             // ── Google candidate prefetch (flag-gated, per-action) ──────────────
             // One Text Search → a shortlist of REAL places the model ranks/filters,
             // instead of recalling local names. Kept names carry a real placeId so
@@ -4817,8 +4835,25 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     if (action === 'events' && eventDateByName.size) {
                         const startOfTodayUTC = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
                         for (const rec of recommendations) {
-                            const meta = eventDateByName.get((rec.name || '').toLowerCase().trim());
+                            /* ── An event is never renamed to its venue ───────────────────
+                             * Enrichment replaces a rec's name with the Google result's
+                             * name, which is right for a place and wrong for an event:
+                             * "Tropical Night Party" shipped to users as "Tropica Inn",
+                             * and — because the schedule map is keyed on the name the
+                             * MODEL gave — it also lost its dates and never reached the
+                             * venue pass. So look the metadata up by the requested name,
+                             * and put that name back on the card. The resolved place stays
+                             * on as the venue, which is what it actually is.
+                             */
+                            const askedName = rec.requestedName || rec.name;
+                            const meta = eventDateByName.get(String(askedName || '').toLowerCase().trim())
+                                      || eventDateByName.get(String(rec.name || '').toLowerCase().trim());
                             if (!meta) continue;
+                            if (rec.requestedName && rec.name && rec.requestedName !== rec.name) {
+                                console.log(`[quick-action] event kept its own name: "${rec.requestedName}" (resolved place "${rec.name}" treated as the venue)`);
+                                rec.venueName = rec.name;
+                                rec.name = rec.requestedName;
+                            }
                             if (meta.start) {
                                 rec.eventSchedule = {
                                     startDate: `${meta.start}T00:00:00.000Z`,
@@ -5560,14 +5595,14 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
         const interestHint = softInterests.length
             ? `\n        If it fits, lean toward things that suit these interests (a soft preference, not a filter): ${softInterests.join(', ')}.`
             : '';
-        return `As a local what's-on guide for ${searchContext}, suggest up to ${requestedCount} things to do — a mix of:
-        - public events happening in the NEXT 7 DAYS (${todayISO} to ${weekEndISO}): festivals, concerts, exhibitions, shows, seasonal celebrations. Prefer this week strongly — a traveler is deciding what to do now. Only reach further ahead if this week genuinely has too little to fill the list, and never past a month out; and
-        - ongoing family-friendly places and activities (parks, museums, theatres, attractions) that are open to visit any day.${interestHint}${candidateText}
-        Favor real, well-known places and events you are confident exist in ${searchContext}. Do NOT refuse and do NOT explain — it is fine to mix a few dated events with ongoing venues, and fine to return fewer if you are unsure.
+        return `As a local what's-on guide for ${searchContext}, list up to ${requestedCount} public events HAPPENING in the NEXT 7 DAYS (${todayISO} to ${weekEndISO}): festivals, concerts, exhibitions, performances, screenings, markets, sports fixtures, seasonal celebrations.
+        Every item must be something that HAPPENS on a date — not a place that is simply open. A museum, park or attraction belongs here only when it is hosting a specific dated event this week (an opening, a concert, a temporary exhibition), and then the EVENT is what you list, not the venue.
+        If the week is genuinely thin, you may reach up to a month ahead rather than pad the list with permanent attractions. Returning fewer real events is better than filling space.${interestHint}${candidateText}
+        Favor real events you are confident are actually scheduled in ${searchContext}. Do NOT refuse and do NOT explain.
         RESPONSE FORMAT — output ONLY bracketed items, nothing else:
         [Event or place name | START_DATE | END_DATE | VENUE | ADDRESS]
-        - START_DATE / END_DATE are ISO dates (YYYY-MM-DD). Include END_DATE only for multi-day events; for a single-day event use [Name | START_DATE]; for an ongoing place or activity with no specific date use just [Name].
-        - VENUE is WHERE THE EVENT ACTUALLY TAKES PLACE — the hall, museum, park, or street it is held at (e.g. "Cafesjian Center for the Arts", "Saryan Street"). It is NOT the organizing company or its office. Leave it empty if you are not sure.
+        - START_DATE is REQUIRED and is an ISO date (YYYY-MM-DD) — an item with no date is not an event; leave it out. END_DATE only for multi-day events: [Name | START_DATE | | VENUE | ADDRESS] for a single day.
+        - VENUE is REQUIRED whenever you know it, and is WHERE THE EVENT ACTUALLY TAKES PLACE — the hall, museum, park, or street it is held at (e.g. "Cafesjian Center for the Arts", "Saryan Street"). It is NOT the organizing company or its office. Leave it empty if you are not sure.
         - ADDRESS is the street address or district of that venue, if you know it. Leave it empty if you are not sure.
         - Never invent a venue or address. An empty field is always better than a guessed one — the place is looked up afterwards, and a wrong venue puts the event on the map in the wrong spot.
         - Only include dated events on or after ${todayISO}; never list past events.${excludeText}`;
