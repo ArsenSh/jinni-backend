@@ -4357,7 +4357,20 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // providers that report nothing; the estimate is then used unchanged.
                     let qaRealTokens = null;
                     if (cfg.aiProviderQuickAction === 'claude') {
-                        const claudeWebSearch = isFirstTap && cfg.claudeWebSearch &&
+                        /* ── Events may search on refills; nothing else may ───────────────
+                         * "View More" normally runs WITHOUT web search: restaurants, hotels
+                         * and historical sites live in the place cache, so a refill is just
+                         * more of what we already hold. Events are the exception — they do
+                         * not exist in any cache until someone looks them up, and with the
+                         * cache padding gone (rightly: it was serving venues as events) a
+                         * searchless refill returns nothing at all. The model does not
+                         * invent, so it answers in prose: "I don't have verified real-time
+                         * event data…", and View More comes back empty.
+                         *
+                         * So for events only, a refill is allowed one search. Every other
+                         * action keeps the cheap cache-first refill it had.
+                         */
+                        const claudeWebSearch = (isFirstTap || action === 'events') && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
                         // Claude (esp. Haiku) treats the bracketed-list instruction as a
                         // user request it can negotiate — it will sometimes refuse, add a
