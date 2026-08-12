@@ -1266,6 +1266,30 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 enhancedMessage += `\n\n[User previously liked: ${userLikedNames.join(', ')}. When relevant, prefer places with a similar character or vibe — but do not simply repeat these unless the user's request genuinely calls for them.]`;
             }
         }
+        // ── What we already know about this category here ────────────────────────
+        // Parity with the quick-action "cache curation" block: when the intent
+        // pre-pass resolved a concrete category and we have a search center, show
+        // the model the places we already hold WITH their traveler feedback, and
+        // ask it to go beyond them. Skipped for free chat ('general'), for
+        // non-travel turns and when no location is known, so ordinary conversation
+        // is untouched. Best-effort — an empty list simply omits the block.
+        if (isTravelQuery && detectedActionType && detectedActionType !== 'general' && effectiveLocation) {
+            try {
+                const knownRadiusKm = nearbyMode
+                    ? (effectiveLocation.nearbyRadius || 5)
+                    : (effectiveLocation.discoveryRadius || 50);
+                const center = placeCoordinates
+                    ? { lat: placeCoordinates.lat, lng: placeCoordinates.lng }
+                    : { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
+                const known = await loadKnownCachedPlaces({ center, radiusKm: knownRadiusKm, action: detectedActionType, limit: 12 });
+                if (known.length) {
+                    enhancedMessage += `\n\n[ALREADY IN OUR SYSTEM nearby, with how our travelers received them — INTERNAL context, never quote these numbers or labels back to the user:\n`
+                        + known.map(k => describeKnownPlace(k.doc, k.distanceKm)).join('\n')
+                        + `\nTreat this as evidence about the area, then do better: prefer strong real places NOT listed here so the traveler discovers something new, never re-suggest one travelers received poorly, and include a listed place only when it is genuinely among the best answers — a staff-verified or well-liked one is a safe choice. Never invent names.]`;
+                    console.log(`[chat] known-cache context: ${known.length} place(s) shown to the model (action=${detectedActionType})`);
+                }
+            } catch (kcErr) { console.warn('[chat] known-cache context failed:', kcErr.message); }
+        }
         const messagesForAI = [ ...contextMessages, { role: 'user', content: enhancedMessage } ];
         // console.log(`Sending ${messagesForAI.length} messages to OpenAI`);
         // console.log(`User message includes ${businesses.length + destinations.length} database places`);
@@ -1685,6 +1709,14 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
     const query = {
         actions: action,                               // ground-truth category match
         imagesStored: true,
+        // Staff suppression, enforced at the SOURCE. The streaming routes fold
+        // "Block AI" and Explore-hidden into their dislike set, but that set is
+        // built late — the early "View More" refill (and the curation list) call
+        // this helper before it exists, so a suppressed place could still be
+        // served straight from cache. Both flags are indexed; `$ne` also matches
+        // legacy docs that carry neither field.
+        aiBlocked: { $ne: true },
+        'explore.status': { $ne: 'hidden' },
         lastFetched: { $gte: freshnessCutoff },
         'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },
         'details.geometry.location.lng': { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta }
@@ -1692,7 +1724,7 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
     if (excludePlaceIds.length) query.placeId = { $nin: excludePlaceIds };
 
     const docs = await PlaceCache.find(query)
-        .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos')
+        .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos explore interests')
         .limit(200)                                    // hard ceiling so a big cache never blows up the scan
         .lean();
 
@@ -1770,6 +1802,155 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, limit);
+}
+
+/* ── What we already know, told to the model ─────────────────────────────────
+ *
+ * The cache holds far more than names: a Google rating, how our own travelers
+ * voted, how often the place was served, its price bucket, whether staff
+ * verified it, and the interest tags staff curated onto it. All of that was
+ * being used only AFTER the model spoke, as a filter. Handing it over BEFORE
+ * gives the model a real picture of the area instead of a bare word list.
+ *
+ * The framing is deliberately "here is the evidence, now do better": the model
+ * is asked to prefer places NOT on the list, to skip the poorly-received ones
+ * outright, and to reuse a listed place only when it genuinely is the best fit.
+ * That way each request widens the catalogue instead of recycling the same
+ * local top-ten — while the places travelers actually liked keep their edge.
+ *
+ * The counters are INTERNAL context. The prompt says so explicitly: no reply
+ * should ever quote our like/dislike numbers back at the traveler.
+ */
+function describeKnownPlace(doc, distanceKm = null) {
+    const bits = [];
+    if (Number.isFinite(doc.rating)) bits.push(`rated ${doc.rating.toFixed(1)}`);
+    const likes = doc.likes || 0, dislikes = doc.dislikes || 0;
+    if (likes || dislikes) bits.push(`${likes} liked / ${dislikes} disliked by our travelers`);
+    else bits.push('no traveler votes yet');
+    if (doc.explore?.status === 'verified') bits.push('staff-verified');
+    if (doc.useCount) bits.push(`shown ${doc.useCount}x`);
+    const tier = priceTier(doc.types, doc.primaryType, doc.priceLevel).tier;
+    if (tier) bits.push(tier);
+    if (Array.isArray(doc.interests) && doc.interests.length) bits.push(`suits: ${doc.interests.slice(0, 4).join(', ')}`);
+    if (Number.isFinite(distanceKm)) bits.push(`${Math.round(distanceKm)}km away`);
+    return `- ${doc.name} (${bits.join('; ')})`;
+}
+
+/**
+ * Light read of the places we already hold for a category near a point — the
+ * same membership rule and staff suppressions findCachedBackfill applies, but
+ * WITHOUT pulling `photos` (those carry the stored image bytes, which must
+ * never be loaded just to write a prompt). Ranked by how our own travelers
+ * received the place, then rating. Best-effort: returns [] on any failure.
+ */
+async function loadKnownCachedPlaces({ center, radiusKm, action, limit = 12 }) {
+    if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng) || !radiusKm) return [];
+    if (!CURATED_GATE_ACTIONS.has(action)) return [];
+    try {
+        const latDelta = radiusKm / 111.32;
+        const lngDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(center.lat * Math.PI / 180)));
+        const docs = await PlaceCache.find({
+            actions: action,
+            imagesStored: true,
+            aiBlocked: { $ne: true },
+            'explore.status': { $ne: 'hidden' },
+            'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },
+            'details.geometry.location.lng': { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta }
+        })
+            .select('placeId name rating likes dislikes useCount types primaryType priceLevel interests explore details.geometry.location')
+            .limit(120)
+            .lean();
+        const scored = [];
+        for (const d of docs) {
+            const loc = d?.details?.geometry?.location;
+            if (!loc) continue;
+            const distanceKm = _haversineKm(center.lat, center.lng, loc.lat, loc.lng);
+            if (distanceKm > radiusKm) continue;
+            if (isCommunityRejected(d.likes, d.dislikes)) continue;   // community-buried: not worth showing the model either
+            const net = (d.likes || 0) - (d.dislikes || 0);
+            const verified = d.explore?.status === 'verified' ? 2 : 0;
+            scored.push({ doc: d, distanceKm, score: verified + (net >= 0 ? 3 * net : 8 * net) + (d.rating || 0) });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        return scored.slice(0, limit);
+    } catch (err) {
+        console.warn('[known-cache] lookup failed:', err.message);
+        return [];
+    }
+}
+
+/* ── Validator-curated category gate ─────────────────────────────────────────
+ *
+ * A validator can VERIFY a place and at the same time correct the category the
+ * AI filed it under — a monastery the model kept serving as an 'events' venue
+ * gets re-tagged 'historical' from the staff Explore queue. That edit sets
+ * `actionsCurated`, which so far only LOCKED the array against runtime
+ * re-tagging: the model could still name the place on an events request and the
+ * card shipped anyway, because nothing ever compared the two.
+ *
+ * This closes that half. For a request under a concrete category, a place a
+ * validator has curated OUT of that category is rejected however the AI arrived
+ * at it. The positive half needs no code: a place curated INTO 'historical' is
+ * already eligible on historical requests via findCachedBackfill and Explore,
+ * both of which read `actions` directly.
+ *
+ * Deliberately narrow, so nothing else changes:
+ *   • ONLY curated docs participate. On an uncurated doc `actions` means "has
+ *     been shown under", NOT "belongs to" — gating on that would reject every
+ *     place that simply hasn't been served in the category yet.
+ *   • ONLY concrete categories. Free chat ('general') is never gated.
+ *   • An EMPTY curated array rejects everywhere: a validator who cleared every
+ *     category is saying the place belongs under none of them.
+ *   • Places with no placeId (date-cards, unresolved names, DB-only rows) are
+ *     never matched, so they are never affected.
+ */
+const CURATED_GATE_ACTIONS = new Set(['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping']);
+
+/**
+ * Batch verdict: which of these placeIds has a validator curated OUT of `action`.
+ * One indexed query (placeId $in). Returns an empty set for uncurated places,
+ * unknown actions and on any failure — the gate can only ever REMOVE places it
+ * is certain about.
+ */
+async function loadCuratedRejects(placeIds, action) {
+    if (!CURATED_GATE_ACTIONS.has(action)) return new Set();
+    const ids = [...new Set((placeIds || []).filter(Boolean))];
+    if (!ids.length) return new Set();
+    try {
+        const rows = await PlaceCache.find({ placeId: { $in: ids }, actionsCurated: true })
+            .select('placeId actions').lean();
+        return new Set(rows.filter(r => !(r.actions || []).includes(action)).map(r => r.placeId));
+    } catch (err) {
+        // Fail OPEN — a lookup failure must never empty a reply. Worst case this
+        // one request behaves exactly as it did before the gate existed.
+        console.warn('[curated-gate] batch lookup failed:', err.message);
+        return new Set();
+    }
+}
+
+/**
+ * Single-place verdict, for callers that resolve places one at a time (the
+ * itinerary enricher). Folds in the two staff suppressions the streaming routes
+ * already apply as a prefetched set — "Block AI" and Explore-hidden — so one
+ * lookup answers "may the AI serve this place under this category at all?".
+ * Returns 'ai_blocked' | 'hidden' | 'wrong_category', or null when allowed.
+ */
+async function placeBlockedForAction(placeId, action) {
+    if (!placeId) return null;
+    try {
+        const doc = await PlaceCache.findOne({ placeId })
+            .select('aiBlocked explore.status actions actionsCurated').lean();
+        if (!doc) return null;
+        if (doc.aiBlocked === true) return 'ai_blocked';
+        if (doc.explore?.status === 'hidden') return 'hidden';
+        if (CURATED_GATE_ACTIONS.has(action) && doc.actionsCurated === true && !(doc.actions || []).includes(action)) {
+            return 'wrong_category';
+        }
+        return null;
+    } catch (err) {
+        console.warn('[curated-gate] single lookup failed:', err.message);
+        return null;   // fail open, same reasoning as above
+    }
 }
 
 // Escape a user/model-supplied string so it can be safely embedded in a RegExp.
@@ -2533,7 +2714,15 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
         // console.log('🔍 Looking for names in AI response...');
         const bracketedNames = extractChatRecommendations(aiResponse);
         // console.log('Names: ', bracketedNames);
-        
+        // Validator-curated category rejects for THIS turn's category — places staff
+        // filed under a different category than the one the user is asking about.
+        // Declared at function scope because BOTH the live card list (inside the
+        // branch below) and the authoritative drop pass (after it) must agree;
+        // otherwise a wrong-category card flashes on screen and then vanishes.
+        // Stays empty when the response carries no cards, and when the intent
+        // pre-pass resolved no concrete category ('general' free chat is never gated).
+        let curatedRejects = new Set();
+
         if (bracketedNames.length > 0) {
             // console.log(`\n📊 Pre-fetched data available: ${businesses.length} businesses, ${destinations.length} destinations`);
             const streamedRecMap = new Map();
@@ -2844,10 +3033,18 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
             const _hasC = Number.isFinite(_cLat) && Number.isFinite(_cLng);
             const _msgLower = (message || '').toLowerCase();
             const _disliked = (userDislikedIds instanceof Set) ? userDislikedIds : new Set(userDislikedIds || []);
+            // Resolve the curated rejects once, now that every rec carries its
+            // placeId (declared at function scope above — see the note there).
+            curatedRejects = await loadCuratedRejects(
+                recommendations.map(r => r && r.placeId).filter(Boolean),
+                detectedActionType
+            );
             const _streamList = recommendations.filter(rec => {
                 if (!rec) return false;
                 if (rec.source === 'ai' && !rec.placeId && !rec.verifiedId) return false;   // unverified shell — demoted to prose below
                 if (rec.placeId && _shownIds.has(rec.placeId)) return false;
+                // Wrong category per staff curation — unless the message names it.
+                if (rec.placeId && curatedRejects.has(rec.placeId) && !(rec.name && _msgLower.includes(rec.name.toLowerCase()))) return false;
                 // Disliked (this user's latest vote) — hide unless the message itself
                 // names the place; same rule as the authoritative drop pass below.
                 const _isDisliked = (rec.placeId && _disliked.has(rec.placeId)) || (rec.verifiedId && _disliked.has(String(rec.verifiedId)));
@@ -2923,6 +3120,11 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
             const repeatIdx = new Set();
             const tooFarIdx = new Set();
             const dislikedIdx = new Set();
+            // Places a validator curated OUT of this turn's category (see the
+            // curated-gate comment block above findCachedBackfill). Kept as its own
+            // set rather than folded into dislikedIdx so the log, the drop guard and
+            // the text-restoration rule below can each treat it on its own terms.
+            const miscategorizedIdx = new Set();
             // Cards with NO verified identity — enrichment found neither a DB
             // match nor an acceptable Google place. Two ways to get here: the
             // model bolded a NON-place ("A crisp white blouse or a silk
@@ -2954,6 +3156,14 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                     dislikedIdx.add(idx);
                     console.log(`[chat] dropped disliked rec "${r.name}" (user's current vote is dislike)`);
                 }
+                // Validator-curated category mismatch: staff filed this place under a
+                // different category than the one this turn is about (e.g. a historical
+                // site the model offered as an event). Same direct-ask exception as
+                // dislikes — if the user named the place, we still answer about it.
+                if (r.placeId && curatedRejects.has(r.placeId) && !directlyAsked) {
+                    miscategorizedIdx.add(idx);
+                    console.log(`[chat] dropped rec "${r.name}" — staff curated it out of "${detectedActionType}"`);
+                }
                 if (r.source === 'ai' && !r.placeId && !r.verifiedId) {
                     unverifiedIdx.add(idx);
                     console.log(`[chat] unverified card "${r.name}" demoted to prose (no Google/DB identity)`);
@@ -2972,9 +3182,14 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
             // SOMETHING (other cards or prose); only when dropping would leave a
             // completely empty response do we keep them rather than send nothing.
             const dropDisliked = dislikedIdx.size > 0 && (dislikedIdx.size < recommendations.length || hasText);
+            // Wrong-category: same "never send an empty reply" guard as dislikes. If
+            // every card is miscategorized and there is no prose, keeping them beats
+            // answering with nothing — the validator's correction is about WHERE a
+            // place belongs, not about whether it exists.
+            const dropMiscategorized = miscategorizedIdx.size > 0 && (miscategorizedIdx.size < recommendations.length || hasText);
             const keptOldIdx = [];
             recommendations.forEach((r, idx) => {
-                const drop = (repeatIdx.has(idx) && dropRepeats) || (tooFarIdx.has(idx) && dropFar) || (dislikedIdx.has(idx) && dropDisliked) || unverifiedIdx.has(idx);
+                const drop = (repeatIdx.has(idx) && dropRepeats) || (tooFarIdx.has(idx) && dropFar) || (dislikedIdx.has(idx) && dropDisliked) || (miscategorizedIdx.has(idx) && dropMiscategorized) || unverifiedIdx.has(idx);
                 if (!drop) keptOldIdx.push(idx);
             });
             if (keptOldIdx.length < recommendations.length) {
@@ -3002,6 +3217,14 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 recommendations.forEach((r, idx) => {
                     if (!r || remap.has(idx)) return;                          // kept → nothing to restore
                     if (dislikedIdx.has(idx) && dropDisliked) return;          // dislikes: intentional suppression
+                    // Wrong category — suppressed like out-of-area, and for the same
+                    // reason: the model's sentences describe the place AS the thing it
+                    // isn't ("this festival runs all June" for a monastery). Restoring
+                    // that prose would keep the false claim in the reply, minus the card.
+                    if (miscategorizedIdx.has(idx) && dropMiscategorized) {
+                        console.log(`[chat] wrong-category card "${(r.metadata && r.metadata.originalName) || r.name}" suppressed (text NOT restored)`);
+                        return;
+                    }
                     if (tooFarIdx.has(idx) && dropFar) {                       // out-of-area: wrong place — suppress, don't restore
                         console.log(`[chat] out-of-area card "${(r.metadata && r.metadata.originalName) || r.name}" suppressed (text NOT restored)`);
                         return;
@@ -4068,8 +4291,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             excludeNames: [...haveNames, ...(excludeNames || [])],
                             limit: ccfg.cacheCurationCount || 15
                         });
-                        knownCachedNames = known.map(k => k.doc.name).filter(Boolean);
-                        if (knownCachedNames.length) console.log(`[quick-action] cache curation: showing model ${knownCachedNames.length} known place(s), asking for new ones (action=${action})`);
+                        // One line per place with its performance data, not just the
+                        // name — the model can then skip what travelers received badly
+                        // and aim past what already works. See describeKnownPlace.
+                        knownCachedNames = known.filter(k => k.doc && k.doc.name).map(k => describeKnownPlace(k.doc, k.distanceKm));
+                        if (knownCachedNames.length) console.log(`[quick-action] cache curation: showing model ${knownCachedNames.length} known place(s) with feedback data, asking for new ones (action=${action})`);
                     }
                 } catch (curErr) { console.warn('[quick-action] cache curation fetch failed:', curErr.message); knownCachedNames = []; }
             }
@@ -4670,8 +4896,13 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                 rows.forEach(r => cacheMeta.set(r.placeId, { likes: r.likes || 0, dislikes: r.dislikes || 0, priceLevel: r.priceLevel || null }));
                             } catch (cvErr) { console.warn('[quick-action] model-name gate lookup failed:', cvErr.message); }
                         }
+                        // Validator-curated category rejects — a place staff filed under a
+                        // DIFFERENT category than the one being requested (see the gate's
+                        // comment block). Separate indexed query rather than more fields on
+                        // the one above, because it only ever matches curated docs.
+                        const curatedRejects = await loadCuratedRejects(recIds, action);
                         const beforeDislike = recommendations.length;
-                        let droppedCommunity = 0, droppedUser = 0, droppedTier = 0;
+                        let droppedCommunity = 0, droppedUser = 0, droppedTier = 0, droppedCategory = 0;
                         const tierApplies = isPriceAction(action);   // restaurants/hotels/shopping/hidden_gems
                         recommendations = recommendations.filter(rec => {
                             // Per-user dislike: match on Google placeId OR DB verifiedId.
@@ -4679,6 +4910,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                 (rec.verifiedId && userDislikedIds.has(String(rec.verifiedId)))) {
                                 droppedUser++; return false;
                             }
+                            // Wrong category for this action, per a validator's curation.
+                            // Checked before the community/tier rules because it is a human
+                            // decision about what this place IS, not a signal about how good
+                            // it is — the place stays perfectly valid under its own category.
+                            if (rec.placeId && curatedRejects.has(rec.placeId)) { droppedCategory++; return false; }
                             const meta = rec.placeId ? cacheMeta.get(rec.placeId) : null;
                             // Community hard-reject: only cached places carry vote counts.
                             if (meta && isCommunityRejected(meta.likes, meta.dislikes)) { droppedCommunity++; return false; }
@@ -4694,7 +4930,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         });
                         const droppedTotal = beforeDislike - recommendations.length;
                         if (droppedTotal > 0) {
-                            console.log(`[quick-action] preference gate dropped ${droppedTotal} model-named place(s) (community ${droppedCommunity}, this-user ${droppedUser}, tier ${droppedTier})`);
+                            console.log(`[quick-action] preference gate dropped ${droppedTotal} model-named place(s) (community ${droppedCommunity}, this-user ${droppedUser}, tier ${droppedTier}, wrong-category ${droppedCategory})`);
                         }
                     }
 
@@ -5160,7 +5396,7 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
     const candidateText = (Array.isArray(googleCandidates) && googleCandidates.length)
         ? `\n        CANDIDATE SHORTLIST (real, currently-open places near ${searchContext} — strongly prefer choosing from these):\n        ${googleCandidates.map(c => c.name).filter(Boolean).join(', ')}\n        From this shortlist pick the ones that best match the traveler. You MAY add a few additional real, verifiable places you are confident exist in ${searchContext} if they fit the traveler better — but never invent names.`
         : (Array.isArray(knownCachedNames) && knownCachedNames.length)
-        ? `\n        ALREADY IN OUR SYSTEM near ${searchContext} (strong options we can already show): ${knownCachedNames.join(', ')}.\n        To broaden the traveler's choices, prefer suggesting EXCELLENT real, verifiable places that are NOT already in that list. Only if you cannot find enough strong new ones, you may fall back to the best of the listed places. Never invent names.`
+        ? `\n        ALREADY IN OUR SYSTEM near ${searchContext} — places we can already show, with how our travelers received them (INTERNAL context: never mention these numbers, ratings-counts or "verified" labels in your reply):\n        ${knownCachedNames.join('\n        ')}\n        Use this as evidence about the area, then do better than it:\n        - Prefer EXCELLENT real, verifiable places that are NOT on this list, so the traveler's choices keep widening.\n        - Do NOT re-suggest a listed place that travelers received poorly (more disliked than liked).\n        - You MAY include a listed place when it is genuinely among the best answers for this traveler — especially a staff-verified or well-liked one.\n        - Never invent names.`
         : '';
     // ── Photo spots ───────────────────────────────────────────────────────────
     // Not a business category — it's a "what's worth photographing" lens over a
@@ -6816,4 +7052,4 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
     }
 });
 
-module.exports.shared = { getCachedPlaceDetails, resolveEffectiveLocation, getAllMessages };
+module.exports.shared = { getCachedPlaceDetails, resolveEffectiveLocation, getAllMessages, placeBlockedForAction, loadCuratedRejects };

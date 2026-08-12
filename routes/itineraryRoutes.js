@@ -690,7 +690,7 @@ function normalizeHours(oh) {
  * caller can stream progress and persist incrementally.
  */
 async function enrichDays(days, destination, requestId, isGone, onSlot, maxKm = MAX_STOP_KM, seedPlaceIds = []) {
-  const { getCachedPlaceDetails } = aiShared();
+  const { getCachedPlaceDetails, placeBlockedForAction } = aiShared();
   // `seedPlaceIds` pre-blocks venues already used ELSEWHERE in the itinerary
   // (e.g. the other days during a single-day regenerate), so a synonym name
   // that resolves to the same place is failed as a duplicate instead of
@@ -714,7 +714,25 @@ async function enrichDays(days, destination, requestId, isGone, onSlot, maxKm = 
           { lat: destination.lat, lng: destination.lng },
         );
         const place = buildPlace(enriched);
-        if (place && haversineKm(destination.lat, destination.lng, place.latitude, place.longitude) > maxKm) {
+        // ── Staff verdict on this venue ──────────────────────────────────────
+        // The planner names places from the model's own memory, so the two
+        // streaming routes' suppressions have to be enforced here as well — this
+        // path never passes through them. Covers "Block AI", Explore-hidden, and
+        // a category a validator has curated the place OUT of (a monastery filed
+        // as 'historical' must not be planned into an 'events' slot). One indexed
+        // lookup per resolved stop; fails open, so a lookup error can never turn
+        // a good trip into a page of failed slots.
+        const blockedReason = place && place.placeId
+          ? await placeBlockedForAction(place.placeId, slotVoteAction(slot.category))
+          : null;
+        if (place && blockedReason) {
+          // Reuses the existing 'unverified' reason rather than adding an enum
+          // value: the UI already offers a replacement for it, and the real
+          // cause is staff moderation, which is not the traveler's business.
+          console.log(`Itinerary staff gate: rejected "${place.name}" for slot category "${slot.category}" (${blockedReason})`);
+          slot.status = 'failed';
+          slot.failedReason = 'unverified';
+        } else if (place && haversineKm(destination.lat, destination.lng, place.latitude, place.longitude) > maxKm) {
           // Name-match landed on a same-named place far away (different city or
           // country). Reject it — a wrong-country pin is worse than a gap.
           console.log(`Itinerary geofence: rejected "${place.name}" — ${Math.round(haversineKm(destination.lat, destination.lng, place.latitude, place.longitude))}km from ${destination.name}`);
