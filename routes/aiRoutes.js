@@ -1699,6 +1699,16 @@ function isCommunityRejected(likes = 0, dislikes = 0) {
  */
 async function findCachedBackfill({ center, radiusKm, action, subType = null, preferences = {}, excludePlaceIds = [], excludeNames = [], limit = 8 }) {
     if (!center || center.lat == null || center.lng == null || !radiusKm || !action) return [];
+    /* ── Events are never served from the place cache ────────────────────────
+     * The cache stores PLACES. An event is a moment in time, and what the cache
+     * holds for one is merely the venue it happened at — with no date, and no
+     * way to know the event has passed. Serving those back produced grids of
+     * undated "Event" cards (a rooftop lounge, a zoo, a concert hall) that were
+     * never events at all. Events come from the model and from validator-curated
+     * destinations, or the grid is simply shorter — which is the honest outcome
+     * and also hides "View More" when there is genuinely nothing left to show.
+     */
+    if (action === 'events') return [];
     const CACHE_VALIDITY_DAYS = 30;
     const freshnessCutoff = new Date(Date.now() - CACHE_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
     const latDelta = radiusKm / 111.32;
@@ -3361,7 +3371,10 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
         //     a chat serve is a real serve, and popularity/freshness must reflect
         //     it. This matches quick-action, which bumps on every serve too.
         //   • Fire-and-forget with .catch — must never delay or break the reply.
-        const CHAT_TAGGABLE_ACTIONS = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'photo_spots', 'shopping']);
+        // 'events' is deliberately absent — see the note at the quick-action tagger:
+        // an event's card carries its VENUE, so tagging turns venues into permanent
+        // "events" that later backfill as undated Event cards.
+        const CHAT_TAGGABLE_ACTIONS = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'photo_spots', 'shopping']);
         const chatShownPlaceIds = [...new Set(recommendations.map(r => r.placeId).filter(Boolean))];
         if (chatShownPlaceIds.length > 0) {
             // Popularity/freshness bump for every shown place…
@@ -4332,6 +4345,13 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // ── Provider selection (DeepSeek default, Claude if toggled) ──
                     const cfg = await AppConfig.getConfig();
                     let qaSearchCount = 0;
+                    // Real token usage as REPORTED BY THE PROVIDER, when available.
+                    // The estimate below counts only the prompt we wrote — it cannot see
+                    // the web-search results Anthropic injects into the context, which is
+                    // where the tokens on a search-enabled tap actually go. Measured on a
+                    // live tap: 18,052 real input tokens vs ~600 estimated. Null for
+                    // providers that report nothing; the estimate is then used unchanged.
+                    let qaRealTokens = null;
                     if (cfg.aiProviderQuickAction === 'claude') {
                         const claudeWebSearch = isFirstTap && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
@@ -4362,6 +4382,9 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         });
                         responseText = claudeResult.text;
                         qaSearchCount = claudeResult.searchCount || 0;
+                        if (claudeResult.usage) {
+                            qaRealTokens = (claudeResult.usage.input_tokens || 0) + (claudeResult.usage.output_tokens || 0);
+                        }
                         console.log(`[provider] quick-action=claude model=${cfg.claudeModel} searches=${claudeResult.searchCount}`);
                         /* ── Trace: what it searched, what it read, what it said ──────
                          * Off unless AI_TRACE=1. Diagnosing a wrong card previously meant
@@ -4390,7 +4413,9 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         console.log('[provider] quick-action=deepseek');
                     }
                     // Per-provider daily usage (parallel to existing stats)
-                    const qaTokens = Math.ceil(((aiPrompt?.length || 0) + (responseText?.length || 0)) / 4);
+                    const qaTokens = qaRealTokens != null
+                        ? qaRealTokens
+                        : Math.ceil(((aiPrompt?.length || 0) + (responseText?.length || 0)) / 4);
                     AiProviderDailyStats.track(cfg.aiProviderQuickAction, { tokens: qaTokens, queries: 1, searches: qaSearchCount, endpoint: 'quick_action' }).catch(err => console.error('AiProviderDailyStats error:', err));
                     // console.log('\nAI response received:', responseText);
                     let bracketedNames = extractBracketedNames(responseText);
@@ -5171,7 +5196,14 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // userRegion is passed through, so this adds no Google API calls
                             // (region detection is skipped and distances are computed locally).
                             const backfillPool = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount * 3, userRegion, requestId);
-                            const spares = [...(backfillPool.businesses || []), ...(backfillPool.destinations || [])]
+                            // Same rule as the primary destination pull: under 'events', a
+                            // DB place only qualifies if it is actually scheduled. Without
+                            // this the backfill re-admitted the permanent activities
+                            // (paragliding, zip lines) the main filter had just removed.
+                            const backfillDestinations = action === 'events'
+                                ? (backfillPool.destinations || []).filter(d => d && d.eventSchedule && (d.eventSchedule.startDate || d.eventSchedule.isRecurring === true))
+                                : (backfillPool.destinations || []);
+                            const spares = [...(backfillPool.businesses || []), ...backfillDestinations]
                                 .filter(p => {
                                     if (!p || !p.name) return false;
                                     const nm = p.name.toLowerCase().trim();
@@ -5413,8 +5445,20 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 // filters, so resolved-but-dropped rejects are never tagged.
                 const shownPlaceIds = [...new Set(recommendations.map(r => r.placeId).filter(Boolean))];
                 if (shownPlaceIds.length > 0 && action) {
-                    PlaceCache.updateMany({ placeId: { $in: shownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: action } })
-                        .catch(err => console.warn('[quick-action] action-tag update failed:', err.message));
+                    /* ── 'events' is never written to the cache ───────────────────────
+                     * `actions` means "this place belongs in that category", and the
+                     * tagger infers it from "was shown under it". That inference holds
+                     * for restaurants or historical sites and is FALSE for events: what
+                     * gets shown under an event is its VENUE. Tagging it turned Zazoo
+                     * Rooftop, the Opera Theatre, Yerevan Zoo and a dozen other venues
+                     * into permanent "events", which the backfill then served as undated
+                     * Event cards forever. An event is a moment in time; a cache of
+                     * places cannot hold one, so events are simply never cached.
+                     */
+                    if (action !== 'events') {
+                        PlaceCache.updateMany({ placeId: { $in: shownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: action } })
+                            .catch(err => console.warn('[quick-action] action-tag update failed:', err.message));
+                    }
                 }
                 // For event places, also persist the event's date onto the cache doc
                 // so the admin cache view can show WHEN a cached venue was last shown
