@@ -4276,7 +4276,26 @@ async function fetchEventListing(rawUrl, eventName) {
             const nodes = _extractLdEvents(html);
             const normalized = nodes.map(_normalizeLdEvent).filter(e => e.startDate || e.image);
             if (!nodes.length) {
-                console.log(`[listing] no schema.org/Event JSON-LD on ${String(rawUrl).slice(0, 120)} — this source cannot verify dates`);
+                /* No structured data — but the POSTER is usually still there, in
+                 * og:image. Tbilisi proved the cost of ignoring it: tkt.ge pages
+                 * carry the artwork and every card rendered with a blank calendar
+                 * icon, because this path only ever looked at JSON-LD.
+                 *
+                 * Image ONLY. A date read off an unstructured page would be a
+                 * guess, and guessed dates are the thing this whole pass exists to
+                 * eliminate. Restricted to a DEEP url (a specific event page), so
+                 * a category or home page cannot donate its site banner as if it
+                 * were event artwork. */
+                let path = '';
+                try { path = new URL(rawUrl).pathname.replace(/\/+$/, ''); } catch {}
+                const looksSpecific = path.split('/').filter(Boolean).length >= 2;
+                const og = looksSpecific ? _extractOgImage(html) : null;
+                if (og) {
+                    data = { name: null, startDate: null, endDate: null, image: og, url: null, venueName: null, venueAddress: null };
+                    console.log(`[listing] no JSON-LD on ${String(rawUrl).slice(0, 90)} — taking og:image only (no date from an unstructured page)`);
+                } else {
+                    console.log(`[listing] no schema.org/Event JSON-LD on ${String(rawUrl).slice(0, 120)} — this source cannot verify dates`);
+                }
             } else if (!normalized.length) {
                 console.log(`[listing] ${nodes.length} Event block(s) on ${String(rawUrl).slice(0, 90)} but none carried a date or image`);
             } else if (normalized.length === 1) {
