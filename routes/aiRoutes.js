@@ -2545,7 +2545,10 @@ async function detectAndEmitRecommendations(fullResponse, currentRecommendations
       // console.log(`Emitted streaming recommendation: ${nameObj.name}`);
       emittedRecommendations.add(nameObj.name);
       currentRecommendations.push(nameObj);
-      if (nameObj.description) { await streamDescriptionToCard(nameObj.description, streamingRecommendation.id, nameObj.name, res) }
+      /* No replay. The description already streamed LIVE as description_token
+       * events while the block was open, and the client now creates the card at
+       * arrow-open and catches them — replaying it here (the old 20ms/word fake
+       * typing) would print every description twice. */
     }
   } catch (error) { console.error('Error detecting streaming recommendations:', error) }
 }
