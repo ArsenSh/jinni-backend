@@ -4181,7 +4181,12 @@ const _EVENT_STOPWORDS = new Set([
     'the', 'a', 'an', 'and', 'of', 'for', 'to', 'in', 'at', 'on', 'with', 'by', 's',
     'yerevan', 'armenia', 'am'
 ]);
-const _eventTokens = (s) => normalizePlaceName(s)
+const _eventTokens = (s) => normalizePlaceName(
+        // Possessives first: normalizePlaceName strips the apostrophe and glues
+        // the s on ("Asatryan's" → "asatryans"), which then fails to equal
+        // "asatryan" now that multi-word titles must share TWO tokens.
+        String(s || '').replace(/['’]s\b/gi, '')
+    )
     .split(' ')
     .filter(t => t.length >= 3 && !_EVENT_STOPWORDS.has(t));
 
@@ -4190,7 +4195,16 @@ function eventNamesMatch(a, b) {
     // No distinctive word on either side → refuse to guess. Silence beats a
     // confidently wrong date on somebody else's concert.
     if (!ta.length || !tb.length) return false;
-    return ta.some(x => tb.includes(x));
+    /* One shared word is enough only when one side has just one word to give
+     * ("Spleen" vs "Tickets for the Spleen concert"). When BOTH titles are
+     * multi-word, a single shared token is a coincidence, not an identity:
+     * "Symphonic Yerevan International Music Festival" matched "Symphonic
+     * Hayko. Ararat in the Heart" on the word "symphonic" alone, and shipped
+     * the festival with the other concert's Aug-25 date. Two shared
+     * distinctive words is the bar a multi-word pair must clear. */
+    const shared = ta.filter(x => tb.includes(x)).length;
+    const needed = Math.min(ta.length, tb.length) >= 2 ? 2 : 1;
+    return shared >= needed;
 }
 
 // Feed titles are HTML-escaped and wrapped in selling words: "Tickets for
@@ -4364,8 +4378,114 @@ const EVENT_FEED_SOURCES = [
         // /en/ is the same JSON-LD with English names and venues.
         url: 'https://ticket-am.com/en/',
         countries: ['armenia']
+    },
+    {
+        label: 'tomsarkgh',
+        // Server-rendered, no JSON-LD — read via page-text extraction. Carries
+        // the near-term events (13/15/23/25 Aug) that ticket-am's window lacked.
+        url: 'https://www.tomsarkgh.am/en',
+        countries: ['armenia'],
+        mode: 'extract'
     }
 ];
+/* ═══════════════ Language-free canonicalization (the normalizer) ═══════════
+ * THE architectural rule: identity is never words (it is coords + day + URL),
+ * and linguistics belongs to the MODEL, once, at ingestion — never to regexes
+ * at request time. The English regex layer (cleanEventTitle, _EVENT_STOPWORDS)
+ * only ever worked in English; every non-Latin market walked around it. These
+ * two functions replace that layer for any language, at one small model call
+ * per SOURCE per refresh — shared by every user, so per-user AI cost stays 0.
+ * The regexes remain only as the degradation path when the model call fails.
+ *
+ * The model handles ONLY language (titles, tags, price text). Dates, URLs and
+ * coordinates are code-owned: the normalizer is never even shown a date it
+ * could corrupt, and the extractor's dates are code-validated or dropped —
+ * an unparseable date is a guess, and a guess never renders as fact. */
+const EVENT_TAG_VOCABULARY = ['music','concert','festival','theater','opera','ballet','dance','comedy','standup','circus','cinema','exhibition','art','museum','sports','food','wine','nightlife','club','family','kids','education','literature','poetry','tech','outdoor','market','holiday','religious'];
+
+/** One call per feed refresh: English titles + canonical tags for any language. */
+async function normalizeEventBatch(sourceLabel, events) {
+    if (!events.length) return events;
+    try {
+        const cfg = await AppConfig.getConfig();
+        const payload = events.map((e, i) => ({ i, name: e.rawName || e.name, venue: e.venueName || null }));
+        const res = await claudeService.complete({
+            model: cfg.claudeModel, maxTokens: 1500, temperature: 0,
+            system: 'You return only JSON. No prose, no markdown fences.',
+            messages: [{ role: 'user', content:
+                `For each event give a concise English title (drop ticket-shop wording like "Tickets for") `
+              + `and tags chosen ONLY from: ${EVENT_TAG_VOCABULARY.join(', ')}. `
+              + `Events (any language): ${JSON.stringify(payload)}. `
+              + `Reply ONLY a JSON array [{"i":0,"en":"...","tags":["music"]}]. Do not add or remove events.` }]
+        });
+        const arr = JSON.parse((String(res?.text || '').match(/\[[\s\S]*\]/) || ['[]'])[0]);
+        const byI = new Map((Array.isArray(arr) ? arr : []).filter(x => x && Number.isInteger(x.i)).map(x => [x.i, x]));
+        let applied = 0;
+        events.forEach((e, i) => {
+            const n = byI.get(i); if (!n) return;
+            const en = typeof n.en === 'string' && n.en.trim() ? n.en.trim().slice(0, 120) : null;
+            const tags = Array.isArray(n.tags) ? n.tags.filter(t => EVENT_TAG_VOCABULARY.includes(t)).slice(0, 6) : [];
+            if (en) { e.names = { original: e.rawName || e.name, en }; e.name = en; applied++; }
+            if (tags.length) e.tags = tags;
+        });
+        console.log(`[normalize] ${sourceLabel}: ${applied}/${events.length} titled+tagged in one shared call`);
+    } catch (err) {
+        console.warn(`[normalize] ${sourceLabel} failed (${err.message}) — regex-cleaned titles stand in`);
+    }
+    return events;
+}
+
+function _htmlToText(html) {
+    return String(html || '')
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+        .split('\n').map(t => t.trim()).filter(Boolean).join('\n').slice(0, 12000);
+}
+
+/* Server-rendered sites with no JSON-LD (tomsarkgh) still print every event in
+ * their visible text — name, date, venue, price, in their own language. The
+ * model reads that text once per refresh; CODE then validates every date and
+ * drops anything unparseable or out of range. Provenance 'extracted' sits one
+ * trust tier below a structured feed: it may fill holes, never overwrite. */
+async function extractEventsFromPage(source, html) {
+    const text = _htmlToText(html);
+    if (text.length < 200) return [];
+    const cfg = await AppConfig.getConfig();
+    const today = new Date().toISOString().slice(0, 10);
+    const res = await claudeService.complete({
+        model: cfg.claudeModel, maxTokens: 2000, temperature: 0,
+        system: 'You return only JSON. No prose, no markdown fences.',
+        messages: [{ role: 'user', content:
+            `Visible text of ${source.label}, an event-listing page (any language). Today is ${today}. `
+          + `List ONLY events explicitly present with an explicit date — never invent or guess. `
+          + `Reply ONLY a JSON array [{"original":"<title as written>","en":"<concise English title>","date":"YYYY-MM-DD","endDate":null,"venue":"<as written or null>","priceMin":null,"priceMax":null,"currency":null,"tags":[only from: ${EVENT_TAG_VOCABULARY.join(',')}]}].\n\n${text}` }]
+    });
+    const arr = JSON.parse((String(res?.text || '').match(/\[[\s\S]*\]/) || ['[]'])[0]);
+    const out = [];
+    const minT = Date.now() - 86400000, maxT = Date.now() + 366 * 86400000;
+    for (const e of (Array.isArray(arr) ? arr : [])) {
+        if (!e || typeof e.en !== 'string' || !e.en.trim()) continue;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(e.date || '')) continue;
+        const t = Date.parse(e.date + 'T00:00:00.000Z');
+        if (!Number.isFinite(t) || t < minT || t > maxT) continue;
+        const end = /^\d{4}-\d{2}-\d{2}$/.test(e.endDate || '') ? e.endDate + 'T00:00:00.000Z' : null;
+        out.push({
+            name: e.en.trim().slice(0, 120), rawName: (e.original || e.en).trim(),
+            names: { original: (e.original || e.en).trim(), en: e.en.trim() },
+            startDate: e.date + 'T00:00:00.000Z', ...(end ? { endDate: end } : {}),
+            image: null, url: source.url,
+            venueName: typeof e.venue === 'string' && e.venue.trim() ? e.venue.trim() : null, venueAddress: null,
+            tags: Array.isArray(e.tags) ? e.tags.filter(x => EVENT_TAG_VOCABULARY.includes(x)).slice(0, 6) : [],
+            price: Number.isFinite(e.priceMin)
+                ? { min: e.priceMin, max: Number.isFinite(e.priceMax) ? e.priceMax : e.priceMin, currency: typeof e.currency === 'string' ? e.currency.slice(0, 3).toUpperCase() : null }
+                : null,
+            provenance: 'extracted', feedLabel: source.label
+        });
+    }
+    console.log(`[extract] ${source.label}: ${out.length} dated event(s) read from page text (model-read, code-validated)`);
+    return out;
+}
+
 const EVENT_FEED_TTL_MS = 30 * 60 * 1000;   // a ticketing schedule moves in days, not minutes
 const _eventFeedCache = new Map();          // url → { at, events }
 
@@ -4381,7 +4501,9 @@ async function getEventFeed(source) {
     let events = [];
     try {
         const html = await _fetchListingHtml(source.url);
-        if (html) {
+        if (html && source.mode === 'extract') {
+            events = await extractEventsFromPage(source, html);
+        } else if (html) {
             events = _extractLdEvents(html)
                 .map(_normalizeLdEvent)
                 .filter(e => e.name && e.startDate)
@@ -4410,6 +4532,8 @@ async function getEventFeed(source) {
                 await Promise.all(Array.from({ length: Math.min(4, missing.length) }, worker));
                 console.log(`[feed] ${source.label}: ${found}/${missing.length} poster(s) recovered from event pages`);
             }
+            // Language work happens HERE, once per refresh — not per request.
+            events = await normalizeEventBatch(source.label, events);
         }
         console.log(`[feed] ${source.label}: ${events.length} upcoming event(s) (cached ${Math.round(EVENT_FEED_TTL_MS / 60000)} min, shared by all users, $0 in AI)`);
     } catch (err) {
@@ -4628,6 +4752,18 @@ async function discoverEventSources(country, city) {
     return run;
 }
 
+/* Domains KNOWN to be good for a country — verified by hand, not by a model.
+ * Discovery asks the model each week and gets a different answer each time:
+ * one Armenian run proposed tickets.am/iyerevan.am/yerevan.am/kassir.am and
+ * CACHED it for 7 days, locking the search out of ticket-am.com and
+ * tomsarkgh.am — the two sources this project has actually verified against
+ * the live web. A registry row per known market fixes the floor; discovery
+ * still fills every country that has no row. Same pattern as
+ * EVENT_FEED_SOURCES, and rows are data, not code paths. */
+const KNOWN_EVENT_SEARCH_DOMAINS = [
+    { countries: ['armenia'], domains: ['ticket-am.com', 'tomsarkgh.am', 'tkt.am'] }
+];
+
 /** Domains the web search may read here. A manual allowlist always wins. */
 async function resolveSearchDomains(cfg, userRegion) {
     const manual = Array.isArray(cfg.claudeWebSearchAllowedDomains) ? cfg.claudeWebSearchAllowedDomains.filter(Boolean) : [];
@@ -4635,7 +4771,19 @@ async function resolveSearchDomains(cfg, userRegion) {
     if (cfg.eventSourceAutoDiscover === false) return [];
     const country = userRegion?.country;
     if (!country) return [];
-    try { return (await discoverEventSources(country, userRegion?.city)).domains; } catch { return []; }
+    const key = String(country).toLowerCase();
+    // Registry first: the floor no model answer can remove. Feed sources'
+    // own hosts ride along — a site good enough to supply events is good
+    // enough to be read by the search.
+    const known = new Set(KNOWN_EVENT_SEARCH_DOMAINS
+        .filter(r => r.countries.includes(key))
+        .flatMap(r => r.domains));
+    for (const s of EVENT_FEED_SOURCES.filter(s => s.countries.includes(key))) {
+        try { known.add(new URL(s.url).hostname.replace(/^www\./, '')); } catch {}
+    }
+    let discovered = [];
+    try { discovered = (await discoverEventSources(country, userRegion?.city)).domains; } catch {}
+    return [...new Set([...known, ...discovered])];
 }
 
 let quickActionCallCount = 0;
@@ -5916,7 +6064,14 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                      * date, venue and poster with Spleen's — then broke the
                                      * curated dedupe, because the now-wrong date no longer
                                      * matched the validator's Aug-15 record and both shipped. */
-                                    const match = feed.find(f => f.name && eventNamesMatch(rec.name, f.name));
+                                    /* Both names are tried: the canonical English one AND the
+                                     * source's original-language one. An Armenian model
+                                     * suggestion matches the Armenian original; an English one
+                                     * matches the normalized title. Cross-language pairs simply
+                                     * fail to match — which is the safe outcome, never a guess. */
+                                    const match = feed.find(f =>
+                                        (f.name && eventNamesMatch(rec.name, f.name)) ||
+                                        (f.rawName && f.rawName !== f.name && eventNamesMatch(rec.name, f.rawName)));
                                     if (!match) continue;
                                     claimed.add(match);
                                     rec.provenance = rec.provenance || {};
@@ -5961,7 +6116,20 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         ...recommendations.map(r => norm(r?.name)),
                                         ...(excludeNames || []).map(norm)
                                     ].filter(Boolean));
-                                    for (const f of feed) {
+                                    /* Personalization is CODE, not another model call: tags were
+                                     * assigned once at ingestion from a fixed vocabulary, so
+                                     * matching them against the user's interests is language-free
+                                     * and per-user free. Ordering only, never exclusion — an
+                                     * empty grid is worse than an unranked one. Known price rides
+                                     * along for the budget filter the moment a budget field
+                                     * exists; nothing claims to fit a budget it cannot see. */
+                                    const _interests = (Array.isArray(preferences?.interests) ? preferences.interests : [])
+                                        .map(x => String(x).toLowerCase());
+                                    const _tagScore = f => (f.tags || []).reduce((n, t) =>
+                                        n + (_interests.some(i => i.includes(t) || t.includes(i)) ? 1 : 0), 0);
+                                    const orderedFeed = [...feed].sort((a, b) =>
+                                        _tagScore(b) - _tagScore(a) || (new Date(a.startDate) - new Date(b.startDate)));
+                                    for (const f of orderedFeed) {
                                         if (added >= shortfall) break;
                                         if (claimed.has(f)) continue;
                                         const fn = norm(f.name);
@@ -5984,7 +6152,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                             _eventAddress: f.venueAddress || null,
                                             sourceUrl: f.url || null,
                                             _action: 'events',
-                                            provenance: { startDate: 'feed', venue: 'feed', ...(f.image ? { image: 'feed' } : {}) }
+                                            ...(f.tags?.length ? { tags: f.tags } : {}),
+                                            ...(f.price ? { price: f.price } : {}),
+                                            ...(f.names ? { names: f.names } : {}),
+                                            provenance: { startDate: f.provenance === 'extracted' ? 'extracted' : 'feed', venue: f.provenance === 'extracted' ? 'extracted' : 'feed', ...(f.image ? { image: 'feed' } : {}) }
                                         });
                                         added++;
                                     }
