@@ -134,6 +134,13 @@ router.get('/google', (req, res, next) => {
     const lang = normalizeLanguage(req.query?.lang)
     passport.authenticate('google', {
         scope: ['profile', 'email'],
+        /* Always show Google's account chooser. Without a prompt param Google
+         * silently reuses the active session — fast, but it made switching
+         * accounts impossible from our UI, and silently re-entering someone who
+         * explicitly signed out contradicts the sign-out. One extra tap for
+         * single-account users buys correct semantics for everyone else; this
+         * is also Google's own recommendation for sign-in buttons. */
+        prompt: 'select_account',
         ...(lang ? { state: lang } : {})
     })(req, res, next)
 })
