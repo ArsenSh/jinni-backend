@@ -5130,8 +5130,18 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * otherwise the verified per-country discovery — so the
                          * search is constrained everywhere, not just where a
                          * human happened to type an allowlist. */
-                        const qaSearchDomains = await resolveSearchDomains(cfg, userRegion);
-                        if (qaSearchDomains.length) console.log(`[search] restricted to ${qaSearchDomains.length} domain(s): ${qaSearchDomains.join(', ')}`);
+                        /* EVENTS ONLY. These domains are ticket sellers and event
+                         * calendars, discovered by asking "who lists events here?".
+                         * Applied to every action they became a cage: a photo_spots
+                         * tap was restricted to tkt.ge/gnta.ge/tickets.ge, and the
+                         * model said so itself — "the search results from TKT.GE
+                         * did not render specific dated event listings" — while
+                         * being asked about photogenic places. Other actions get an
+                         * unrestricted search, exactly as before. */
+                        const qaSearchDomains = action === 'events'
+                            ? await resolveSearchDomains(cfg, userRegion)
+                            : (Array.isArray(cfg.claudeWebSearchAllowedDomains) ? cfg.claudeWebSearchAllowedDomains : []);
+                        if (qaSearchDomains.length) console.log(`[search] ${action}: restricted to ${qaSearchDomains.length} domain(s): ${qaSearchDomains.join(', ')}`);
                         const claudeWebSearch = (isFirstTap || (action === 'events' && !feedCanRefill)) && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
                         if (action === 'events' && !isFirstTap) {
