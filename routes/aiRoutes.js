@@ -1485,6 +1485,10 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                         temperature: 0.5,
                         webSearch: claudeWebSearch,
                         webSearchMaxUses: cfg.claudeWebSearchMaxUses,
+                        // Never sent before: the search ran unrestricted, so the model read
+                        // whatever ranked — a travel blog over the ticket seller's own page.
+                        allowedDomains: cfg.claudeWebSearchAllowedDomains,
+                        blockedDomains: cfg.claudeWebSearchBlockedDomains,
                         cacheSystem: true,
                         signal: controller.signal,
                     })) {
@@ -4262,13 +4266,26 @@ async function fetchEventListing(rawUrl, eventName) {
  * and to SUPPLY events outright. Confined to the country it actually covers —
  * this is an Armenian ticketing site, not a world feed.
  */
+/* A source declares WHICH COUNTRIES IT COVERS. Nothing here is special-cased
+ * to one city, and no coordinates are hardcoded: the app is used worldwide, so
+ * the pipeline asks "is there a source for where this user is?" and gets no
+ * feed — falling back to the AI exactly as before — anywhere there isn't one.
+ * Adding Paris or Tbilisi later is one more row in this array.
+ *
+ * The country must come from `userRegion` (googleService.detectUserRegion),
+ * NOT from `effectiveLocation`. That was the bug that silently disabled the
+ * whole feed in production: resolveEffectiveLocation()'s real-time GPS branch —
+ * the common path — returns only { lat, lng, source, privacyMode, nearbyRadius,
+ * discoveryRadius }, with no city and no country. `effectiveLocation.country`
+ * was undefined, nothing matched, and the feed never ran: no `[feed]` line and
+ * refills still paying for web search. userRegion is already resolved once per
+ * request for the search context, so this costs nothing extra. */
 const EVENT_FEED_SOURCES = [
     {
         label: 'ticket-am',
         // /en/ is the same JSON-LD with English names and venues.
         url: 'https://ticket-am.com/en/',
-        // Matched loosely against the user's resolved country.
-        countries: ['armenia', 'am', 'հայաստան']
+        countries: ['armenia']
     }
 ];
 const EVENT_FEED_TTL_MS = 30 * 60 * 1000;   // a ticketing schedule moves in days, not minutes
@@ -4303,15 +4320,13 @@ async function getEventFeed(source) {
     return events;
 }
 
-/** Every feed that covers the user's country. */
-async function getEventFeedsForLocation(effectiveLocation, destinationInfo) {
-    const hay = [effectiveLocation?.country, destinationInfo?.country]
-        .filter(Boolean).map(s => String(s).toLowerCase());
+/** Every feed covering the country the user is actually in. */
+async function getEventFeedsForLocation(userRegion, effectiveLocation, destinationInfo) {
+    const hay = [userRegion?.country, destinationInfo?.country, effectiveLocation?.country]
+        .filter(Boolean).map(s => String(s).toLowerCase().trim());
     if (!hay.length) return [];
-    const sources = EVENT_FEED_SOURCES.filter(s =>
-        s.countries.some(c => hay.some(h => h.includes(c) || c.includes(h)))
-    );
-    if (!sources.length) return [];
+    const sources = EVENT_FEED_SOURCES.filter(s => s.countries.some(c => hay.includes(c)));
+    if (!sources.length) return [];   // no source here — the AI path is unchanged
     const lists = await Promise.all(sources.map(s => getEventFeed(s)));
     return lists.flat();
 }
@@ -4800,7 +4815,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * remove the source from EVENT_FEED_SOURCES. */
                         let feedForRefill = [];
                         if (action === 'events' && !isFirstTap) {
-                            try { feedForRefill = await getEventFeedsForLocation(effectiveLocation, req.body?.destinationInfo); }
+                            try { feedForRefill = await getEventFeedsForLocation(userRegion, effectiveLocation, req.body?.destinationInfo); }
                             catch { feedForRefill = []; }
                         }
                         const feedCanRefill = feedForRefill.length > 0;
@@ -4832,6 +4847,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             temperature: 0.3,
                             webSearch: claudeWebSearch,
                             webSearchMaxUses: cfg.claudeWebSearchMaxUses,
+                            // Never sent before: the search ran unrestricted, so the model read
+                            // whatever ranked — a travel blog over the ticket seller's own page.
+                            allowedDomains: cfg.claudeWebSearchAllowedDomains,
+                            blockedDomains: cfg.claudeWebSearchBlockedDomains,
                             cacheSystem: true,   // now effective — there is a system string to cache
                         });
                         responseText = claudeResult.text;
@@ -4843,6 +4862,22 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             qaRealTokens = claudeService.billableTokens(claudeResult.usage);
                         }
                         console.log(`[provider] quick-action=claude model=${cfg.claudeModel} searches=${claudeResult.searchCount} tokens=${qaRealTokens ?? '?'} (in=${claudeResult.usage?.input_tokens || 0} out=${claudeResult.usage?.output_tokens || 0} cacheRead=${claudeResult.usage?.cache_read_input_tokens || 0} cacheWrite=${claudeResult.usage?.cache_creation_input_tokens || 0})`);
+                        /* ── Which sites this answer actually came from ───────────────
+                         * Always on, one line. The result URLs already arrive inside the
+                         * response we paid for, but nothing ever printed them outside
+                         * AI_TRACE — so "where did this date come from?" was unanswerable
+                         * from a normal log, and a homeexchange.com blog post supplying a
+                         * concert date went unnoticed until the card looked wrong.
+                         * Domains only: enough to judge the sources at a glance, and it
+                         * shows immediately whether the allow/block lists are biting. */
+                        if (claudeResult.searches?.length) {
+                            const domains = [...new Set(
+                                claudeResult.searches
+                                    .flatMap(s => (s.results || []).map(r => { try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch { return null; } }))
+                                    .filter(Boolean)
+                            )];
+                            console.log(`[search] read ${domains.length} domain(s): ${domains.join(', ') || 'none'}`);
+                        }
                         /* ── Trace: what it searched, what it read, what it said ──────
                          * Off unless AI_TRACE=1. Diagnosing a wrong card previously meant
                          * inferring the model's answer from the Google lookups it caused;
@@ -5518,7 +5553,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         // A listing's venue beats the model's guess as the query
                                         // for the venue pass below (JazZara → "Zazoo Rooftop
                                         // Lounge" was internally consistent and simply wrong).
-                                        if (ld.venueName && !isPlaceholderVenue(ld.venueName, [effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
+                                        if (ld.venueName && !isPlaceholderVenue(ld.venueName, [userRegion?.city, userRegion?.region, userRegion?.country, effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
                                             rec._eventVenue = ld.venueName;
                                             rec.provenance.venue = 'listing';
                                         }
@@ -5538,7 +5573,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * venue lookup, curated dedupe, past-event expiry — for free.
                          */
                         {
-                            const feed = await getEventFeedsForLocation(effectiveLocation, req.body?.destinationInfo);
+                            const feed = await getEventFeedsForLocation(userRegion, effectiveLocation, req.body?.destinationInfo);
                             if (feed.length) {
                                 const norm = s => normalizePlaceName(s);
                                 const dayOf = d => { const t = new Date(d).getTime(); return Number.isFinite(t) ? Math.floor(t / 86400000) : null; };
@@ -5570,7 +5605,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         fixedDate++;
                                         console.log(`[feed] "${rec.name}": date corrected ${new Date(wasDay * 86400000).toISOString().slice(0, 10)} → ${match.startDate.slice(0, 10)} (${match.feedLabel})`);
                                     }
-                                    if (match.venueName && !isPlaceholderVenue(match.venueName, [effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
+                                    if (match.venueName && !isPlaceholderVenue(match.venueName, [userRegion?.city, userRegion?.region, userRegion?.country, effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
                                         if (norm(match.venueName) !== norm(rec._eventVenue)) fixedVenue++;
                                         rec._eventVenue = match.venueName;
                                         rec.provenance.venue = 'feed';
@@ -5661,8 +5696,20 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         if (needVenue.length && effectiveLocation && Number.isFinite(effectiveLocation.lat)) {
                             const center = { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
                             const venueRadiusKm = userRadius || (nearbyMode ? 5 : 50);
-                            // Names that mean "this whole city/country", not a building.
+                            /* Names that mean "this whole city/country", not a building.
+                             *
+                             * userRegion FIRST, and it is the one that actually matters:
+                             * effectiveLocation carries city/country only on the settings
+                             * path, never on real-time GPS. Built from effectiveLocation
+                             * alone this list came out EMPTY in production, so
+                             * isPlaceholderVenue had no city to compare against and
+                             * "Yerevan" passed straight through to Google — which is why
+                             * three events still landed on one Cascade pin after the fix
+                             * that was supposed to stop exactly that. */
                             const venueCityNames = [
+                                userRegion?.city,
+                                userRegion?.region,
+                                userRegion?.country,
                                 effectiveLocation.city,
                                 effectiveLocation.country,
                                 req.body?.destinationInfo?.city,

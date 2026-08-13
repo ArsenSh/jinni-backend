@@ -25,6 +25,26 @@ const appConfigSchema = new mongoose.Schema({
     claudeModel:            { type: String,  default: 'claude-haiku-4-5-20251001' },
     claudeWebSearch:        { type: Boolean, default: false },  // master switch for web search
     claudeWebSearchMaxUses: { type: Number,  default: 3 },      // cap searches per request ($0.01 each)
+    /* Which sites the web search may read.
+     *
+     * These were never sent. claudeService.buildTools() has always accepted
+     * allowedDomains/blockedDomains and set them on the tool, but aiRoutes
+     * passed neither — so every search ran completely unrestricted and the
+     * model read whatever happened to rank. A concert date was taken from a
+     * homeexchange.com blog post while the ticket seller's own page went
+     * unread, because nothing told it which sources are authoritative.
+     *
+     * Configured here, not hardcoded, because the right sources differ by
+     * country (tomsarkgh.am and tkt.am in Armenia; something else in France).
+     * Both are editable from the admin page — no deploy needed to retune.
+     *
+     * blocked wins over allowed at the API, so keep the two disjoint.
+     * ALLOWED is a hard whitelist: non-empty means the search may read ONLY
+     * those domains. That is exactly the "just use the good sites" behaviour,
+     * and it is also easy to over-narrow into finding nothing — set it
+     * deliberately, and watch the searches= count after you do. */
+    claudeWebSearchBlockedDomains: { type: [String], default: [] },
+    claudeWebSearchAllowedDomains: { type: [String], default: [] },
     // Explicit allowlist of quick-actions that may web-search on their FIRST
     // tap (when claudeWebSearch is true). An action searches only if it is
     // present here. Empty array = NO action searches (use the claudeWebSearch
@@ -109,6 +129,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
     const allowed = [
         'aiProviderChat', 'aiProviderQuickAction', 'claudeModel',
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
+        'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',
