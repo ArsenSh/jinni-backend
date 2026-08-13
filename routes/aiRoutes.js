@@ -4413,7 +4413,7 @@ async function getEventFeedsForLocation(userRegion, effectiveLocation, destinati
     let sources = EVENT_FEED_SOURCES.filter(s => s.countries.some(c => hay.includes(c)));
     if (userRegion?.country) {
         try {
-            const found = (await discoverEventSources(userRegion.country)).feeds || [];
+            const found = (await discoverEventSources(userRegion.country, userRegion.city)).feeds || [];
             const known = new Set(sources.map(s => s.label));
             sources = sources.concat(found.filter(f => !known.has(f.label)));
         } catch { /* discovery is an optimisation, never a dependency */ }
@@ -4477,7 +4477,12 @@ async function _domainResolves(host) {
 
 /** Can WE fetch it? Only needed to decide whether it can be a free feed. */
 async function _fetchDomainHome(host) {
-    for (const url of [`https://${host}/en/`, `https://${host}/`]) {
+    /* `/en` WITHOUT the trailing slash matters: tomsarkgh.am/en/ 404s while
+     * tomsarkgh.am/en is the English listing page. Falling straight through to
+     * `/` served the Armenian homepage, where the Latin word "Yerevan" never
+     * appears — so the relevance test excluded a site that is the country's
+     * best event source. */
+    for (const url of [`https://${host}/en`, `https://${host}/en/`, `https://${host}/`]) {
         try {
             const html = await _fetchListingHtml(url);
             if (html && html.length > 500) return { url, html };
@@ -4486,7 +4491,7 @@ async function _fetchDomainHome(host) {
     return null;
 }
 
-async function discoverEventSources(country) {
+async function discoverEventSources(country, city) {
     const key = String(country || '').toLowerCase().trim();
     if (!key || _listingFetchUnavailable) return { domains: [], feeds: [] };
 
@@ -4505,8 +4510,19 @@ async function discoverEventSources(country) {
                 system: 'You return only JSON. No prose, no markdown fences.',
                 messages: [{
                     role: 'user',
-                    content: `Which websites list upcoming public events and sell event tickets in ${country}? `
-                           + `Prefer national ticket sellers and official city/tourism event calendars. `
+                    /* The place MUST be named unambiguously. Asked for "Georgia"
+                     * alone the model returned exploregeorgia.org, atlanta.net and
+                     * US ticket sellers — the STATE, not the country — and every
+                     * one passed verification because they are real domains. A
+                     * Tbilisi user's search was locked to Atlanta and found
+                     * nothing. Naming the city settles it, and "the COUNTRY"
+                     * settles it again for Georgia, Jordan, Luxembourg and every
+                     * other name shared with a city or region. */
+                    content: `Which websites list upcoming public events and sell event tickets in `
+                           + `${city ? `${city}, ` : ''}${country}? `
+                           + `${country} here is the COUNTRY${city ? `, and ${city} is a city in it` : ''} — `
+                           + `not a US state or any similarly named place elsewhere. `
+                           + `Prefer national ticket sellers and official city/tourism event calendars for that country. `
                            + `Exclude blogs, travel magazines, aggregators and social networks. `
                            + `Reply with ONLY a JSON array of at most ${DOMAIN_DISCOVERY_MAX} bare hostnames, e.g. ["example.com","example.org"].`
                 }]
@@ -4528,20 +4544,56 @@ async function discoverEventSources(country) {
                 // Fetchable by us? → then it can also be probed for a free feed.
                 const ok = await _fetchDomainHome(host);
                 if (!ok) return { host, real: true, feed: null };
+                /* Real is not the same as RELEVANT. Every Atlanta domain above was
+                 * real. When we can read the page, require it to mention the place
+                 * we asked about — a Georgian ticket site names Tbilisi or Georgia;
+                 * atlanta.net names neither. Sites we cannot fetch keep the benefit
+                 * of the doubt, since we have no page to judge. */
+                /* Match on the CITY, not the country. Country names are the whole
+                 * problem: atlanta.net and exploregeorgia.org both say "Georgia"
+                 * on every page, so a country-name test kept exactly the domains
+                 * it was meant to remove. "Tbilisi" appears on neither. */
+                const hay = ok.html.toLowerCase();
+                const needle = String(city || country || '').toLowerCase().replace(/^t'/, '');
+                const relevant = !needle || hay.includes(needle);
                 const events = _extractLdEvents(ok.html).map(_normalizeLdEvent).filter(e => e.name && e.startDate);
                 return {
-                    host, real: true,
-                    feed: events.length >= 3
+                    host, real: true, relevant,
+                    feed: relevant && events.length >= 3
                         ? { label: host, url: ok.url, countries: [String(country).toLowerCase()] }
                         : null
                 };
             }));
 
-            domains = checks.filter(c => c.real).map(c => c.host);
+            /* Drop every readable page that does not mention the city, with no
+             * "keep them all if none matched" escape — that escape kept the entire
+             * Atlanta list, which is the precise failure it was meant to prevent.
+             *
+             * Emptying the list is SAFE, and it is the same answer in both cases
+             * this can produce. If the domains were wrong (Atlanta for Tbilisi),
+             * dropping them is correct. If they were right but write their city
+             * only in their own script, dropping them costs us nothing we had
+             * before: an empty allowlist means UNRESTRICTED search — exactly the
+             * behaviour that existed before discovery, never a broken state. */
+            /* The allowlist requires PROVEN relevance: fetched, and the page names
+             * the city. Unfetchable domains no longer get the benefit of the doubt.
+             *
+             * That leniency was added so bot-blocked Dubai sites survived, and it
+             * is precisely what let atlanta.net and exploregeorgia.org through for
+             * Tbilisi — both 403 us, so neither could be disproved, and search was
+             * locked to the wrong continent while the user saw "no events".
+             *
+             * The two failure modes are not symmetric. A WRONG allowlist actively
+             * breaks the feature; a SMALL or empty one merely means unrestricted
+             * search, which is what happened before discovery existed. So when in
+             * doubt, leave the domain out. */
+            const offTopic = checks.filter(c => c.real && c.relevant !== true).map(c => c.host);
+            domains = checks.filter(c => c.relevant === true).map(c => c.host);
             feeds = checks.filter(c => c.feed).map(c => c.feed);
             const invented = checks.filter(c => !c.real).map(c => c.host);
             console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} real [${domains.join(', ') || '—'}]`
                 + `${invented.length ? ` | not a real domain: ${invented.join(', ')}` : ''}`
+                + `${offTopic.length ? ` | unconfirmed for ${city || country} (excluded): ${offTopic.join(', ')}` : ''}`
                 + `${feeds.length ? ` | JSON-LD feed(s): ${feeds.map(f => f.label).join(', ')}` : ' | no free feeds here — search only'}`);
         } catch (err) {
             console.warn(`[discovery] ${country} failed: ${err.message} — falling back to unrestricted search`);
@@ -4564,7 +4616,7 @@ async function resolveSearchDomains(cfg, userRegion) {
     if (cfg.eventSourceAutoDiscover === false) return [];
     const country = userRegion?.country;
     if (!country) return [];
-    try { return (await discoverEventSources(country)).domains; } catch { return []; }
+    try { return (await discoverEventSources(country, userRegion?.city)).domains; } catch { return []; }
 }
 
 let quickActionCallCount = 0;
