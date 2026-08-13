@@ -51,6 +51,11 @@ const appConfigSchema = new mongoose.Schema({
      * only: a validator's curated record is a deliberate human decision and is
      * never hidden by this. 0 disables the limit. */
     eventHorizonDays: { type: Number, default: 7 },
+    /* Discover each country's event sources automatically (one small AI call
+     * per country per week, verified before use). A manual
+     * claudeWebSearchAllowedDomains always wins where it is set; this only
+     * fills the countries you have not configured. false = manual only. */
+    eventSourceAutoDiscover: { type: Boolean, default: true },
     claudeWebSearchBlockedDomains: { type: [String], default: [] },
     claudeWebSearchAllowedDomains: { type: [String], default: [] },
     // Explicit allowlist of quick-actions that may web-search on their FIRST
@@ -138,7 +143,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'aiProviderChat', 'aiProviderQuickAction', 'claudeModel',
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
-        'eventHorizonDays',
+        'eventHorizonDays', 'eventSourceAutoDiscover',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',

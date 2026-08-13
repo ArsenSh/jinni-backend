@@ -4408,10 +4408,133 @@ async function getEventFeedsForLocation(userRegion, effectiveLocation, destinati
     const hay = [userRegion?.country, destinationInfo?.country, effectiveLocation?.country]
         .filter(Boolean).map(s => String(s).toLowerCase().trim());
     if (!hay.length) return [];
-    const sources = EVENT_FEED_SOURCES.filter(s => s.countries.some(c => hay.includes(c)));
+    // Hand-registered sources first, then anything discovery verified for this
+    // country — so a new market gets free feeds without a code change.
+    let sources = EVENT_FEED_SOURCES.filter(s => s.countries.some(c => hay.includes(c)));
+    if (userRegion?.country) {
+        try {
+            const found = (await discoverEventSources(userRegion.country)).feeds || [];
+            const known = new Set(sources.map(s => s.label));
+            sources = sources.concat(found.filter(f => !known.has(f.label)));
+        } catch { /* discovery is an optimisation, never a dependency */ }
+    }
     if (!sources.length) return [];   // no source here — the AI path is unchanged
     const lists = await Promise.all(sources.map(s => getEventFeed(s)));
     return lists.flat();
+}
+
+/* ═══════════ Automatic per-country event-source discovery ═════════════════
+ * A hand-typed domain allowlist only ever covers one country. The moment the
+ * app is opened in Tbilisi or Paris it either blocks everything useful or has
+ * to be extended by hand, forever — and this app is used worldwide.
+ *
+ * So the sources are DISCOVERED, once per country, and then reused:
+ *
+ *   1. ask the model which sites list events in that country (one small call,
+ *      no web search, ~100 tokens);
+ *   2. VERIFY every name it gives — models invent plausible-looking domains,
+ *      so anything that fails DNS/SSRF checks or does not return HTML is
+ *      discarded before it is trusted with anything;
+ *   3. probe each survivor for schema.org/Event JSON-LD. A site that publishes
+ *      it becomes a free, exact-date, poster-carrying FEED — the same deal
+ *      ticket-am gives — with no country-specific code written for it;
+ *   4. cache the result for a week.
+ *
+ * Cost is one small call per country per week, shared by every user in it.
+ * A MANUAL allowlist always wins where one is set: discovery fills the gaps,
+ * it does not overrule a human decision.
+ */
+const DOMAIN_DISCOVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DOMAIN_DISCOVERY_MAX = 6;
+const _discoveredByCountry = new Map();   // country(lc) → { at, domains, feeds }
+const _discoveryInFlight = new Map();     // country(lc) → Promise (one call, not N)
+
+/** Reachable, public, HTML-serving? Returns the body so we can probe it once. */
+async function _verifyDomain(host) {
+    for (const url of [`https://${host}/en/`, `https://${host}/`]) {
+        try {
+            const html = await _fetchListingHtml(url);
+            if (html && html.length > 500) return { url, html };
+        } catch { /* try the next form */ }
+    }
+    return null;
+}
+
+async function discoverEventSources(country) {
+    const key = String(country || '').toLowerCase().trim();
+    if (!key || _listingFetchUnavailable) return { domains: [], feeds: [] };
+
+    const hit = _discoveredByCountry.get(key);
+    if (hit && (Date.now() - hit.at) < DOMAIN_DISCOVERY_TTL_MS) return hit;
+    if (_discoveryInFlight.has(key)) return _discoveryInFlight.get(key);
+
+    const run = (async () => {
+        let domains = [], feeds = [];
+        try {
+            const cfg = await AppConfig.getConfig();
+            const res = await claudeService.complete({
+                model: cfg.claudeModel,
+                maxTokens: 200,
+                temperature: 0,
+                system: 'You return only JSON. No prose, no markdown fences.',
+                messages: [{
+                    role: 'user',
+                    content: `Which websites list upcoming public events and sell event tickets in ${country}? `
+                           + `Prefer national ticket sellers and official city/tourism event calendars. `
+                           + `Exclude blogs, travel magazines, aggregators and social networks. `
+                           + `Reply with ONLY a JSON array of at most ${DOMAIN_DISCOVERY_MAX} bare hostnames, e.g. ["example.com","example.org"].`
+                }]
+            });
+            const raw = String(res?.text || '');
+            const arr = JSON.parse((raw.match(/\[[\s\S]*?\]/) || ['[]'])[0]);
+            const proposed = (Array.isArray(arr) ? arr : [])
+                .map(d => String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, ''))
+                .filter(d => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d))
+                .slice(0, DOMAIN_DISCOVERY_MAX);
+
+            // ── Verify, then probe. A name the model produced is a HINT, never
+            //    a fact: it reaches the network only after passing the same
+            //    SSRF guards as any other fetched URL.
+            const checks = await Promise.all(proposed.map(async host => {
+                const ok = await _verifyDomain(host);
+                if (!ok) return { host, live: false, feed: null };
+                const events = _extractLdEvents(ok.html).map(_normalizeLdEvent).filter(e => e.name && e.startDate);
+                return {
+                    host, live: true,
+                    feed: events.length >= 3
+                        ? { label: host, url: ok.url, countries: [String(country).toLowerCase()] }
+                        : null
+                };
+            }));
+
+            domains = checks.filter(c => c.live).map(c => c.host);
+            feeds = checks.filter(c => c.feed).map(c => c.feed);
+            const rejected = checks.filter(c => !c.live).map(c => c.host);
+            console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} verified [${domains.join(', ') || '—'}]`
+                + `${rejected.length ? ` | unreachable: ${rejected.join(', ')}` : ''}`
+                + `${feeds.length ? ` | JSON-LD feed(s): ${feeds.map(f => f.label).join(', ')}` : ' | no free feeds here — search only'}`);
+        } catch (err) {
+            console.warn(`[discovery] ${country} failed: ${err.message} — falling back to unrestricted search`);
+            domains = []; feeds = [];
+        }
+        const out = { at: Date.now(), domains, feeds };
+        _discoveredByCountry.set(key, out);
+        _discoveryInFlight.delete(key);
+        return out;
+    })();
+
+    _discoveryInFlight.set(key, run);
+    return run;
+}
+
+/** Domains the web search may read here. A manual allowlist always wins. */
+async function resolveSearchDomains(cfg, userRegion) {
+    const manual = Array.isArray(cfg.claudeWebSearchAllowedDomains) ? cfg.claudeWebSearchAllowedDomains.filter(Boolean) : [];
+    if (manual.length) return manual;
+    if (cfg.eventSourceAutoDiscover === false) return [];
+    const country = userRegion?.country;
+    if (!country) return [];
+    try { return (await discoverEventSources(country)).domains; } catch { return []; }
 }
 
 let quickActionCallCount = 0;
@@ -4902,6 +5025,12 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             catch { feedForRefill = []; }
                         }
                         const feedCanRefill = feedForRefill.length > 0;
+                        /* Which sites this search may read. Manual list if set,
+                         * otherwise the verified per-country discovery — so the
+                         * search is constrained everywhere, not just where a
+                         * human happened to type an allowlist. */
+                        const qaSearchDomains = await resolveSearchDomains(cfg, userRegion);
+                        if (qaSearchDomains.length) console.log(`[search] restricted to ${qaSearchDomains.length} domain(s): ${qaSearchDomains.join(', ')}`);
                         const claudeWebSearch = (isFirstTap || (action === 'events' && !feedCanRefill)) && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
                         if (action === 'events' && !isFirstTap) {
@@ -4932,7 +5061,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             webSearchMaxUses: cfg.claudeWebSearchMaxUses,
                             // Never sent before: the search ran unrestricted, so the model read
                             // whatever ranked — a travel blog over the ticket seller's own page.
-                            allowedDomains: cfg.claudeWebSearchAllowedDomains,
+                            allowedDomains: qaSearchDomains,
                             blockedDomains: cfg.claudeWebSearchBlockedDomains,
                             cacheSystem: true,   // now effective — there is a system string to cache
                         });
@@ -5773,6 +5902,38 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * radius the rest of the pipeline uses, so a wrong venue match
                          * falls back to the date-card instead of misplacing the pin.
                          */
+                        /* ── …and not too far in the FUTURE either ────────────────────
+                         * The other end of the same question. A tap in August was
+                         * returning concerts in October — seven weeks out is a catalogue,
+                         * not "what's on now". Both the model and the ticketing feed list
+                         * everything they have, so the horizon has to be applied here.
+                         *
+                         * Runs BEFORE venue resolution on purpose. Sitting after it, this
+                         * filter threw away events the venue pass had ALREADY paid Google
+                         * to locate — the logs show "The Adana Complex" and the Demirchyan
+                         * complex looked up on every single tap only to be dropped moments
+                         * later. It also sat between `beforePast` and its own subtraction,
+                         * so the past-event filter reported the horizon's drops as its own
+                         * ("dropped 9 of 9" when it had dropped none).
+                         *
+                         * A CURATED record is exempt: a validator entering an event months
+                         * ahead did so deliberately, and the governing principle is that
+                         * their decision is authoritative. Set eventHorizonDays to 0 in
+                         * admin to switch this off. */
+                        const horizonDays = Number.isFinite(cfg.eventHorizonDays) ? cfg.eventHorizonDays : 7;
+                        if (horizonDays > 0) {
+                            const cutoff = startOfTodayUTC + (horizonDays + 1) * 86400000;
+                            const beforeFar = recommendations.length;
+                            recommendations = recommendations.filter(rec => {
+                                if (!rec.eventSchedule || rec.source === 'database') return true;
+                                const t = new Date(rec.eventSchedule.startDate).getTime();
+                                if (!Number.isFinite(t)) return true;
+                                return t < cutoff;
+                            });
+                            const droppedFar = beforeFar - recommendations.length;
+                            if (droppedFar > 0) console.log(`[quick-action] horizon: dropped ${droppedFar} event(s) beyond ${horizonDays} day(s)`);
+                        }
+
                         const needVenue = recommendations.filter(r =>
                             (r.latitude == null || r.longitude == null) && (r._eventVenue || r._eventAddress)
                         );
@@ -6013,29 +6174,6 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const dateOnly = t % 86400000 === 0;           // exactly midnight UTC
                             return dateOnly ? t >= startOfTodayUTC : t >= nowMs;
                         });
-                        /* ── …and not too far in the FUTURE either ────────────────────
-                         * The other end of the same question. A tap in August was
-                         * returning concerts in October — seven weeks out is a catalogue,
-                         * not "what's on now". Both the model and the ticketing feed list
-                         * everything they have, so the horizon has to be applied here.
-                         *
-                         * A CURATED record is exempt: a validator entering an event months
-                         * ahead did so deliberately, and the governing principle is that
-                         * their decision is authoritative. Set eventHorizonDays to 0 in
-                         * admin to switch this off. */
-                        const horizonDays = Number.isFinite(cfg.eventHorizonDays) ? cfg.eventHorizonDays : 7;
-                        if (horizonDays > 0) {
-                            const cutoff = startOfTodayUTC + (horizonDays + 1) * 86400000;
-                            const beforeFar = recommendations.length;
-                            recommendations = recommendations.filter(rec => {
-                                if (!rec.eventSchedule || rec.source === 'database') return true;
-                                const t = new Date(rec.eventSchedule.startDate).getTime();
-                                if (!Number.isFinite(t)) return true;
-                                return t < cutoff;
-                            });
-                            const droppedFar = beforeFar - recommendations.length;
-                            if (droppedFar > 0) console.log(`[quick-action] horizon: dropped ${droppedFar} event(s) beyond ${horizonDays} day(s)`);
-                        }
                         const droppedPast = beforePast - recommendations.length;
                         /* Logged UNCONDITIONALLY, including the zero case. Previously this
                          * only spoke up when it dropped something, so "no line in the log"
