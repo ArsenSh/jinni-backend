@@ -4449,8 +4449,34 @@ const DOMAIN_DISCOVERY_MAX = 6;
 const _discoveredByCountry = new Map();   // country(lc) → { at, domains, feeds }
 const _discoveryInFlight = new Map();     // country(lc) → Promise (one call, not N)
 
-/** Reachable, public, HTML-serving? Returns the body so we can probe it once. */
-async function _verifyDomain(host) {
+/* Two DIFFERENT questions, and conflating them threw away real sources.
+ *
+ * Dubai's first discovery proposed 6 sites and kept 2, rejecting
+ * ticketmaster.ae, timeoutdubai.com and platinumlist.net — all real, major
+ * event sites. Checked by hand: ticketmaster.ae answers 200 to anyone,
+ * timeoutdubai.com returns 403 to bots, platinumlist.net simply would not
+ * connect from our host. Only virgin-megastore.ae was genuinely invented
+ * (no DNS at all).
+ *
+ * The error was using ONE test for both purposes. For the search allowlist we
+ * never fetch the site — Claude's own search infrastructure does, and it is
+ * not blocked by the things that block us. All that matters there is that the
+ * domain is real and public. Our fetch has to succeed only for the JSON-LD
+ * feed probe, where we genuinely need the bytes.
+ */
+
+/** Real, public, resolvable? Enough to let the SEARCH read it. */
+async function _domainResolves(host) {
+    try {
+        await _assertPublicHttpUrl(`https://${host}/`);   // DNS + SSRF guards
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Can WE fetch it? Only needed to decide whether it can be a free feed. */
+async function _fetchDomainHome(host) {
     for (const url of [`https://${host}/en/`, `https://${host}/`]) {
         try {
             const html = await _fetchListingHtml(url);
@@ -4496,22 +4522,26 @@ async function discoverEventSources(country) {
             //    a fact: it reaches the network only after passing the same
             //    SSRF guards as any other fetched URL.
             const checks = await Promise.all(proposed.map(async host => {
-                const ok = await _verifyDomain(host);
-                if (!ok) return { host, live: false, feed: null };
+                // Real domain? → the SEARCH may read it, whether or not we can.
+                const real = await _domainResolves(host);
+                if (!real) return { host, real: false, feed: null };
+                // Fetchable by us? → then it can also be probed for a free feed.
+                const ok = await _fetchDomainHome(host);
+                if (!ok) return { host, real: true, feed: null };
                 const events = _extractLdEvents(ok.html).map(_normalizeLdEvent).filter(e => e.name && e.startDate);
                 return {
-                    host, live: true,
+                    host, real: true,
                     feed: events.length >= 3
                         ? { label: host, url: ok.url, countries: [String(country).toLowerCase()] }
                         : null
                 };
             }));
 
-            domains = checks.filter(c => c.live).map(c => c.host);
+            domains = checks.filter(c => c.real).map(c => c.host);
             feeds = checks.filter(c => c.feed).map(c => c.feed);
-            const rejected = checks.filter(c => !c.live).map(c => c.host);
-            console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} verified [${domains.join(', ') || '—'}]`
-                + `${rejected.length ? ` | unreachable: ${rejected.join(', ')}` : ''}`
+            const invented = checks.filter(c => !c.real).map(c => c.host);
+            console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} real [${domains.join(', ') || '—'}]`
+                + `${invented.length ? ` | not a real domain: ${invented.join(', ')}` : ''}`
                 + `${feeds.length ? ` | JSON-LD feed(s): ${feeds.map(f => f.label).join(', ')}` : ' | no free feeds here — search only'}`);
         } catch (err) {
             console.warn(`[discovery] ${country} failed: ${err.message} — falling back to unrestricted search`);
