@@ -78,6 +78,29 @@ function searchCountFromUsage(usage) {
 }
 
 /**
+ * Every token Anthropic actually bills for, from a usage block.
+ *
+ * `usage.input_tokens` counts ONLY the uncached input. This service sends the
+ * system prompt with cache_control:'ephemeral' (three call sites below), so on
+ * a cache hit the bulk of the input arrives as `cache_read_input_tokens` and on
+ * a miss as `cache_creation_input_tokens` — summing input+output alone silently
+ * omits both. Measured against the Anthropic console over four real events
+ * taps, the admin dashboard read ~14.2K tokens where the console read ~138K:
+ * an order of magnitude, essentially all of it cache traffic.
+ *
+ * Cached input is cheaper per token, not free, so it belongs in the count. The
+ * dashboard exists to answer "what is this costing?", and it cannot answer that
+ * from a tenth of the tokens.
+ */
+function billableTokens(usage) {
+    if (!usage) return 0;
+    return (usage.input_tokens || 0)
+         + (usage.output_tokens || 0)
+         + (usage.cache_read_input_tokens || 0)
+         + (usage.cache_creation_input_tokens || 0);
+}
+
+/**
  * Re-chunk a Claude text_delta into DeepSeek-sized pieces.
  *
  * Claude streams coarse, bursty text_delta chunks (often a whole phrase or a
@@ -165,7 +188,9 @@ async function complete({
     // Loop until the turn actually ends, accumulating text + usage + searches.
     let convoLoop = Array.isArray(convo) ? [...convo] : convo;
     let text = '';
-    let usage = { input_tokens: 0, output_tokens: 0 };
+    // Cache fields accumulate too — see billableTokens() for why leaving them
+    // out under-reported the admin dashboard by ~10×.
+    let usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
     let searchCount = 0;
     let guard = 0;
     // ── Search provenance ───────────────────────────────────────────────────
@@ -201,6 +226,8 @@ async function complete({
             .join('');
         usage.input_tokens  += resp.usage?.input_tokens  || 0;
         usage.output_tokens += resp.usage?.output_tokens || 0;
+        usage.cache_read_input_tokens     += resp.usage?.cache_read_input_tokens     || 0;
+        usage.cache_creation_input_tokens += resp.usage?.cache_creation_input_tokens || 0;
         searchCount += searchCountFromUsage(resp.usage);
 
         // Continue only on a genuine pause; end_turn / max_tokens / stop_sequence end the loop.
@@ -339,6 +366,7 @@ module.exports = {
     complete,
     streamChat,
     fromOpenAIMessages,
+    billableTokens,
     WEB_SEARCH_TOOL_VERSION,
     DEFAULT_MODEL,
 };

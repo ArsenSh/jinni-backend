@@ -1316,6 +1316,13 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
             // follows, the marker was real numbering and is flushed back out.
             let pendingListMarker = '';
             let chatSearchCount = 0;   // Claude web-search count for this chat turn (0 for DeepSeek)
+            /* Real billed tokens for this chat turn, when the provider reports them.
+             * The chat path has always billed the admin dashboard from a
+             * characters/4 ESTIMATE (inputTokens below, plus the response length in
+             * processStreamCompletion) and thrown the streamed usage block away —
+             * so the quick-action fix from the previous round never applied here.
+             * null when unknown, in which case the estimate still stands in. */
+            let chatRealTokens = null;
 
             // Per-content-token parser — IDENTICAL logic for DeepSeek and Claude.
             // Each provider simply calls feedChunk(textChunk). (Original `continue`
@@ -1453,7 +1460,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     res.write(`data: ${JSON.stringify({ type: 'token', content: potentialNameBuffer })}\n\n`);
                     potentialNameBuffer = '';
                 }
-                if (!isClientDisconnected()) { processStreamCompletion(fullResponse, businesses, destinations, message, userId, res, null, effectiveLocation, userPreferences, [], new Set(), requestId, detectedActionType, nearbyMode, healthCheck, inputTokens, useClaudeChat ? 'claude' : 'deepseek', chatSearchCount, alreadyShownPlaceIds, userDislikedIds) }
+                if (!isClientDisconnected()) { processStreamCompletion(fullResponse, businesses, destinations, message, userId, res, null, effectiveLocation, userPreferences, [], new Set(), requestId, detectedActionType, nearbyMode, healthCheck, inputTokens, useClaudeChat ? 'claude' : 'deepseek', chatSearchCount, alreadyShownPlaceIds, userDislikedIds, chatRealTokens) }
             };
 
             // Token-usage correction (runs once the model finishes).
@@ -1490,8 +1497,9 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                             // during the web-search pause. Safe to ignore client-side.
                             res.write(`data: ${JSON.stringify({ type: 'searching' })}\n\n`);
                         } else if (ev.type === 'done') {
-                            console.log(`[provider] chat=claude model=${cfg.claudeModel} searches=${ev.searchCount}`);
                             chatSearchCount = ev.searchCount || 0;
+                            chatRealTokens = claudeService.billableTokens(ev.usage) || null;
+                            console.log(`[provider] chat=claude model=${cfg.claudeModel} searches=${ev.searchCount} tokens=${chatRealTokens ?? 'estimate'} (in=${ev.usage?.input_tokens || 0} out=${ev.usage?.output_tokens || 0} cacheRead=${ev.usage?.cache_read_input_tokens || 0} cacheWrite=${ev.usage?.cache_creation_input_tokens || 0})`);
                             await applyTokenCorrection();
                             finishStream();
                         } else if (ev.type === 'error') {
@@ -2697,7 +2705,7 @@ const withEnrichTimeout = (promise, ms = 8000, fallback = null) => Promise.race(
     }),
 ]);
 
-async function processStreamCompletion(aiResponse, businesses, destinations, message, userId, res, req = null, effectiveLocation = null, userPreferences = {}, currentRecommendations = [], emittedRecommendations = new Set(), requestId = null, detectedActionType = 'general', nearbyMode = false, healthCheck = null, inputTokens = 0, provider = 'deepseek', searchCount = 0, alreadyShownPlaceIds = [], userDislikedIds = new Set()) {
+async function processStreamCompletion(aiResponse, businesses, destinations, message, userId, res, req = null, effectiveLocation = null, userPreferences = {}, currentRecommendations = [], emittedRecommendations = new Set(), requestId = null, detectedActionType = 'general', nearbyMode = false, healthCheck = null, inputTokens = 0, provider = 'deepseek', searchCount = 0, alreadyShownPlaceIds = [], userDislikedIds = new Set(), realTokens = null) {
     try {
         currentRecommendations = currentRecommendations || [];
         emittedRecommendations = emittedRecommendations || new Set();
@@ -3284,9 +3292,13 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 usedPrefetchedData: recommendations.filter(r => r.metadata?.usedPrefetchedData).length
             }
         });
-        // Track daily AI usage for the admin chart (input + output tokens)
+        /* Track daily AI usage for the admin chart.
+         * Prefer the provider's REAL billed token count (cached input included)
+         * over the characters/4 estimate. The estimate cannot see cached input,
+         * web-search results injected into context, or the system prompt — which
+         * is why the dashboard read ~10× low against the Anthropic console. */
         const responseTokens = Math.ceil(aiResponse.length / 4);
-        const totalTokens = inputTokens + responseTokens;
+        const totalTokens = realTokens != null ? realTokens : (inputTokens + responseTokens);
         AiDailyStats.track(totalTokens, 1).catch(err => console.error('AiDailyStats error:', err));
         AiProviderDailyStats.track(provider, { tokens: totalTokens, queries: 1, searches: searchCount, endpoint: 'chat' }).catch(err => console.error('AiProviderDailyStats error:', err));
         await User.findByIdAndUpdate(userId, { $inc: { 'analytics.totalQueries': 1 }, $set: { 'analytics.lastActive': new Date() } });
@@ -3945,6 +3957,39 @@ function formatBusinessDetails(business) {
  * state between the two call sites. */
 const PLACEHOLDER_VENUE_RE = /^(various|multiple|several|many|different|citywide|city-wide|nationwide|tba|tbd|n\/?a|online|virtual)\b|\b(venues|locations|churches|theatres|theaters|cinemas|halls|sites)\s*$/i;
 
+/* A CITY is not a venue either — and this one shipped.
+ *
+ * The model answered "Yerevan" and "Yerevan city centre" as the venue/address
+ * for three unrelated events. Both were sent to Google as if they were venues,
+ * which returned an arbitrary establishment near the city centre: all three
+ * events were pinned at 10 Tamanyan St and rendered with the SAME Cascade
+ * photo. (The `[cache] rejected poisoned mapping "Yerevan" → …` guard fired,
+ * proving the cache already distrusts such mappings — but the live lookup then
+ * happily resolved it fresh.)
+ *
+ * "Somewhere in this city" carries no more location than "Various venues" does,
+ * so it gets the same treatment: stay an honest date-card. Matches the bare
+ * city or region name, optionally followed only by a centre/downtown-type word.
+ */
+const _CITY_QUALIFIER_RE = /^(city\s*)?(centre|center|downtown|city|old\s*town|central|area|region|province|outskirts|suburbs)$/i;
+function isPlaceholderVenue(value, cityNames = []) {
+    const v = String(value || '').trim();
+    if (!v) return true;
+    if (PLACEHOLDER_VENUE_RE.test(v)) return true;
+    const norm = normalizePlaceName(v);
+    if (!norm) return true;
+    for (const city of cityNames) {
+        const c = normalizePlaceName(city);
+        if (!c || !norm.startsWith(c)) continue;
+        const rest = norm.slice(c.length).trim();
+        // Exactly the city ("Yerevan"), or the city plus only a generic
+        // qualifier ("Yerevan city centre"). "Yerevan Opera House" has a real
+        // remainder and is a genuine venue, so it passes.
+        if (!rest || _CITY_QUALIFIER_RE.test(rest)) return true;
+    }
+    return false;
+}
+
 const EVENT_LISTING_TIMEOUT_MS   = 4500;
 const EVENT_LISTING_MAX_BYTES    = 1500000;    // ~1.5 MB of HTML is plenty for a <head> full of JSON-LD
 const EVENT_LISTING_MAX_REDIRECTS = 3;
@@ -4116,11 +4161,16 @@ function _ldAddress(a) {
 
 function _normalizeLdEvent(node) {
     const loc = Array.isArray(node.location) ? node.location[0] : node.location;
+    // `url` is the per-event page. On an index feed it is the only way back to
+    // the individual listing, and it becomes the card's "check the listing" link.
+    const url = typeof node.url === 'string' && /^https?:\/\//i.test(node.url.trim())
+        ? node.url.trim() : null;
     return {
         name: _ldText(node.name),
         startDate: _ldDate(node.startDate),
         endDate: _ldDate(node.endDate),
         image: _ldImage(node.image),
+        url,
         venueName: loc && typeof loc === 'object' ? _ldText(loc.name) : _ldText(loc),
         venueAddress: loc && typeof loc === 'object' ? _ldAddress(loc.address) : null
     };
@@ -4150,14 +4200,27 @@ async function fetchEventListing(rawUrl, eventName) {
     let data = null;
     try {
         const html = await _fetchListingHtml(rawUrl);
-        if (html) {
+        /* Say WHY nothing came back. The first production run reported
+         * "0 date(s) corrected" on every tap with no other line — accurate but
+         * unactionable, since it could equally have meant a blocked fetch, a
+         * page with no JSON-LD, or events that didn't match. Probing the URLs
+         * by hand settled it (visityerevan.am and tkt.am publish no JSON-LD at
+         * all; only ticket-am.com does). That probe should not have been
+         * necessary, so each outcome now names itself. */
+        if (!html) {
+            console.log(`[listing] no usable body from ${String(rawUrl).slice(0, 120)} (blocked, non-HTML, or oversized)`);
+        } else {
             const nodes = _extractLdEvents(html);
             const normalized = nodes.map(_normalizeLdEvent).filter(e => e.startDate || e.image);
-            if (normalized.length === 1) {
+            if (!nodes.length) {
+                console.log(`[listing] no schema.org/Event JSON-LD on ${String(rawUrl).slice(0, 120)} — this source cannot verify dates`);
+            } else if (!normalized.length) {
+                console.log(`[listing] ${nodes.length} Event block(s) on ${String(rawUrl).slice(0, 90)} but none carried a date or image`);
+            } else if (normalized.length === 1) {
                 data = normalized[0];
-            } else if (normalized.length > 1) {
+            } else {
                 data = normalized.find(e => e.name && namesPlausiblyMatch(eventName, e.name)) || null;
-                if (!data) console.log(`[listing] ${nodes.length} events on page, none matching "${eventName}" — ignoring rather than guessing`);
+                if (!data) console.log(`[listing] ${normalized.length} events on page, none matching "${eventName}" — ignoring rather than guessing`);
             }
         }
     } catch (err) {
@@ -4173,6 +4236,84 @@ async function fetchEventListing(rawUrl, eventName) {
     }
     _eventListingCache.set(key, { at: Date.now(), data });
     return data;
+}
+
+/* ═══════════════════════ Ticketing index feeds ════════════════════════════
+ * The cheapest good data in this pipeline, and the answer to the cost problem.
+ *
+ * Events web-search on EVERY tap (not just the first), at roughly $0.05–0.07 a
+ * tap once the ~18k tokens of injected search results are counted. That is per
+ * user, per tap, forever — the one part of this app whose cost grows linearly
+ * with success. And it buys unreliable dates: the model put the Shéné concert
+ * three weeks early and Blessing of Grapes a day early.
+ *
+ * ticket-am.com publishes its whole upcoming schedule as schema.org/Event
+ * JSON-LD, in ENGLISH at /en/, with exact start times, real venue names and
+ * official poster art. For the LOBODA concert it gives precisely what a human
+ * validator entered by hand:
+ *
+ *     "Loboda Concert Tickets" | 2026-08-15T20:00:00 | "Altezza by Armenian
+ *     Helicopters" | cdn.pbilet.net/origin/cdb908b7-…
+ *
+ * One HTTP GET. No tokens, no web searches, no model recall. Cached process-
+ * wide and shared by ALL users — cost does not scale with traffic at all.
+ *
+ * Used two ways below: to CORRECT an AI event whose date the model guessed at,
+ * and to SUPPLY events outright. Confined to the country it actually covers —
+ * this is an Armenian ticketing site, not a world feed.
+ */
+const EVENT_FEED_SOURCES = [
+    {
+        label: 'ticket-am',
+        // /en/ is the same JSON-LD with English names and venues.
+        url: 'https://ticket-am.com/en/',
+        // Matched loosely against the user's resolved country.
+        countries: ['armenia', 'am', 'հայաստան']
+    }
+];
+const EVENT_FEED_TTL_MS = 30 * 60 * 1000;   // a ticketing schedule moves in days, not minutes
+const _eventFeedCache = new Map();          // url → { at, events }
+
+/**
+ * Upcoming events from one ticketing index, normalized to the shape the event
+ * pipeline already uses. Never throws — a dead feed degrades to [].
+ */
+async function getEventFeed(source) {
+    const hit = _eventFeedCache.get(source.url);
+    if (hit && (Date.now() - hit.at) < EVENT_FEED_TTL_MS) return hit.events;
+    if (_listingFetchUnavailable) return [];
+
+    let events = [];
+    try {
+        const html = await _fetchListingHtml(source.url);
+        if (html) {
+            events = _extractLdEvents(html)
+                .map(_normalizeLdEvent)
+                .filter(e => e.name && e.startDate)
+                .map(e => ({ ...e, feedLabel: source.label }));
+        }
+        console.log(`[feed] ${source.label}: ${events.length} upcoming event(s) (cached ${Math.round(EVENT_FEED_TTL_MS / 60000)} min, shared by all users, $0 in AI)`);
+    } catch (err) {
+        console.warn(`[feed] ${source.label} unavailable: ${err.message}`);
+        events = [];
+    }
+    // Cache even an empty result, so a broken feed is retried on the TTL rather
+    // than on every single tap.
+    _eventFeedCache.set(source.url, { at: Date.now(), events });
+    return events;
+}
+
+/** Every feed that covers the user's country. */
+async function getEventFeedsForLocation(effectiveLocation, destinationInfo) {
+    const hay = [effectiveLocation?.country, destinationInfo?.country]
+        .filter(Boolean).map(s => String(s).toLowerCase());
+    if (!hay.length) return [];
+    const sources = EVENT_FEED_SOURCES.filter(s =>
+        s.countries.some(c => hay.some(h => h.includes(c) || c.includes(h)))
+    );
+    if (!sources.length) return [];
+    const lists = await Promise.all(sources.map(s => getEventFeed(s)));
+    return lists.flat();
 }
 
 let quickActionCallCount = 0;
@@ -4641,8 +4782,33 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                          * So for events only, a refill is allowed one search. Every other
                          * action keeps the cheap cache-first refill it had.
                          */
-                        const claudeWebSearch = (isFirstTap || action === 'events') && cfg.claudeWebSearch &&
+                        /* ── …UNLESS a ticketing feed can refill instead ──────────────
+                         * The exemption above is what made events the most expensive
+                         * action in the app: a search on every tap, ~$0.05–0.07 each,
+                         * per user, forever. It existed only because a searchless refill
+                         * came back empty — which is a statement about having no other
+                         * source, not about needing a search.
+                         *
+                         * There is now another source. When a feed covers this country it
+                         * supplies real, dated, in-country events for one cached HTTP GET
+                         * shared by every user, so the refill has something to serve and
+                         * the search is redundant. The FIRST tap still searches: the feed
+                         * is one ticketing site, not the whole world, and discovery of
+                         * everything outside it still has to come from somewhere.
+                         *
+                         * Reversible in seconds: drop 'events' back into the condition, or
+                         * remove the source from EVENT_FEED_SOURCES. */
+                        let feedForRefill = [];
+                        if (action === 'events' && !isFirstTap) {
+                            try { feedForRefill = await getEventFeedsForLocation(effectiveLocation, req.body?.destinationInfo); }
+                            catch { feedForRefill = []; }
+                        }
+                        const feedCanRefill = feedForRefill.length > 0;
+                        const claudeWebSearch = (isFirstTap || (action === 'events' && !feedCanRefill)) && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
+                        if (action === 'events' && !isFirstTap) {
+                            console.log(`[quick-action] events refill: web search ${claudeWebSearch ? 'ON' : `OFF — ${feedForRefill.length} feed event(s) can refill instead (saves ~1 search + ~18k tokens)`}`);
+                        }
                         // Claude (esp. Haiku) treats the bracketed-list instruction as a
                         // user request it can negotiate — it will sometimes refuse, add a
                         // preamble, or switch to markdown/headings, which yields ZERO
@@ -4671,9 +4837,12 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         responseText = claudeResult.text;
                         qaSearchCount = claudeResult.searchCount || 0;
                         if (claudeResult.usage) {
-                            qaRealTokens = (claudeResult.usage.input_tokens || 0) + (claudeResult.usage.output_tokens || 0);
+                            // input+output alone omits cached input, which is most of it
+                            // once the system prompt is cache_control'd — see
+                            // claudeService.billableTokens().
+                            qaRealTokens = claudeService.billableTokens(claudeResult.usage);
                         }
-                        console.log(`[provider] quick-action=claude model=${cfg.claudeModel} searches=${claudeResult.searchCount}`);
+                        console.log(`[provider] quick-action=claude model=${cfg.claudeModel} searches=${claudeResult.searchCount} tokens=${qaRealTokens ?? '?'} (in=${claudeResult.usage?.input_tokens || 0} out=${claudeResult.usage?.output_tokens || 0} cacheRead=${claudeResult.usage?.cache_read_input_tokens || 0} cacheWrite=${claudeResult.usage?.cache_creation_input_tokens || 0})`);
                         /* ── Trace: what it searched, what it read, what it said ──────
                          * Off unless AI_TRACE=1. Diagnosing a wrong card previously meant
                          * inferring the model's answer from the Google lookups it caused;
@@ -5166,7 +5335,20 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // (no map pin — e.g. "Yerevan Wine Days") would otherwise be dropped as
                     // an unresolved placeholder; instead we keep it as a DATE-CARD (no map,
                     // no distance — just name + date). Finally, drop anything already past.
-                    if (action === 'events' && eventDateByName.size) {
+                    /* Gate is the ACTION alone, not "the model dated something".
+                     *
+                     * This used to also require `eventDateByName.size`, which was
+                     * harmless while the model was the only source: no dated events
+                     * meant nothing to process. It is actively wrong now. A refill
+                     * runs without web search precisely because the FEED will serve
+                     * it — and the model contributes no dated brackets on such a
+                     * tap, so the old gate would skip the block that consults the
+                     * feed and View More would come back empty again: the exact
+                     * failure the search exemption was added to prevent.
+                     *
+                     * Everything inside already tolerates an empty map (the metadata
+                     * loop `continue`s when a rec has no entry). */
+                    if (action === 'events') {
                         /* Start of TODAY IN THE USER'S OWN TIMEZONE, expressed as a
                          * UTC-midnight stamp so it compares directly against a date-only
                          * event (which is stored as UTC midnight of its date).
@@ -5336,7 +5518,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         // A listing's venue beats the model's guess as the query
                                         // for the venue pass below (JazZara → "Zazoo Rooftop
                                         // Lounge" was internally consistent and simply wrong).
-                                        if (ld.venueName && !PLACEHOLDER_VENUE_RE.test(ld.venueName.trim())) {
+                                        if (ld.venueName && !isPlaceholderVenue(ld.venueName, [effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
                                             rec._eventVenue = ld.venueName;
                                             rec.provenance.venue = 'listing';
                                         }
@@ -5347,6 +5529,109 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                     Array.from({ length: Math.min(EVENT_LISTING_CONCURRENCY, toFetch.length) }, worker)
                                 );
                                 console.log(`[quick-action] listing check: ${checked} source page(s) read, ${corrected} date(s) corrected, ${imaged} image(s) adopted`);
+                            }
+                        }
+
+                        /* ── Ticketing feed: correct what the model guessed, then fill ──
+                         * See EVENT_FEED_SOURCES for why this exists. Runs before venue
+                         * resolution so feed events inherit the whole existing pipeline —
+                         * venue lookup, curated dedupe, past-event expiry — for free.
+                         */
+                        {
+                            const feed = await getEventFeedsForLocation(effectiveLocation, req.body?.destinationInfo);
+                            if (feed.length) {
+                                const norm = s => normalizePlaceName(s);
+                                const dayOf = d => { const t = new Date(d).getTime(); return Number.isFinite(t) ? Math.floor(t / 86400000) : null; };
+
+                                // ── (a) CORRECT ───────────────────────────────────────
+                                // A feed entry is a seller's own record; it outranks recall.
+                                let fixedDate = 0, fixedVenue = 0, fixedImage = 0;
+                                const claimed = new Set();
+                                for (const rec of recommendations) {
+                                    if (!rec || rec.source === 'database') continue;
+                                    const rn = norm(rec.name);
+                                    if (!rn) continue;
+                                    const match = feed.find(f => {
+                                        const fn = norm(f.name);
+                                        if (!fn) return false;
+                                        // "Loboda Concert Tickets" vs "LOBODA Concert" — the
+                                        // feed wraps the artist in selling words, so plain
+                                        // equality is useless here.
+                                        return fn.includes(rn) || rn.includes(fn) || namesPlausiblyMatch(rec.name, f.name);
+                                    });
+                                    if (!match) continue;
+                                    claimed.add(match);
+                                    rec.provenance = rec.provenance || {};
+                                    const wasDay = dayOf(rec.eventSchedule?.startDate);
+                                    rec.eventSchedule = { startDate: match.startDate, ...(match.endDate ? { endDate: match.endDate } : {}) };
+                                    rec.category = 'Event';
+                                    rec.provenance.startDate = 'feed';
+                                    if (wasDay != null && wasDay !== dayOf(match.startDate)) {
+                                        fixedDate++;
+                                        console.log(`[feed] "${rec.name}": date corrected ${new Date(wasDay * 86400000).toISOString().slice(0, 10)} → ${match.startDate.slice(0, 10)} (${match.feedLabel})`);
+                                    }
+                                    if (match.venueName && !isPlaceholderVenue(match.venueName, [effectiveLocation?.city, effectiveLocation?.country].filter(Boolean))) {
+                                        if (norm(match.venueName) !== norm(rec._eventVenue)) fixedVenue++;
+                                        rec._eventVenue = match.venueName;
+                                        rec.provenance.venue = 'feed';
+                                        /* Any geography derived from the model's guess is now
+                                         * suspect: the seller says the event is elsewhere. Clear
+                                         * it so the venue pass re-resolves from the feed's venue.
+                                         * Kept only when what we already resolved is demonstrably
+                                         * the same place — an UNNAMED resolution proves nothing
+                                         * (JazZara → "Zazoo Rooftop Lounge" was internally
+                                         * consistent and still wrong). */
+                                        const alreadyRight = rec.venueName && namesPlausiblyMatch(match.venueName, rec.venueName);
+                                        if (rec.latitude != null && !alreadyRight) {
+                                            rec.latitude = null; rec.longitude = null;
+                                            rec.distance = null; rec.distanceKm = null;
+                                            rec.venueName = null; rec.venuePlaceId = null;
+                                        }
+                                    }
+                                    if (match.venueAddress) rec._eventAddress = match.venueAddress;
+                                    if (match.image && !rec.image) { rec.image = match.image; rec.provenance.image = 'feed'; fixedImage++; }
+                                    if (match.url) { rec.sourceUrl = match.url; rec.provenance.sourceUrl = 'feed'; }
+                                }
+
+                                // ── (b) SUPPLY ────────────────────────────────────────
+                                // Real, dated, in-country events the model never mentioned.
+                                // Bounded by the shortfall so a tap never overshoots.
+                                const shortfall = Math.max(0, (requestedCount || 0) - recommendations.length);
+                                let added = 0;
+                                if (shortfall > 0) {
+                                    const shown = new Set([
+                                        ...recommendations.map(r => norm(r?.name)),
+                                        ...(excludeNames || []).map(norm)
+                                    ].filter(Boolean));
+                                    for (const f of feed) {
+                                        if (added >= shortfall) break;
+                                        if (claimed.has(f)) continue;
+                                        const fn = norm(f.name);
+                                        if (!fn || [...shown].some(s => s && (s.includes(fn) || fn.includes(s)))) continue;
+                                        shown.add(fn);
+                                        recommendations.push({
+                                            // Not a Google place: no placeId, exactly like every
+                                            // other event. The venue pass gives it coordinates.
+                                            id: `feed_${f.feedLabel}_${fn.replace(/\s+/g, '_').slice(0, 48)}`,
+                                            name: f.name,
+                                            source: f.feedLabel,
+                                            category: 'Event',
+                                            type: 'events',
+                                            description: '',
+                                            placeId: null,
+                                            latitude: null, longitude: null,
+                                            image: f.image || null,
+                                            eventSchedule: { startDate: f.startDate, ...(f.endDate ? { endDate: f.endDate } : {}) },
+                                            _eventVenue: f.venueName || null,
+                                            _eventAddress: f.venueAddress || null,
+                                            sourceUrl: f.url || null,
+                                            _action: 'events',
+                                            provenance: { startDate: 'feed', venue: 'feed', ...(f.image ? { image: 'feed' } : {}) }
+                                        });
+                                        added++;
+                                    }
+                                }
+                                console.log(`[quick-action] feed: ${feed.length} available | corrected ${fixedDate} date(s), ${fixedVenue} venue(s), ${fixedImage} image(s) | added ${added} event(s) at $0 AI cost`);
                             }
                         }
 
@@ -5376,14 +5661,23 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         if (needVenue.length && effectiveLocation && Number.isFinite(effectiveLocation.lat)) {
                             const center = { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
                             const venueRadiusKm = userRadius || (nearbyMode ? 5 : 50);
+                            // Names that mean "this whole city/country", not a building.
+                            const venueCityNames = [
+                                effectiveLocation.city,
+                                effectiveLocation.country,
+                                req.body?.destinationInfo?.city,
+                                req.body?.destinationInfo?.country
+                            ].filter(Boolean);
                             let resolvedByVenue = 0, resolvedByAddress = 0;
                             for (const rec of needVenue) {
                                 /* Drop placeholder venues before they reach Google — see
-                                 * PLACEHOLDER_VENUE_RE at module scope for why. */
+                                 * PLACEHOLDER_VENUE_RE / isPlaceholderVenue for why. The
+                                 * city list is what stops "Yerevan" and "Yerevan city
+                                 * centre" being geocoded as if they named a building. */
                                 const attempts = [rec._eventVenue, rec._eventAddress]
                                     .filter(Boolean)
                                     .filter(v => {
-                                        if (!PLACEHOLDER_VENUE_RE.test(v.trim())) return true;
+                                        if (!isPlaceholderVenue(v, venueCityNames)) return true;
                                         console.log(`[quick-action] event "${rec.name}": skipped placeholder venue "${v}" (no single location — keeping as a date-card)`);
                                         return false;
                                     });
