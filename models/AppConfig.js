@@ -43,6 +43,14 @@ const appConfigSchema = new mongoose.Schema({
      * those domains. That is exactly the "just use the good sites" behaviour,
      * and it is also easy to over-narrow into finding nothing — set it
      * deliberately, and watch the searches= count after you do. */
+    /* How far ahead an events tap may look, in days.
+     *
+     * Unbounded, the model and the ticketing feed both happily returned events
+     * in October for a tap made in August — a concert seven weeks out is not
+     * "what's on", it is a catalogue. Applies to AI- and feed-sourced events
+     * only: a validator's curated record is a deliberate human decision and is
+     * never hidden by this. 0 disables the limit. */
+    eventHorizonDays: { type: Number, default: 7 },
     claudeWebSearchBlockedDomains: { type: [String], default: [] },
     claudeWebSearchAllowedDomains: { type: [String], default: [] },
     // Explicit allowlist of quick-actions that may web-search on their FIRST
@@ -130,6 +138,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'aiProviderChat', 'aiProviderQuickAction', 'claudeModel',
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
+        'eventHorizonDays',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',

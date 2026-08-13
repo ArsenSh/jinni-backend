@@ -4163,6 +4163,65 @@ function _ldAddress(a) {
     return null;
 }
 
+/* ── Event titles are not place names ─────────────────────────────────────────
+ * namesPlausiblyMatch() exists to compare a requested PLACE to a resolved one,
+ * and its stopword list is full of place words (hotel, cafe, lounge…). Applied
+ * to event titles it matched "LOBODA Concert" to "Tickets for the Spleen
+ * concert" — because both contain "concert" — and shipped LOBODA with Spleen's
+ * date, poster and venue, while breaking the curated dedupe as a side effect
+ * (the corrected date no longer matched the validator's record).
+ *
+ * An event title is mostly selling boilerplate. Strip that, and what remains is
+ * the ARTIST or the festival name — the only part that identifies the event.
+ * Two events match only if they share one of those distinctive words. */
+const _EVENT_STOPWORDS = new Set([
+    'ticket', 'tickets', 'concert', 'concerts', 'show', 'shows', 'festival', 'fest',
+    'party', 'live', 'tour', 'night', 'nights', 'event', 'events', 'performance',
+    'presents', 'present', 'feat', 'featuring', 'gala', 'open', 'air', 'birthday',
+    'the', 'a', 'an', 'and', 'of', 'for', 'to', 'in', 'at', 'on', 'with', 'by', 's',
+    'yerevan', 'armenia', 'am'
+]);
+const _eventTokens = (s) => normalizePlaceName(s)
+    .split(' ')
+    .filter(t => t.length >= 3 && !_EVENT_STOPWORDS.has(t));
+
+function eventNamesMatch(a, b) {
+    const ta = _eventTokens(a), tb = _eventTokens(b);
+    // No distinctive word on either side → refuse to guess. Silence beats a
+    // confidently wrong date on somebody else's concert.
+    if (!ta.length || !tb.length) return false;
+    return ta.some(x => tb.includes(x));
+}
+
+// Feed titles are HTML-escaped and wrapped in selling words: "Tickets for
+// Grisha Asatryan&apos;s concert". Users should see the event, not the shop.
+const _HTML_ENTITIES = { amp: '&', quot: '"', apos: "'", lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', nbsp: ' ', laquo: '«', raquo: '»' };
+function _decodeEntities(s) {
+    return String(s || '')
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+        .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&([a-z]+);/gi, (m, n) => _HTML_ENTITIES[n.toLowerCase()] ?? m);
+}
+function cleanEventTitle(raw) {
+    let s = _decodeEntities(raw).trim();
+    s = s.replace(/\s+in\s+[A-Z][\w'’-]*(?:\s*,\s*[A-Z][\w'’-]*)?\s*$/u, '');   // "… in Yerevan"
+    s = s.replace(/^tickets?\s+(?:for|to)\s+(?:the\s+)?/i, '');                  // "Tickets for the …"
+    s = s.replace(/\s+tickets?$/i, '');                                          // "… Tickets"
+    // "concert "Symphonic Hayko…"" → the quoted title is the real name.
+    const quoted = s.match(/^(?:concert|show|performance)\s*[«"'“]([^»"'”]+)/i);
+    if (quoted) s = quoted[1];
+    s = s.replace(/^[«"'“]|[»"'”]$/g, '').trim();
+    return s || _decodeEntities(raw).trim();
+}
+
+// The poster lives in og:image on these listing pages, not in the JSON-LD.
+function _extractOgImage(html) {
+    const m = html.match(/<meta[^>]+(?:property|name)\s*=\s*["']og:image["'][^>]*content\s*=\s*["']([^"']+)["']/i)
+           || html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']og:image["']/i);
+    const u = m && m[1] && m[1].trim();
+    return u && /^https?:\/\//i.test(u) ? u : null;
+}
+
 function _normalizeLdEvent(node) {
     const loc = Array.isArray(node.location) ? node.location[0] : node.location;
     // `url` is the per-event page. On an index feed it is the only way back to
@@ -4307,7 +4366,31 @@ async function getEventFeed(source) {
             events = _extractLdEvents(html)
                 .map(_normalizeLdEvent)
                 .filter(e => e.name && e.startDate)
-                .map(e => ({ ...e, feedLabel: source.label }));
+                .map(e => ({ ...e, rawName: e.name, name: cleanEventTitle(e.name), feedLabel: source.label }));
+
+            /* Posters: the index JSON-LD carries an image for only a couple of
+             * events, so most cards fell back to the VENUE's Google photo — a
+             * generic building where the official artwork exists. Each event's
+             * own page has it in og:image, so fill the gaps from there.
+             *
+             * Done once per feed refresh (every 30 min, shared by ALL users),
+             * not per request, and bounded to 4 at a time. Still $0 in AI. */
+            const missing = events.filter(e => !e.image && e.url).slice(0, 20);
+            if (missing.length) {
+                const queue = missing.slice();
+                let found = 0;
+                const worker = async () => {
+                    while (queue.length) {
+                        const ev = queue.shift();
+                        try {
+                            const page = await _fetchListingHtml(ev.url);
+                            if (page) { const og = _extractOgImage(page); if (og) { ev.image = og; found++; } }
+                        } catch { /* a missing poster is not worth failing over */ }
+                    }
+                };
+                await Promise.all(Array.from({ length: Math.min(4, missing.length) }, worker));
+                console.log(`[feed] ${source.label}: ${found}/${missing.length} poster(s) recovered from event pages`);
+            }
         }
         console.log(`[feed] ${source.label}: ${events.length} upcoming event(s) (cached ${Math.round(EVENT_FEED_TTL_MS / 60000)} min, shared by all users, $0 in AI)`);
     } catch (err) {
@@ -5586,14 +5669,14 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                     if (!rec || rec.source === 'database') continue;
                                     const rn = norm(rec.name);
                                     if (!rn) continue;
-                                    const match = feed.find(f => {
-                                        const fn = norm(f.name);
-                                        if (!fn) return false;
-                                        // "Loboda Concert Tickets" vs "LOBODA Concert" — the
-                                        // feed wraps the artist in selling words, so plain
-                                        // equality is useless here.
-                                        return fn.includes(rn) || rn.includes(fn) || namesPlausiblyMatch(rec.name, f.name);
-                                    });
+                                    /* eventNamesMatch, NOT namesPlausiblyMatch.
+                                     * The latter is a PLACE-name comparator: it matched
+                                     * "LOBODA Concert" to "Tickets for the Spleen concert"
+                                     * on the shared word "concert" and overwrote LOBODA's
+                                     * date, venue and poster with Spleen's — then broke the
+                                     * curated dedupe, because the now-wrong date no longer
+                                     * matched the validator's Aug-15 record and both shipped. */
+                                    const match = feed.find(f => f.name && eventNamesMatch(rec.name, f.name));
                                     if (!match) continue;
                                     claimed.add(match);
                                     rec.provenance = rec.provenance || {};
@@ -5930,6 +6013,29 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const dateOnly = t % 86400000 === 0;           // exactly midnight UTC
                             return dateOnly ? t >= startOfTodayUTC : t >= nowMs;
                         });
+                        /* ── …and not too far in the FUTURE either ────────────────────
+                         * The other end of the same question. A tap in August was
+                         * returning concerts in October — seven weeks out is a catalogue,
+                         * not "what's on now". Both the model and the ticketing feed list
+                         * everything they have, so the horizon has to be applied here.
+                         *
+                         * A CURATED record is exempt: a validator entering an event months
+                         * ahead did so deliberately, and the governing principle is that
+                         * their decision is authoritative. Set eventHorizonDays to 0 in
+                         * admin to switch this off. */
+                        const horizonDays = Number.isFinite(cfg.eventHorizonDays) ? cfg.eventHorizonDays : 7;
+                        if (horizonDays > 0) {
+                            const cutoff = startOfTodayUTC + (horizonDays + 1) * 86400000;
+                            const beforeFar = recommendations.length;
+                            recommendations = recommendations.filter(rec => {
+                                if (!rec.eventSchedule || rec.source === 'database') return true;
+                                const t = new Date(rec.eventSchedule.startDate).getTime();
+                                if (!Number.isFinite(t)) return true;
+                                return t < cutoff;
+                            });
+                            const droppedFar = beforeFar - recommendations.length;
+                            if (droppedFar > 0) console.log(`[quick-action] horizon: dropped ${droppedFar} event(s) beyond ${horizonDays} day(s)`);
+                        }
                         const droppedPast = beforePast - recommendations.length;
                         /* Logged UNCONDITIONALLY, including the zero case. Previously this
                          * only spoke up when it dropped something, so "no line in the log"
