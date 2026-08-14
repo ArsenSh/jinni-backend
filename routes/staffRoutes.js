@@ -721,8 +721,24 @@ router.delete('/destinations/:id', destGate, async (req, res) => {
 // Same permission as destinations: the people who curate events review them.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Scope check for an AiFoundEvent doc — reuses the destination scope rule.
-const aiEventInScope = (user, doc) => isWithinScope(user, { country: doc.country, city: doc.city });
+// Scope check for an AiFoundEvent doc. Reuses the destination scope rule, but
+// records captured from a coordinates-only request context may have no
+// city/country strings — fall back to parsing the venue address, then to a
+// plain text match of the assignment terms against the address ("…, Yerevan,
+// Armenia"). Without these fallbacks, scoped staff silently see an empty
+// queue while the collection has rows.
+const { parseAddressRegion } = require('../utils/addressRegion');
+const aiEventInScope = (user, doc) => {
+    if (user.isAdmin) return true;
+    let country = doc.country, city = doc.city;
+    if (!country && !city) ({ country, city } = parseAddressRegion(doc.address || ''));
+    if (isWithinScope(user, { country, city })) return true;
+    const addr = String(doc.address || '').toLowerCase();
+    if (!addr) return false;
+    const a = user.staffAssignment || {};
+    return [...(a.countries || []), ...(a.cities || [])]
+        .some(t => t && addr.includes(String(t).toLowerCase()));
+};
 
 // The queue lives in the Explore tab of the validator UI, so either
 // permission opens it: explore moderators review, destination managers get

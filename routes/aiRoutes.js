@@ -6839,6 +6839,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const startDate = new Date(r.eventSchedule.startDate);
                             const rawEnd = r.eventSchedule.endDate ? new Date(r.eventSchedule.endDate) : null;
                             const endDate = (rawEnd && !isNaN(rawEnd.getTime())) ? rawEnd : null;
+                            // effectiveLocation can be coordinates-only (GPS or a
+                            // destination pin) with no city/country strings; without a
+                            // region the staff scope filter can't place the record.
+                            // The venue address carries it: "…, Yerevan, Armenia".
+                            const region = parseAddressRegion(r._eventAddress || r.address || '');
                             ops.push({ updateOne: {
                                 filter: { key: `${norm}|${day}|${anchor}` },
                                 update: {
@@ -6851,8 +6856,8 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         lng: Number.isFinite(r.longitude) ? r.longitude : null,
                                         venueName: r._eventVenue || null,
                                         address: r._eventAddress || r.address || null,
-                                        city: effectiveLocation?.city || null,
-                                        country: effectiveLocation?.country || null,
+                                        city: effectiveLocation?.city || region.city || null,
+                                        country: effectiveLocation?.country || region.country || null,
                                         startDate,
                                         endDate,
                                         isRecurring: !!r.eventSchedule.isRecurring,
