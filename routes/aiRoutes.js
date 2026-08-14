@@ -4638,6 +4638,32 @@ async function _fetchDomainHome(host) {
     return null;
 }
 
+/** Confirm a real-but-UNFETCHABLE domain by asking the search tool, restricted
+ * to that one domain, whether it lists events for this place. The search engine
+ * fetches the site for us — bot-checks and all — so a site that 403s our own
+ * fetch (Dubai's Platinumlist, Timeout) can still be proven. If the restricted
+ * search returns ANY result, the domain covers the place. One search, fails
+ * safe to false. Never called for a domain we DID fetch and found off-city
+ * (atlanta.net for Tbilisi) — that one is already disproven, not unknown. */
+async function _confirmDomainBySearch(host, place, model) {
+    if (!place) return false;
+    try {
+        const { searches } = await claudeService.complete({
+            model,
+            maxTokens: 512,
+            temperature: 0,
+            webSearch: true,
+            webSearchMaxUses: 1,
+            allowedDomains: [host],
+            system: 'You are a silent verifier. Run one web search, then stop.',
+            messages: [{ role: 'user', content: `Find upcoming events happening in ${place}.` }],
+        });
+        return (searches || []).some(s => (s.results || []).length > 0);
+    } catch {
+        return false;
+    }
+}
+
 async function discoverEventSources(country, city) {
     const key = String(country || '').toLowerCase().trim();
     if (!key || _listingFetchUnavailable) return { domains: [], feeds: [] };
@@ -4690,7 +4716,10 @@ async function discoverEventSources(country, city) {
                 if (!real) return { host, real: false, feed: null };
                 // Fetchable by us? → then it can also be probed for a free feed.
                 const ok = await _fetchDomainHome(host);
-                if (!ok) return { host, real: true, feed: null };
+                // Real but we can't fetch it (bot-blocked). NOT disproven — a
+                // search-tool confirmation pass below decides. `fetchable:false`
+                // marks it for that pass; `relevant` stays undefined for now.
+                if (!ok) return { host, real: true, fetchable: false, feed: null };
                 /* Real is not the same as RELEVANT. Every Atlanta domain above was
                  * real. When we can read the page, require it to mention the place
                  * we asked about — a Georgian ticket site names Tbilisi or Georgia;
@@ -4734,11 +4763,27 @@ async function discoverEventSources(country, city) {
              * breaks the feature; a SMALL or empty one merely means unrestricted
              * search, which is what happened before discovery existed. So when in
              * doubt, leave the domain out. */
+            /* Search-confirm the real-but-unfetchable domains (Dubai's bot-blocked
+             * sites). Bounded to 3 searches, and only ever on a discovery
+             * cache-miss (results cached 7 days per country), so cost is a few
+             * cents at most, once a week, per new country. A domain we fetched
+             * and found off-city is `relevant:false` and is skipped here. */
+            const needSearch = checks.filter(c => c.real && c.fetchable === false);
+            let confirmBudget = 3;
+            for (const c of needSearch) {
+                if (confirmBudget-- <= 0) break;
+                if (await _confirmDomainBySearch(c.host, city || country, cfg.claudeModel)) {
+                    c.relevant = true; c.viaSearch = true;
+                }
+            }
+            const bySearch = checks.filter(c => c.viaSearch).map(c => c.host);
+
             const offTopic = checks.filter(c => c.real && c.relevant !== true).map(c => c.host);
             domains = checks.filter(c => c.relevant === true).map(c => c.host);
             feeds = checks.filter(c => c.feed).map(c => c.feed);
             const invented = checks.filter(c => !c.real).map(c => c.host);
             console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} real [${domains.join(', ') || '—'}]`
+                + `${bySearch.length ? ` | search-confirmed: ${bySearch.join(', ')}` : ''}`
                 + `${invented.length ? ` | not a real domain: ${invented.join(', ')}` : ''}`
                 + `${offTopic.length ? ` | unconfirmed for ${city || country} (excluded): ${offTopic.join(', ')}` : ''}`
                 + `${feeds.length ? ` | JSON-LD feed(s): ${feeds.map(f => f.label).join(', ')}` : ' | no free feeds here — search only'}`);
@@ -6690,6 +6735,60 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                 }
                             }
                         } catch (cacheBackErr) { console.warn('[quick-action] cache backfill failed:', cacheBackErr.message); }
+                    }
+
+                    /* ── Event-VENUE backfill (events only, LAST resort) ─────────────────
+                     * A fresh country can have real events we cannot verify (Dubai: one
+                     * confirmed source → 1/10) and an empty DB and cache — the grid used
+                     * to go out nearly empty. The old app padded it with model-guessed
+                     * "event places" (~80% right); this is that idea done to the
+                     * zero-bad-recommendation standard: ONE Google typed search for real
+                     * venues where events happen (theaters, halls, arenas). Served
+                     * honestly as what they are — category 'Event venue', NO invented
+                     * dates, no eventSchedule — so they are never captured as events by
+                     * the validator queue and never expire. A real venue is never a
+                     * wrong answer; an invented date always is. */
+                    if (action === 'events' && effectiveLocation && recommendations.length < requestedCount) {
+                        try {
+                            const haveV = new Set(recommendations.map(r => (r.name || '').toLowerCase().trim()));
+                            const exclV = new Set((excludeNames || []).map(n => (n || '').toLowerCase().trim()));
+                            const foundVenues = await googleService.findPlaces(
+                                'event venues concert halls theaters arenas',
+                                { lat: effectiveLocation.lat, lng: effectiveLocation.lng }, requestId);
+                            let vAdded = 0;
+                            for (const v of (foundVenues || [])) {
+                                if (recommendations.length >= requestedCount) break;
+                                if (!v.place_id || !v.name) continue;
+                                const nm = v.name.toLowerCase().trim();
+                                if (haveV.has(nm) || exclV.has(nm)) continue;
+                                // Details come from the place cache when seen before; a fresh
+                                // venue costs one details call and is cached for everyone.
+                                const details = await getCachedPlaceDetails(v.place_id, true, requestId, null, v.place_id).catch(() => null);
+                                const loc = details?.geometry?.location || v.geometry?.location;
+                                const distKm = (loc && Number.isFinite(loc.lat))
+                                    ? _haversineKm(effectiveLocation.lat, effectiveLocation.lng, loc.lat, loc.lng) : null;
+                                if (Number.isFinite(distKm) && distKm > (userRadius || 50)) continue;   // Google bias can wander
+                                const enrichedData = {
+                                    name: v.name,
+                                    source: 'google',
+                                    photos: (details?.photos && details.photos.length) ? details.photos.slice(0, 1) : [],
+                                    place_id: v.place_id,
+                                    formatted_address: details?.formatted_address || '',
+                                    geometry: details?.geometry || v.geometry || null,
+                                    types: v.types || [],
+                                    primaryType: v.primaryType || null,
+                                };
+                                const distanceInfo = Number.isFinite(distKm)
+                                    ? { distance: `${distKm.toFixed(1)} km`, distanceKm: distKm, duration: null } : null;
+                                const rec = createRecommendation({ name: v.name, source: 'google', data: null }, recommendations.length, enrichedData, distanceInfo);
+                                rec.category = 'Event venue';           // honest label — a place, not a moment
+                                delete rec.eventSchedule;               // never a fake date
+                                recommendations.push(rec);
+                                haveV.add(nm);
+                                vAdded++;
+                            }
+                            if (vAdded > 0) console.log(`[quick-action] venue backfill: added ${vAdded} real event venue(s), no dates invented (now ${recommendations.length}/${requestedCount})`);
+                        } catch (venueErr) { console.warn('[quick-action] venue backfill failed:', venueErr.message) }
                     }
                     // console.log(`\nFinal recommendations: ${recommendations.length} places`);
                     const uniquePlaces = new Set();
