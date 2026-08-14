@@ -764,6 +764,17 @@ router.get('/ai-events', aiEventGate, async (req, res) => {
         // (admin sees those; scoped staff shouldn't manage what can't be placed).
         const rows = await AiFoundEvent.find(q).sort({ lastShownAt: -1 }).limit(500).lean();
         const data = rows.filter(d => aiEventInScope(req.user, d));
+        // Attach each event's venue PlaceCache row (same projection as the
+        // explore-places list) so the frontend reuses the place drawer 1:1 —
+        // thumbnail, gallery, rating, feedback, cache stats, all of it.
+        const pids = [...new Set(data.map(d => d.placeId).filter(Boolean))];
+        if (pids.length) {
+            const venues = await PlaceCache.find({ placeId: { $in: pids } }).select(
+                'placeId name rating country city details.formatted_address details.geometry imagesStored actions interests aiBlocked likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule'
+            ).lean();
+            const byId = new Map(venues.map(v => [v.placeId, v]));
+            for (const d of data) d.venue = d.placeId ? (byId.get(d.placeId) || null) : null;
+        }
         res.json({ success: true, data, total: data.length });
     } catch (err) {
         console.error('[staff ai-events list] error:', err);
