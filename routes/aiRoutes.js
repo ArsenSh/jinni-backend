@@ -6833,7 +6833,13 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             const day = _evDay(r?.eventSchedule?.startDate);
                             if (!day || !r.name) continue;                          // dated events only
                             const norm = _eventTokens(r.name).join(' ') || String(r.name).toLowerCase().trim();
-                            const anchor = r.placeId
+                            // Events keep placeId null by design (votes must not leak
+                            // onto the hall) — the venue's identity lives in
+                            // venuePlaceId. For this record that venue IS the anchor:
+                            // it links the queue row to the cached place (image,
+                            // rating, drawer) exactly like any other explore row.
+                            const venuePid = r.placeId || r.venuePlaceId || null;
+                            const anchor = venuePid
                                 || (Number.isFinite(r.latitude) && Number.isFinite(r.longitude) ? `${r.latitude.toFixed(2)},${r.longitude.toFixed(2)}` : null)
                                 || (effectiveLocation?.city || 'unknown');
                             const startDate = new Date(r.eventSchedule.startDate);
@@ -6843,7 +6849,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // destination pin) with no city/country strings; without a
                             // region the staff scope filter can't place the record.
                             // The venue address carries it: "…, Yerevan, Armenia".
-                            const region = parseAddressRegion(r._eventAddress || r.address || '');
+                            const region = parseAddressRegion(r._eventAddress || r.address || r.location || '');
                             ops.push({ updateOne: {
                                 filter: { key: `${norm}|${day}|${anchor}` },
                                 update: {
@@ -6851,11 +6857,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         key: `${norm}|${day}|${anchor}`,
                                         name: r.name,
                                         description: (r.description || '').slice(0, 500) || null,
-                                        placeId: r.placeId || null,
+                                        placeId: venuePid,
                                         lat: Number.isFinite(r.latitude) ? r.latitude : null,
                                         lng: Number.isFinite(r.longitude) ? r.longitude : null,
                                         venueName: r._eventVenue || null,
-                                        address: r._eventAddress || r.address || null,
+                                        address: r._eventAddress || r.address || r.location || null,
                                         city: effectiveLocation?.city || region.city || null,
                                         country: effectiveLocation?.country || region.country || null,
                                         startDate,
