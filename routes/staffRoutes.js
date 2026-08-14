@@ -724,8 +724,18 @@ router.delete('/destinations/:id', destGate, async (req, res) => {
 // Scope check for an AiFoundEvent doc — reuses the destination scope rule.
 const aiEventInScope = (user, doc) => isWithinScope(user, { country: doc.country, city: doc.city });
 
+// The queue lives in the Explore tab of the validator UI, so either
+// permission opens it: explore moderators review, destination managers get
+// the same rights because Approve creates a Destination.
+const aiEventGate = (req, res, next) => {
+    if (req.user?.isAdmin) return next();
+    const p = req.user?.staffAssignment?.permissions || {};
+    if (p.moderateExplore === true || p.manageDestinations === true) return next();
+    return res.status(403).json({ error: 'You do not have permission to review AI-found events' });
+};
+
 // GET /api/staff/ai-events?status=new|approved|hidden|all
-router.get('/ai-events', destGate, async (req, res) => {
+router.get('/ai-events', aiEventGate, async (req, res) => {
     try {
         const status = ['new', 'approved', 'hidden', 'all'].includes(req.query.status) ? req.query.status : 'new';
         const q = status === 'all' ? {} : { status };
@@ -743,7 +753,7 @@ router.get('/ai-events', destGate, async (req, res) => {
 
 // POST /api/staff/ai-events/:id/approve — create a validator Destination from
 // the recorded event, then mark the record approved (and permanent).
-router.post('/ai-events/:id/approve', destGate, async (req, res) => {
+router.post('/ai-events/:id/approve', aiEventGate, async (req, res) => {
     try {
         const doc = await AiFoundEvent.findById(req.params.id);
         if (!doc) return res.status(404).json({ success: false, error: 'AI-found event not found' });
@@ -794,7 +804,7 @@ router.post('/ai-events/:id/approve', destGate, async (req, res) => {
 });
 
 // PATCH /api/staff/ai-events/:id — { status: 'hidden' | 'new' }
-router.patch('/ai-events/:id', destGate, async (req, res) => {
+router.patch('/ai-events/:id', aiEventGate, async (req, res) => {
     try {
         const status = req.body?.status;
         if (!['hidden', 'new'].includes(status)) {
@@ -821,7 +831,7 @@ router.patch('/ai-events/:id', destGate, async (req, res) => {
 });
 
 // DELETE /api/staff/ai-events/:id — dismiss from the queue.
-router.delete('/ai-events/:id', destGate, async (req, res) => {
+router.delete('/ai-events/:id', aiEventGate, async (req, res) => {
     try {
         const doc = await AiFoundEvent.findById(req.params.id);
         if (!doc) return res.status(404).json({ success: false, error: 'AI-found event not found' });
