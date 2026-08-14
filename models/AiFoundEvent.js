@@ -49,6 +49,9 @@ const aiFoundEventSchema = new mongoose.Schema({
     endDate:     { type: Date, default: null },
     isRecurring: { type: Boolean, default: false },
 
+    // The image the card actually showed: the event's own poster (feed CDN
+    // URL) when the source had one, else the venue photo proxy path.
+    image:      { type: String, default: null },
     sourceUrl:  { type: String, default: null },
     // Provenance of the date, i.e. the trust tier it entered through.
     sourceTier: { type: String, enum: ['feed', 'listing', 'extracted', 'model', 'unknown'], default: 'unknown' },

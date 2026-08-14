@@ -6284,7 +6284,17 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         if (!rec.image && v.place_id && Array.isArray(v.photos) && v.photos.length) {
                                             rec.image = `/api/ai/place-image/${v.place_id}/0`;
                                         }
-                                        rec.location = v.formatted_address || rec.location || null;
+                                        /* The card's location line should lead with the venue's NAME
+                                         * ("Garni temple"), not a raw geocoder string ("4P6J+X32,
+                                         * Marzpetuni St…") — the name is what a traveler recognizes.
+                                         * Google's plus-code prefix is stripped; the readable street
+                                         * part stays as context. */
+                                        rec.venueName = v.name || rec._eventVenue || null;
+                                        const cleanAddr = (v.formatted_address || '')
+                                            .replace(/^[A-Z0-9]{4,8}\+[A-Z0-9]{2,3},?\s*/i, '').trim();
+                                        rec.location = rec.venueName
+                                            ? (cleanAddr ? `${rec.venueName}, ${cleanAddr}` : rec.venueName)
+                                            : (v.formatted_address || rec.location || null);
                                         rec.region = v.vicinity || v.formatted_address || rec.region || null;
                                         rec.website = rec.website || v.website || null;
                                         rec.phone = rec.phone || v.formatted_phone_number || v.international_phone_number || null;
@@ -6860,13 +6870,14 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                         placeId: venuePid,
                                         lat: Number.isFinite(r.latitude) ? r.latitude : null,
                                         lng: Number.isFinite(r.longitude) ? r.longitude : null,
-                                        venueName: r._eventVenue || null,
+                                        venueName: r._eventVenue || r.venueName || null,
                                         address: r._eventAddress || r.address || r.location || null,
                                         city: effectiveLocation?.city || region.city || null,
                                         country: effectiveLocation?.country || region.country || null,
                                         startDate,
                                         endDate,
                                         isRecurring: !!r.eventSchedule.isRecurring,
+                                        image: r.image || null,
                                         sourceUrl: r.sourceUrl || null,
                                         sourceTier: TIERS.includes(r.provenance?.startDate) ? r.provenance.startDate : 'unknown',
                                         status: 'new',
@@ -8824,7 +8835,7 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
                 status: 'new',
                 lat: { $gte: centerLat - dLat, $lte: centerLat + dLat },
                 lng: { $gte: centerLng - dLng, $lte: centerLng + dLng },
-            }).select('name placeId lat lng address city startDate endDate isRecurring timesShown').lean();
+            }).select('name placeId lat lng address city startDate endDate isRecurring timesShown image').lean();
             for (const ev of aiRows) {
                 if (!upcoming(ev.startDate, ev.endDate, ev.isRecurring)) continue;
                 if (ev.placeId && disliked.has(ev.placeId)) continue;
@@ -8838,9 +8849,10 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
                     placeId: ev.placeId || `aiev_${ev._id}`,
                     name: ev.name,
                     rating: null,
-                    // The venue got cached during venue resolution, so its photo
-                    // proxy works whenever a placeId resolved.
-                    image: ev.placeId ? `/api/ai/place-image/${ev.placeId}/0` : null,
+                    // Prefer the event's own poster (what the chat card showed);
+                    // the venue photo proxy is the fallback — the venue got
+                    // cached during venue resolution whenever a placeId resolved.
+                    image: ev.image || (ev.placeId ? `/api/ai/place-image/${ev.placeId}/0` : null),
                     region: ev.address || ev.city || null,
                     distanceKm: Math.round(distKm * 10) / 10,
                     likes: 0,
