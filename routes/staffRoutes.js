@@ -734,6 +734,10 @@ const aiEventInScope = (user, doc) => {
     if (!country && !city) ({ country, city } = parseAddressRegion(doc.address || ''));
     if (isWithinScope(user, { country, city })) return true;
     const addr = String(doc.address || '').toLowerCase();
+    // Nothing to place the record with at all (no region strings, no address:
+    // an unresolved venue) → show it to every permitted reviewer rather than
+    // only admin. A reviewable-but-misplaced row beats an invisible one.
+    if (!addr && !country && !city) return true;
     if (!addr) return false;
     const a = user.staffAssignment || {};
     return [...(a.countries || []), ...(a.cities || [])]
