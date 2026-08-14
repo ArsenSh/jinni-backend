@@ -27,6 +27,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Destination = require('../models/Destination');
 const PlaceCache = require('../models/PlaceCache');
+const AiFoundEvent = require('../models/AiFoundEvent');
 const auth = require('../middleware/auth');
 // Offline coordinate -> IANA timezone. Shared with businessRoutes so a
 // validator-added event and an owner-registered one resolve their venue
@@ -706,6 +707,132 @@ router.delete('/destinations/:id', destGate, async (req, res) => {
     } catch (err) {
         console.error('[staff destination delete] error:', err);
         res.status(500).json({ success: false, error: 'Failed to delete destination' });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI-FOUND EVENTS — the validator queue over what Jinni actually recommended
+//
+// Every dated event the AI events pipeline serves is recorded in AiFoundEvent
+// (see that model's header). These routes let validators review that record:
+//   approve → promote to a validator Destination (top trust tier)
+//   hide    → permanent language-free blocklist in the serving path
+//   delete  → dismiss from the queue (may reappear if re-found)
+// Same permission as destinations: the people who curate events review them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scope check for an AiFoundEvent doc — reuses the destination scope rule.
+const aiEventInScope = (user, doc) => isWithinScope(user, { country: doc.country, city: doc.city });
+
+// GET /api/staff/ai-events?status=new|approved|hidden|all
+router.get('/ai-events', destGate, async (req, res) => {
+    try {
+        const status = ['new', 'approved', 'hidden', 'all'].includes(req.query.status) ? req.query.status : 'new';
+        const q = status === 'all' ? {} : { status };
+        // Queue is TTL-pruned, so it stays small; scope-filter in memory since
+        // country/city strings in the doc may be missing for GPS-only areas
+        // (admin sees those; scoped staff shouldn't manage what can't be placed).
+        const rows = await AiFoundEvent.find(q).sort({ lastShownAt: -1 }).limit(500).lean();
+        const data = rows.filter(d => aiEventInScope(req.user, d));
+        res.json({ success: true, data, total: data.length });
+    } catch (err) {
+        console.error('[staff ai-events list] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to load AI-found events' });
+    }
+});
+
+// POST /api/staff/ai-events/:id/approve — create a validator Destination from
+// the recorded event, then mark the record approved (and permanent).
+router.post('/ai-events/:id/approve', destGate, async (req, res) => {
+    try {
+        const doc = await AiFoundEvent.findById(req.params.id);
+        if (!doc) return res.status(404).json({ success: false, error: 'AI-found event not found' });
+        if (!aiEventInScope(req.user, doc)) {
+            return res.status(403).json({ success: false, error: 'This event is outside your assigned countries / cities' });
+        }
+        if (doc.status === 'approved' && doc.approvedDestinationId) {
+            return res.status(409).json({ success: false, error: 'Already approved' });
+        }
+        const location = {
+            city: doc.city || undefined,
+            country: doc.country || undefined,
+            address: doc.address || undefined,
+            coordinates: (Number.isFinite(doc.lat) && Number.isFinite(doc.lng)) ? { lat: doc.lat, lng: doc.lng } : undefined,
+        };
+        // Validators may adjust dates/name in the request body before approving;
+        // anything not sent falls back to what Jinni recorded.
+        const name = (typeof req.body?.name === 'string' && req.body.name.trim()) ? req.body.name.trim() : doc.name;
+        const rawSched = req.body?.eventSchedule || {
+            startDate: doc.startDate, endDate: doc.endDate || undefined, isRecurring: false,
+        };
+        const sched = normalizeEventSchedule(rawSched, ['events'], location);
+        if (sched.error) return res.status(400).json({ success: false, error: sched.error });
+        const payload = {
+            name,
+            type: ['events'],
+            location,
+            description: doc.description || (doc.venueName ? `${name} at ${doc.venueName}.` : ''),
+            ...(doc.sourceUrl ? { contact: { website: doc.sourceUrl } } : {}),
+            eventSchedule: sched.value,
+            isActive: true,
+            createdBy: req.user.id,
+        };
+        const dest = await Destination.create(payload);
+        // Same image path as manual creation: fetch from Google by name+address.
+        await autoFetchDestinationImages(dest._id, payload);
+        doc.status = 'approved';
+        doc.approvedDestinationId = dest._id;
+        doc.moderatedBy = req.user.id;
+        doc.expireAt = undefined;                       // moderated docs are permanent
+        await doc.save();
+        const populated = await Destination.findById(dest._id).populate('createdBy', 'name email role').lean();
+        res.json({ success: true, data: populated, aiEvent: doc.toObject() });
+    } catch (err) {
+        console.error('[staff ai-events approve] error:', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to approve AI-found event' });
+    }
+});
+
+// PATCH /api/staff/ai-events/:id — { status: 'hidden' | 'new' }
+router.patch('/ai-events/:id', destGate, async (req, res) => {
+    try {
+        const status = req.body?.status;
+        if (!['hidden', 'new'].includes(status)) {
+            return res.status(400).json({ success: false, error: "status must be 'hidden' or 'new'" });
+        }
+        const doc = await AiFoundEvent.findById(req.params.id);
+        if (!doc) return res.status(404).json({ success: false, error: 'AI-found event not found' });
+        if (!aiEventInScope(req.user, doc)) {
+            return res.status(403).json({ success: false, error: 'This event is outside your assigned countries / cities' });
+        }
+        doc.status = status;
+        doc.moderatedBy = req.user.id;
+        // Hidden docs must outlive the event (annual re-listings stay blocked);
+        // un-hiding restores the normal self-cleaning TTL.
+        doc.expireAt = status === 'hidden'
+            ? undefined
+            : new Date((doc.endDate || doc.startDate).getTime() + 7 * 24 * 3600 * 1000);
+        await doc.save();
+        res.json({ success: true, data: doc.toObject() });
+    } catch (err) {
+        console.error('[staff ai-events patch] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to update AI-found event' });
+    }
+});
+
+// DELETE /api/staff/ai-events/:id — dismiss from the queue.
+router.delete('/ai-events/:id', destGate, async (req, res) => {
+    try {
+        const doc = await AiFoundEvent.findById(req.params.id);
+        if (!doc) return res.status(404).json({ success: false, error: 'AI-found event not found' });
+        if (!aiEventInScope(req.user, doc)) {
+            return res.status(403).json({ success: false, error: 'This event is outside your assigned countries / cities' });
+        }
+        await AiFoundEvent.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: `"${doc.name}" dismissed` });
+    } catch (err) {
+        console.error('[staff ai-events delete] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to dismiss AI-found event' });
     }
 });
 

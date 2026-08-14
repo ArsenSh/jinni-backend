@@ -4,6 +4,7 @@ const Business = require('../models/Business');
 const TravelQuery = require('../models/TravelQuery');
 const Analytics = require('../models/Analytics');
 const Destination = require('../models/Destination');
+const AiFoundEvent = require('../models/AiFoundEvent');
 const openai = require('../config/openai');
 const googleService = require('../services/googleService');
 const proximityService = require('../services/proximityService');
@@ -6788,6 +6789,92 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             //     console.log(`   Has Geometry: ${!!rec.geometry}`);
             // });
             if (!isClientDisconnected()) {
+                /* ── AI-found events: validator blocklist + durable record ─────────
+                 * Two steps, both scoped to the events action and both before the
+                 * internal-field strip below (they read _eventVenue/_eventAddress).
+                 *
+                 * 1. DROP anything a validator has hidden. Hidden AiFoundEvent docs
+                 *    are matched language-free: same venue placeId, or
+                 *    eventNamesMatch within the request area. Geo-scoped query so
+                 *    the hidden set stays tiny.
+                 * 2. RECORD every dated event actually sent, so validators can see
+                 *    (and manage) everything Jinni recommends. Upsert by identity
+                 *    key — repeat serves only bump timesShown. Best-effort: a
+                 *    failure here must never break the response. */
+                if (action === 'events') {
+                    const _evDay = (d) => { const t = d ? new Date(d) : null; return (t && !isNaN(t.getTime())) ? t.toISOString().slice(0, 10) : null; };
+                    try {
+                        const cLat = effectiveLocation?.lat, cLng = effectiveLocation?.lng;
+                        const recPlaceIds = recommendations.map(r => r.placeId).filter(Boolean);
+                        const hiddenQuery = { status: 'hidden', $or: [] };
+                        if (Number.isFinite(cLat) && Number.isFinite(cLng)) {
+                            hiddenQuery.$or.push({ lat: { $gte: cLat - 1.5, $lte: cLat + 1.5 }, lng: { $gte: cLng - 1.5, $lte: cLng + 1.5 } });
+                        }
+                        hiddenQuery.$or.push({ lat: null });                       // unresolved venues: name-match only
+                        if (recPlaceIds.length) hiddenQuery.$or.push({ placeId: { $in: recPlaceIds } });
+                        const hiddenDocs = await AiFoundEvent.find(hiddenQuery).select('name placeId').lean();
+                        if (hiddenDocs.length) {
+                            const kept = recommendations.filter(r => {
+                                const isEvent = !!r?.eventSchedule?.startDate || r.category === 'Event' || r.type === 'events';
+                                if (!isEvent) return true;
+                                const blocked = hiddenDocs.some(h =>
+                                    (r.placeId && h.placeId && r.placeId === h.placeId && eventNamesMatch(r.name, h.name)) ||
+                                    eventNamesMatch(r.name, h.name));
+                                if (blocked) console.log(`[ai-events] "${r.name}" suppressed — hidden by validator`);
+                                return !blocked;
+                            });
+                            if (kept.length !== recommendations.length) { recommendations.length = 0; recommendations.push(...kept); }
+                        }
+                    } catch (e) { console.warn('[ai-events] hidden-filter failed (serving unfiltered):', e.message) }
+                    try {
+                        const TIERS = ['feed', 'listing', 'extracted', 'model'];
+                        const ops = [];
+                        for (const r of recommendations) {
+                            const day = _evDay(r?.eventSchedule?.startDate);
+                            if (!day || !r.name) continue;                          // dated events only
+                            const norm = _eventTokens(r.name).join(' ') || String(r.name).toLowerCase().trim();
+                            const anchor = r.placeId
+                                || (Number.isFinite(r.latitude) && Number.isFinite(r.longitude) ? `${r.latitude.toFixed(2)},${r.longitude.toFixed(2)}` : null)
+                                || (effectiveLocation?.city || 'unknown');
+                            const startDate = new Date(r.eventSchedule.startDate);
+                            const rawEnd = r.eventSchedule.endDate ? new Date(r.eventSchedule.endDate) : null;
+                            const endDate = (rawEnd && !isNaN(rawEnd.getTime())) ? rawEnd : null;
+                            ops.push({ updateOne: {
+                                filter: { key: `${norm}|${day}|${anchor}` },
+                                update: {
+                                    $setOnInsert: {
+                                        key: `${norm}|${day}|${anchor}`,
+                                        name: r.name,
+                                        description: (r.description || '').slice(0, 500) || null,
+                                        placeId: r.placeId || null,
+                                        lat: Number.isFinite(r.latitude) ? r.latitude : null,
+                                        lng: Number.isFinite(r.longitude) ? r.longitude : null,
+                                        venueName: r._eventVenue || null,
+                                        address: r._eventAddress || r.address || null,
+                                        city: effectiveLocation?.city || null,
+                                        country: effectiveLocation?.country || null,
+                                        startDate,
+                                        endDate,
+                                        isRecurring: !!r.eventSchedule.isRecurring,
+                                        sourceUrl: r.sourceUrl || null,
+                                        sourceTier: TIERS.includes(r.provenance?.startDate) ? r.provenance.startDate : 'unknown',
+                                        status: 'new',
+                                        // Queue self-cleans a week after the event passes.
+                                        expireAt: new Date((endDate || startDate).getTime() + 7 * 24 * 3600 * 1000),
+                                    },
+                                    $inc: { timesShown: 1 },
+                                    $set: { lastShownAt: new Date() },
+                                },
+                                upsert: true,
+                            } });
+                        }
+                        if (ops.length) {
+                            AiFoundEvent.bulkWrite(ops, { ordered: false })
+                                .then(() => console.log(`[ai-events] recorded ${ops.length} served event(s) for the validator queue`))
+                                .catch(err => console.warn('[ai-events] record failed:', err.message));
+                        }
+                    } catch (e) { console.warn('[ai-events] capture failed:', e.message) }
+                }
                 // Strip internal-only fields (used by the type sanity filter) so they
                 // don't bloat the payload sent to the client.
                 recommendations.forEach(r => { delete r.placeTypes; delete r.placePrimaryType; delete r.requestedName; delete r._isDateCard; delete r._eventVenue; delete r._eventAddress; });
@@ -8681,6 +8768,77 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             // A place can belong to several categories; list it under each it claims.
             for (const c of r.actions || []) if (categories[c]) categories[c].push(card);
         }
+
+        /* ── Events: merged from their own sources, not the place cache ──────
+         * Events are deliberately never written to PlaceCache (a cache of
+         * places cannot hold a moment in time), so the loop above yields an
+         * empty events category. The real sources are:
+         *   1. validator Destinations typed 'events'  → verified cards
+         *   2. AiFoundEvent records (status 'new')    → what Jinni served in
+         *      chat, visible here until a validator moderates it
+         * Approved AI events are skipped: approval created a Destination, so
+         * source 1 already carries them. Hidden ones never appear. Both
+         * sources are date-filtered — an ended event is not a recommendation.
+         * Failures fall through: Explore must never break over events. */
+        try {
+            const now = new Date();
+            const upcoming = (s, e, rec) => rec || ((e || s) && new Date(e || s) >= now);
+            const destRows = await Destination.find({
+                type: 'events',
+                isActive: { $ne: false },
+                'location.coordinates.lat': { $gte: centerLat - dLat, $lte: centerLat + dLat },
+                'location.coordinates.lng': { $gte: centerLng - dLng, $lte: centerLng + dLng },
+            }).select('name images location eventSchedule popularity').lean();
+            for (const d of destRows) {
+                if (!upcoming(d.eventSchedule?.startDate, d.eventSchedule?.endDate, d.eventSchedule?.isRecurring)) continue;
+                const loc = d.location?.coordinates;
+                const distKm = _haversineKm(centerLat, centerLng, loc.lat, loc.lng);
+                if (distKm > EXPLORE_RADIUS_KM) continue;
+                categories.events.push({
+                    placeId: `dest_${d._id}`,
+                    name: d.name,
+                    rating: null,
+                    image: (Array.isArray(d.images) && d.images[0]) || null,
+                    region: d.location?.address || d.location?.city || null,
+                    distanceKm: Math.round(distKm * 10) / 10,
+                    likes: 0,
+                    verified: true,                              // validator-curated
+                    tier: null,
+                    eventDates: d.eventSchedule?.startDate
+                        ? { start: d.eventSchedule.startDate, end: d.eventSchedule.endDate || null }
+                        : null,
+                });
+            }
+            const aiRows = await AiFoundEvent.find({
+                status: 'new',
+                lat: { $gte: centerLat - dLat, $lte: centerLat + dLat },
+                lng: { $gte: centerLng - dLng, $lte: centerLng + dLng },
+            }).select('name placeId lat lng address city startDate endDate isRecurring timesShown').lean();
+            for (const ev of aiRows) {
+                if (!upcoming(ev.startDate, ev.endDate, ev.isRecurring)) continue;
+                if (ev.placeId && disliked.has(ev.placeId)) continue;
+                // The same event may exist as a validator destination too (either
+                // via approval of a twin record or independent curation) — the
+                // curated card wins.
+                if (categories.events.some(c => c.verified && eventNamesMatch(c.name, ev.name))) continue;
+                const distKm = _haversineKm(centerLat, centerLng, ev.lat, ev.lng);
+                if (distKm > EXPLORE_RADIUS_KM) continue;
+                categories.events.push({
+                    placeId: ev.placeId || `aiev_${ev._id}`,
+                    name: ev.name,
+                    rating: null,
+                    // The venue got cached during venue resolution, so its photo
+                    // proxy works whenever a placeId resolved.
+                    image: ev.placeId ? `/api/ai/place-image/${ev.placeId}/0` : null,
+                    region: ev.address || ev.city || null,
+                    distanceKm: Math.round(distKm * 10) / 10,
+                    likes: 0,
+                    verified: false,
+                    tier: null,
+                    eventDates: { start: ev.startDate, end: ev.endDate || null },
+                });
+            }
+        } catch (e) { console.warn('[explore] events merge failed:', e.message) }
 
         // ── Preferences: which categories does this user care about? ──
         const interests = Array.isArray(user?.preferences?.interests) ? user.preferences.interests : [];
