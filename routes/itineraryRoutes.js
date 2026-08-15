@@ -204,6 +204,67 @@ const fmtTime = (m) => {
   return `${String(Math.floor(r / 60)).padStart(2, '0')}:${String(r % 60).padStart(2, '0')}`;
 };
 
+/* ── Dated-event pinning ─────────────────────────────────────────────────────
+ * The scheduler above invents a clock time for every stop and pins only meals,
+ * so a dated event (approved jinni-event or saved event, carrying a real
+ * eventSchedule) would show at the wrong time and possibly the wrong day. This
+ * LAST pass corrects exactly those slots and touches nothing else:
+ *   • TIME → the event's real local clock time (in its own timezone);
+ *   • DAY  → when the trip has real dates, the slot moves to the day whose
+ *            calendar date equals the event's date, and that day is re-sorted
+ *            chronologically so the event sits in the right position.
+ * Fails safe: recurring/undated events, or dates outside the trip window, are
+ * left exactly where the scheduler put them. Isolated and additive — it never
+ * feeds back into the geographic scheduler. */
+const _tzTime = (date, tz) => {
+  try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'UTC', hour: '2-digit', minute: '2-digit', hour12: false }).format(date); }
+  catch { return null; }
+};
+const _tzISODate = (date, tz) => {
+  try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date); }
+  catch { return null; }
+};
+const _timeToMin = (t) => { const m = /^(\d{2}):(\d{2})$/.exec(t || ''); return m ? (+m[1] * 60 + +m[2]) : Infinity; };
+const _datedEvent = (slot) => {
+  const es = slot?.place?.eventSchedule;
+  if (!es || !es.startDate || es.isRecurring) return null;
+  const start = new Date(es.startDate);
+  return isNaN(start.getTime()) ? null : { start, tz: es.timezone || 'UTC' };
+};
+
+function pinDatedEvents(days, startDate) {
+  if (!Array.isArray(days) || !days.length) return;
+  const tripStart = startDate ? new Date(startDate) : null;
+  const dayDateStr = (dayNumber) => {
+    if (!tripStart || isNaN(tripStart.getTime())) return null;
+    const d = new Date(tripStart); d.setUTCDate(d.getUTCDate() + (dayNumber - 1));
+    return _tzISODate(d, 'UTC');
+  };
+  // Pin time, and (when the trip is dated) move each event to its real day.
+  for (const day of [...days]) {
+    for (const slot of [...day.slots]) {
+      const ev = _datedEvent(slot);
+      if (!ev) continue;
+      const hhmm = _tzTime(ev.start, ev.tz);
+      if (hhmm) slot.time = hhmm;                                  // correct TIME
+      const evDate = _tzISODate(ev.start, ev.tz);
+      const target = evDate ? days.find(d => dayDateStr(d.dayNumber) === evDate) : null;
+      if (target && target !== day) {                             // correct DAY
+        day.slots = day.slots.filter(s => s !== slot);
+        target.slots.push(slot);
+      }
+    }
+  }
+  // Re-sort only the days that hold a pinned event, chronologically. Stable in
+  // V8, so equal/undated stops keep their scheduled order; null-time slots
+  // (failed/pending) sort to the end untouched.
+  for (const day of days) {
+    if (!day.slots.some(s => _datedEvent(s))) continue;
+    day.slots.sort((a, b) => _timeToMin(a.time) - _timeToMin(b.time));
+    day.slots.forEach((s, i) => { s.order = i; });
+  }
+}
+
 function optimizeDayOrder(day, start, nearby = false, startMin = DAY_START_MIN) {
   const enriched = day.slots.filter(s => s.status === 'enriched' && Number.isFinite(s.place?.latitude));
   const rest = day.slots.filter(s => !(s.status === 'enriched' && Number.isFinite(s.place?.latitude)));
@@ -1045,6 +1106,7 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
       ? { lat: doc.homeBase.latitude, lng: doc.homeBase.longitude }
       : { lat: dest.lat, lng: dest.lng };
     for (const day of doc.days) optimizeDayOrder(day, startPoint, doc.nearbyMode);
+    pinDatedEvents(doc.days, doc.startDate);   // dated events → real day + time
 
     doc.status = 'ready';
     doc.markModified('days');
@@ -1153,6 +1215,7 @@ router.post('/:id/regenerate-day-stream', auth, usageTracker, async (req, res) =
       ? { lat: doc.homeBase.latitude, lng: doc.homeBase.longitude }
       : { lat: doc.destination.lat, lng: doc.destination.lng };
     optimizeDayOrder(day, regenStart, doc.nearbyMode);
+    pinDatedEvents([day], null);   // time-pin any dated event in the regenerated day (single day → no cross-day move)
 
     // Write back ONLY this day. Saving the whole document here republished a
     // snapshot read ~10 seconds ago, silently erasing anything the user edited
@@ -1223,6 +1286,10 @@ function poolPlace(raw) {
       : (Number.isFinite(raw.user_ratings_total) ? raw.user_ratings_total : null),
     openingHours: Array.isArray(raw.openingHours) ? raw.openingHours.slice(0, 7) : normalizeHours(raw.opening_hours),
     description: raw.description || null,
+    // Dated events keep their schedule so pinDatedEvents can place them on the
+    // real day + time. Only DB sources (Destinations, saved events) ever carry
+    // this; Google-resolved places don't, and stay flexible.
+    eventSchedule: (raw.eventSchedule && raw.eventSchedule.startDate) ? raw.eventSchedule : null,
     _tier: TIER_SCORE[raw.partnerTier] || 0,
   };
 }
@@ -1773,6 +1840,7 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
 
     // ── 5. schedule (order + honest times), then persist ──
     for (const day of days) optimizeDayOrder(day, startPoint, !!nearbyMode, startMinForDay);
+    pinDatedEvents(days, null);   // saved/pool events → real clock time (pool builds carry no trip dates, so time-only)
 
     // ── 5b. nicer day titles — one batched model call in the trip language.
     //  Hard 3s budget: on timeout/failure the algorithmic titles above ship,
@@ -1967,6 +2035,9 @@ router.get('/:id/saved-candidates', auth, usageTracker, async (req, res) => {
 
           out.push({
             ...place,
+            // A saved EVENT keeps its schedule (SavedPlace stores it) so the
+            // itinerary can pin it to its real day + time, not a made-up one.
+            eventSchedule: (snap.eventSchedule && snap.eventSchedule.startDate) ? snap.eventSchedule : (place.eventSchedule || null),
             id: `saved-${s._id}`,
             savedPlaceId: String(s._id),
             distanceKm: Math.round(distanceKm * 10) / 10,

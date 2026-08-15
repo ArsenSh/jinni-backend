@@ -45,6 +45,16 @@ const PlaceSchema = new mongoose.Schema({
   // Google's weekday_text lines, e.g. ["Monday: 9:00 AM – 6:00 PM", …].
   openingHours: { type: [String], default: [] },
   description: { type: String, default: null },
+  // Dated events (approved jinni-events, saved events) carry a real calendar
+  // date + clock time so the itinerary can pin them to their ACTUAL day and
+  // time instead of a scheduler-invented one (see pinDatedEvents). Absent on
+  // ordinary places — the pin pass simply skips those.
+  eventSchedule: {
+    startDate:   { type: Date, default: null },
+    endDate:     { type: Date, default: null },
+    isRecurring: { type: Boolean, default: false },
+    timezone:    { type: String, default: null },   // IANA zone the time is written in
+  },
 }, { _id: false });
 
 const SlotSchema = new mongoose.Schema({
