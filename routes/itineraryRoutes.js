@@ -1100,6 +1100,39 @@ function destLabel(eff) {
   return clean(eff.name) || country || 'Your trip area';
 }
 
+/* Resolve a typed hotel to coordinates, anchored to THIS trip's place.
+ *   { resolved }  — found (or no hotel asked for → resolved:null)
+ *   { error }     — a hotel name was given but couldn't be found near the trip
+ * Two robustness rules over the old raw lookup:
+ *   • Append the destination label to a name-only query ("Marriott" →
+ *     "Marriott, Yerevan, Armenia") so Google resolves the LOCAL hotel, not a
+ *     same-named one abroad. `dest` already carries the right place — the
+ *     chosen destination when set, else the user's GPS location.
+ *   • Geofence the match: a hotel resolved far outside the destination is a
+ *     wrong same-named place, so reject it rather than anchor the trip to it. */
+async function resolveHomeBaseForTrip(homeBase, dest, radiusKm, requestId) {
+  if (!homeBase?.name) return { resolved: null };                    // no hotel → fine
+  if (Number.isFinite(homeBase.lat) && Number.isFinite(homeBase.lng)) {
+    return { resolved: { placeId: homeBase.placeId || null, name: homeBase.name, latitude: homeBase.lat, longitude: homeBase.lng } };
+  }
+  try {
+    const { getCachedPlaceDetails } = aiShared();
+    const label = dest?.name && !/^your destination$/i.test(dest.name) ? `, ${dest.name}` : '';
+    const query = homeBase.placeId ? homeBase.name : `${homeBase.name}${label}`;
+    const enriched = await getCachedPlaceDetails(
+      homeBase.placeId || query, false, requestId, { lat: dest.lat, lng: dest.lng }, homeBase.placeId || null);
+    const lat = enriched?.geometry?.location?.lat, lng = enriched?.geometry?.location?.lng;
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      const distKm = haversineKm(dest.lat, dest.lng, lat, lng);
+      if (distKm <= Math.max(radiusKm || MAX_STOP_KM, 30)) {
+        return { resolved: { placeId: enriched.place_id || homeBase.placeId || null, name: enriched.name || homeBase.name, latitude: lat, longitude: lng } };
+      }
+      console.warn(`[itinerary] hotel "${homeBase.name}" resolved ${Math.round(distKm)}km from ${dest?.name} — rejecting as wrong place`);
+    }
+  } catch (e) { console.warn('[itinerary] hotel resolution failed:', e.message); }
+  return { error: true, name: homeBase.name };
+}
+
 router.post('/generate-stream', auth, usageTracker, async (req, res) => {
   const requestId = `itin-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
@@ -1156,25 +1189,16 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     // arrive as just { name, placeId }. Resolve it through the same
     // PlaceCache-first pipeline; if it can't be verified, drop it silently —
     // a home base is a nice-to-have anchor, never a blocker.
-    let resolvedHomeBase = null;
-    if (homeBase?.name) {
-      if (Number.isFinite(homeBase.lat) && Number.isFinite(homeBase.lng)) {
-        resolvedHomeBase = { placeId: homeBase.placeId || null, name: homeBase.name, latitude: homeBase.lat, longitude: homeBase.lng };
-      } else {
-        try {
-          const { getCachedPlaceDetails } = aiShared();
-          const enriched = await getCachedPlaceDetails(
-            homeBase.placeId || homeBase.name, false, requestId,
-            { lat: dest.lat, lng: dest.lng },
-            homeBase.placeId || null,
-          );
-          const lat = enriched?.geometry?.location?.lat, lng = enriched?.geometry?.location?.lng;
-          if (Number.isFinite(lat) && Number.isFinite(lng)) {
-            resolvedHomeBase = { placeId: enriched.place_id || homeBase.placeId || null, name: enriched.name || homeBase.name, latitude: lat, longitude: lng };
-          }
-        } catch (e) { console.warn('homeBase resolution failed, continuing without it:', e.message); }
-      }
+    const hb = await resolveHomeBaseForTrip(homeBase, dest, radiusKm, requestId);
+    if (hb.error) {
+      // A hotel was typed but couldn't be found near the trip — ask the user to
+      // fix it rather than silently anchoring elsewhere or dropping it.
+      return res.status(400).json({
+        success: false, error: 'hotel_not_found',
+        userMessage: `I couldn't find "${hb.name}" near ${dest.name}. Please check the spelling, or skip the hotel.`,
+      });
     }
+    const resolvedHomeBase = hb.resolved;
 
     // Persist the shell first so a crash mid-stream still leaves a resumable doc.
     const doc = await Itinerary.create({
@@ -1727,19 +1751,15 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
       return res.status(200).json({ success: false, error: 'pool_too_small' });
     }
 
-    // ── home base: resolve name-only hotels through the cache pipeline ──
-    let resolvedHomeBase = null;
-    if (homeBase?.name) {
-      if (Number.isFinite(homeBase.lat) && Number.isFinite(homeBase.lng)) {
-        resolvedHomeBase = { placeId: homeBase.placeId || null, name: homeBase.name, latitude: homeBase.lat, longitude: homeBase.lng };
-      } else {
-        try {
-          const enriched = await getCachedPlaceDetails(homeBase.placeId || homeBase.name, false, requestId, { lat: dest.lat, lng: dest.lng }, homeBase.placeId || null);
-          const lat = enriched?.geometry?.location?.lat, lng = enriched?.geometry?.location?.lng;
-          if (Number.isFinite(lat) && Number.isFinite(lng)) resolvedHomeBase = { placeId: enriched.place_id || null, name: enriched.name || homeBase.name, latitude: lat, longitude: lng };
-        } catch (e) { console.warn('pool homeBase resolution failed:', e.message); }
-      }
+    // ── home base: resolve name-only hotels (destination-anchored + geofenced) ──
+    const hb = await resolveHomeBaseForTrip(homeBase, dest, radiusKm, requestId);
+    if (hb.error) {
+      return res.status(400).json({
+        success: false, error: 'hotel_not_found',
+        userMessage: `I couldn't find "${hb.name}" near ${dest.name}. Please check the spelling, or skip the hotel.`,
+      });
     }
+    const resolvedHomeBase = hb.resolved;
     const startPoint = resolvedHomeBase
       ? { lat: resolvedHomeBase.latitude, lng: resolvedHomeBase.longitude }
       : { lat: dest.lat, lng: dest.lng };

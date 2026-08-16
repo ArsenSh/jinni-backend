@@ -1173,6 +1173,11 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // === STEP 5: Load business data (only for travel queries) ===
         let businesses = [];
         let destinations = [];
+        // Real Google-Places names to hand the model when our own DB has thin
+        // coverage for a place query (e.g. Armenian restaurants in Dubai). The
+        // model then recommends REAL places that verify into cards, instead of
+        // guessing or giving vague filler. See the grounding block in STEP 5.
+        let googleGroundingNames = [];
         if (isTravelQuery) {
             // console.log('\nLOADING BUSINESS DATA...');
             try {
@@ -1199,7 +1204,30 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     // console.log(`📏 Using radius: ${userRadius}km (${nearbyMode ? 'nearby' : 'discovery'} mode)`);
                     const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId );
                     businesses = smartProximityResults.businesses;
-                    destinations = smartProximityResults.destinations;                    
+                    destinations = smartProximityResults.destinations;
+                    /* ── Proactive Google grounding (thin-DB fallback) ───────────────
+                     * Our DB covers the home market well but not the whole world.
+                     * When it returns almost nothing for a place query — Armenian
+                     * restaurants in Dubai — hand the model REAL options from Google
+                     * Places instead of letting it invent names or give filler. One
+                     * Text Search, only on a thin result, only for a concrete place
+                     * type. The names verify into cards in processStreamCompletion's
+                     * Google step; if Google finds nothing either, the model can say
+                     * so truthfully. Fails safe: any error leaves the reply as-is. */
+                    if ((businesses.length + destinations.length) < 3 && detectedActionType && detectedActionType !== 'general') {
+                        try {
+                            const city = locationToUse.city || effectiveLocation?.city || placeCoordinates?.placeName || '';
+                            let gq = String(processedMessage || '')
+                                .replace(/\b(suggest|recommend|please|can you|could you|show me|find me|give me|tell me|i want|i'?m looking for|looking for|some|a few|the best|nearby|near me|good|nice)\b/gi, ' ')
+                                .replace(/\s+/g, ' ').trim();
+                            if (city && !new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(gq)) gq += ` ${city}`;
+                            if (gq.length >= 3) {
+                                const found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId);
+                                googleGroundingNames = (found || []).map(f => f.name).filter(Boolean).slice(0, 8);
+                                if (googleGroundingNames.length) console.log(`[chat grounding] DB thin (${businesses.length + destinations.length}) → Google found ${googleGroundingNames.length} real place(s) for "${gq}"`);
+                            }
+                        } catch (e) { console.warn('[chat grounding] Google fallback failed:', e.message); }
+                    }
                     // console.log(`\n🔍 FOUND BUSINESSES`);
                     // businesses.forEach((biz, index) => { console.log(`  ${index + 1}. ${biz.name}`) });
                     // console.log(`\n🔍 FOUND DESTINATIONS`);
@@ -1230,6 +1258,12 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // === STEP 6: Call OpenAI API ===
         // console.log('\nCALLING OPENAI API...');
         let enhancedMessage = originalMessage;
+        // Google-grounded real places (thin-DB fallback): give the model the
+        // exact real names to recommend, so it never invents or gives filler.
+        if (isTravelQuery && googleGroundingNames.length) {
+            enhancedMessage += `\n\n[These REAL, currently-existing places were found for the user's request — recommend from THESE by their exact names, in the **Name** → description ← format. Do NOT invent other names, and do NOT claim none exist.]`;
+            googleGroundingNames.forEach(n => { enhancedMessage += `\n- ${n}`; });
+        }
         if (isTravelQuery && (businesses.length > 0 || destinations.length > 0)) {
             const nearbyContext = nearbyMode ? `[NEARBY MODE: User wants places close to their current location. ` + `Focus on these verified nearby options.]` : `[Found ${businesses.length + destinations.length} verified places. ` + `Prioritize these in recommendations.]`;
             enhancedMessage += `\n\n${nearbyContext}`;
