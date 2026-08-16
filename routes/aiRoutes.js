@@ -1064,7 +1064,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // phone numbers and live photos) and makes the product look inconsistent.
         // Pin the framing here, next to the grounding injection it complements.
         if (contextMessages[0] && typeof contextMessages[0].content === 'string') {
-            contextMessages[0].content += `\n\nIMPORTANT — about your own capabilities: you are part of a travel app that verifies places through live Google data. NEVER describe your own architecture, training data, or knowledge cutoff, and NEVER tell the user you "cannot browse the internet", "have a fixed dataset", or "cannot access real-time information". If a specific detail (phone, hours, price) was provided to you as VERIFIED PLACE DATA, use it exactly. If it was NOT provided, simply say that detail isn't in your verified data right now and suggest the place's official website or Google Maps listing — nothing more.`;
+            contextMessages[0].content += `\n\nIMPORTANT — about your own capabilities: you are part of a travel app that verifies places through live Google data. NEVER describe your own architecture, training data, or knowledge cutoff, and NEVER tell the user you "cannot browse the internet", "have a fixed dataset", or "cannot access real-time information". If a specific detail (phone, hours, price) was provided to you as VERIFIED PLACE DATA, use it exactly. If a detail was NOT provided, briefly say that specific detail isn't in your verified data yet — and, when a place card is shown, tell the user they can tap "More" on it for the website, phone, opening hours, and directions. NEVER tell the user to look a place up on Google Maps or an external website; the app itself surfaces those details on the card. Do NOT pad replies with "check their website/Google for hours and the menu" — reserve any suggestion for a genuinely useful tip (a dish worth trying, the best time to visit), never for sending the user elsewhere.`;
         }
         // ── Verified place grounding ──────────────────────────────────────────────────────────
         // When the user asks about a SPECIFIC place — by typing its name or via a
@@ -1131,7 +1131,20 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 }).slice(0, 2);
                 if (unique.length > 0) {
                     const lines = [];
+                    const hasLocAnchor = Number.isFinite(effectiveLocation?.lat) && Number.isFinite(effectiveLocation?.lng);
                     for (const v of unique) {
+                        // Same-name safety. Resolving a bare NAME with no location anchor
+                        // falls to PlaceCache.findOne(nameFilter), which returns ANY row of
+                        // that name — a different city's same-named place. Injecting its
+                        // phone/hours as "verified" would be confidently wrong. So only
+                        // ground when identity is trustworthy: an exact placeId (a card ask),
+                        // or a location center that constrains the match to the local area
+                        // (the ≤300km nearest-wins path in getCachedPlaceDetails). Otherwise
+                        // skip — a general answer beats a wrong-place fact.
+                        if (!v.placeId && !hasLocAnchor) {
+                            console.log(`[grounding] skipped name-only venue "${v.resolvedName || v.askedName}" — no placeId and no location anchor (same-name ambiguity)`);
+                            continue;
+                        }
                         const d = await getCachedPlaceDetails(v.resolvedName || v.askedName, true, requestId, effectiveLocation, v.placeId || null);
                         if (!d) continue;
                         const phone = d.formatted_phone_number || d.international_phone_number || null;
@@ -1145,7 +1158,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                         console.log(`[grounding] injected verified data for "${d.name}" (phone: ${phone ? 'yes' : 'no'})`);
                     }
                     if (lines.length > 0 && contextMessages[0] && typeof contextMessages[0].content === 'string') {
-                        contextMessages[0].content += `\n\nVERIFIED PLACE DATA (live from Google — when answering about these places use EXACTLY these facts; if a phone number is marked "not listed", say to check the place's Google Maps listing instead of guessing):\n${lines.join('\n')}`;
+                        contextMessages[0].content += `\n\nVERIFIED PLACE DATA (live from Google — when answering about these places use EXACTLY these facts; if a phone number is marked "not listed", say it isn't listed rather than guessing, and point the user to the place's card — tap "More" — for other details):\n${lines.join('\n')}`;
                     }
                 }
             }
