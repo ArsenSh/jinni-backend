@@ -242,20 +242,51 @@ const _datedEvent = (slot) => {
  * how many were priced), so a brand-new area with no curated prices yields no
  * estimate rather than a fabricated one. Never a hard total; always "~approx".
  * Async + best-effort: any failure leaves costEstimate null and never blocks. */
-async function attachPricingAndEstimate(days, displayCurrency = 'USD') {
+// A curated Destination's own type[] → the itinerary category to LABEL it with.
+// A destination can surface in a broad quick-action pool (e.g. the "photogenic"
+// filter pulls art/cultural sites into photo_spots), which mislabels it. Its
+// own type is the truth. Returns null when nothing maps → keep the pool label.
+function destTypeToItinCategory(types) {
+  const T = new Set((types || []).map(t => String(t).toLowerCase()));
+  if (T.has('events')) return 'events';
+  if (T.has('museum')) return 'museum';
+  if (T.has('historical') || T.has('history')) return 'historical';
+  if (T.has('hidden_gems')) return 'hidden_gems';
+  if (T.has('market') || T.has('mall') || T.has('shopping') || T.has('souvenirs') || T.has('clothing') || T.has('jewelry')) return 'shopping';
+  if (T.has('nature')) return 'nature';
+  if (T.has('photo_spots')) return 'photo_spots';
+  return null;
+}
+
+// Always-run: batch-loads each curated-Destination stop's pricing + type (ONE
+// query), attaches the price, and RELABELS the stop with its real category
+// (fixing e.g. an events venue shown as "Photo spot"). Returns an approximate
+// per-person/day estimate ONLY when estimateCurrency is given (budget style);
+// otherwise the estimate is skipped but the relabel still happens.
+async function attachDestinationData(days, { estimateCurrency = null } = {}) {
   try {
     const Destination = require('../models/Destination');
     const idset = new Set();
     for (const day of days) for (const s of (day.slots || []))
       if (s.place && s.status === 'enriched' && s.place.verifiedModel === 'destination' && s.place.verifiedId) idset.add(String(s.place.verifiedId));
     if (idset.size) {
-      const rows = await Destination.find({ _id: { $in: [...idset] } }).select('pricing').lean();
-      const byId = new Map(rows.map(r => [String(r._id), r.pricing]));
+      const rows = await Destination.find({ _id: { $in: [...idset] } }).select('pricing type').lean();
+      const byId = new Map(rows.map(r => [String(r._id), r]));
       for (const day of days) for (const s of (day.slots || [])) {
-        const p = s.place && s.place.verifiedId ? byId.get(String(s.place.verifiedId)) : null;
+        const d = s.place && s.place.verifiedId ? byId.get(String(s.place.verifiedId)) : null;
+        if (!d) continue;
+        const p = d.pricing;
         if (p && (p.isFree || Number.isFinite(p.average) || Number.isFinite(p.min))) s.place.pricing = p;
+        // Relabel by the destination's OWN type — but never touch a meal slot
+        // (protects the scheduler's meal windows), and never turn a stop INTO
+        // a meal post-schedule.
+        const mapped = destTypeToItinCategory(d.type);
+        const isMeal = c => c === 'restaurants' || c === 'cafe';
+        if (mapped && mapped !== s.category && !isMeal(s.category) && !isMeal(mapped)) s.category = mapped;
       }
     }
+    const displayCurrency = estimateCurrency;
+    if (!displayCurrency) return null;   // no estimate requested (non-budget)
     // Estimate: average of the per-day sums of priced stops, per person.
     const cur = (displayCurrency || 'USD').toUpperCase();
     let totalStops = 0, coveredStops = 0, priceDays = 0, sumPerDay = 0;
@@ -263,6 +294,11 @@ async function attachPricingAndEstimate(days, displayCurrency = 'USD') {
       let dayCost = 0, dayHasPrice = false;
       for (const s of (day.slots || [])) {
         if (!s.place || s.status !== 'enriched') continue;
+        // Shopping is intentionally NOT counted: you can spend anything at a
+        // market or mall, so even a validator price can't predict a traveler's
+        // real spend there. Including it would make the "per day" figure
+        // meaningless. It stays on the plan, just not in the estimate.
+        if (s.category === 'shopping' || s.category === 'market' || s.category === 'mall') continue;
         totalStops++;
         const p = s.place.pricing;
         if (!p) continue;
@@ -1226,11 +1262,12 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     pinDatedEvents(doc.days, doc.startDate);   // dated events → real day + time
     // Approximate per-day cost — a budget-planning aid, so shown only to
     // budget-style travelers (luxury travelers don't want a running cost line).
-    // Show the estimate in the currency the traveler set WITH their budget in
-    // onboarding (that's the number they think in), then display currency, USD.
-    doc.costEstimate = (user?.preferences?.travelStyle === 'budget')
-      ? await attachPricingAndEstimate(doc.days, user?.preferences?.budget?.currency || user?.settings?.currency || 'USD')
-      : null;
+    // Always relabels curated stops by their real type; the estimate (in the
+    // traveler's budget currency) is added only for budget style.
+    doc.costEstimate = await attachDestinationData(doc.days, {
+      estimateCurrency: user?.preferences?.travelStyle === 'budget'
+        ? (user?.preferences?.budget?.currency || user?.settings?.currency || 'USD') : null,
+    });
 
     doc.status = 'ready';
     doc.markModified('days');
@@ -1973,9 +2010,10 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
     // ── 5. schedule (order + honest times), then persist ──
     for (const day of days) optimizeDayOrder(day, startPoint, !!nearbyMode, startMinForDay);
     pinDatedEvents(days, null);   // saved/pool events → real clock time (pool builds carry no trip dates, so time-only)
-    const poolCostEstimate = (user?.preferences?.travelStyle === 'budget')
-      ? await attachPricingAndEstimate(days, user?.preferences?.budget?.currency || user?.settings?.currency || 'USD')
-      : null;
+    const poolCostEstimate = await attachDestinationData(days, {
+      estimateCurrency: user?.preferences?.travelStyle === 'budget'
+        ? (user?.preferences?.budget?.currency || user?.settings?.currency || 'USD') : null,
+    });
 
     // ── 5b. nicer day titles — one batched model call in the trip language.
     //  Hard 3s budget: on timeout/failure the algorithmic titles above ship,
