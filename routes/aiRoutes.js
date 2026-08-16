@@ -23,6 +23,7 @@ const intentService = require('../services/intentService');
 const PlaceCache = require('../models/PlaceCache');
 const PlaceFeedback = require('../models/PlaceFeedback');
 const PlaceView = require('../models/PlaceView');
+const PlaceSearchCache = require('../models/PlaceSearchCache');
 const imageStorageService = require('../services/imageStorageService');
 const { usageTracker, estimateTokens } = require('../middleware/usageTracker');
 const UserAILimit = require('../models/UserAILimit');
@@ -1292,14 +1293,31 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     if ((businesses.length + destinations.length) < 3 && detectedActionType && detectedActionType !== 'general') {
                         try {
                             const city = locationToUse.city || effectiveLocation?.city || placeCoordinates?.placeName || '';
-                            let gq = String(processedMessage || '')
-                                .replace(/\b(suggest|recommend|please|can you|could you|show me|find me|give me|tell me|i want|i'?m looking for|looking for|some|a few|the best|nearby|near me|good|nice)\b/gi, ' ')
+                            // Prefer the intent LLM's clean query ("armenian restaurant
+                            // Dubai") — it resolves follow-ups and drops conversational
+                            // junk. Only fall back to stripping the raw message.
+                            let gq = (intent && intent.searchQuery) ? intent.searchQuery : String(processedMessage || '')
+                                .replace(/\b(suggest|recommend|please|can you|could you|show me|find me|give me|tell me|i want|i'?m looking for|looking for|some|a few|the best|nearby|near me|good|nice|no|simply|just|there)\b/gi, ' ')
                                 .replace(/\s+/g, ' ').trim();
                             if (city && !new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(gq)) gq += ` ${city}`;
                             if (gq.length >= 3) {
-                                const found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId);
+                                // Cache the search results (shared, 30 min) so a repeated
+                                // "armenian restaurants Dubai" costs one Places call, not one
+                                // per user per ask. Key: query + rounded area.
+                                const rLat = locationToUse.lat.toFixed(2), rLng = locationToUse.lng.toFixed(2);
+                                const cacheKey = `chatground:${gq.toLowerCase()}:${rLat}:${rLng}`;
+                                let found = null;
+                                const cached = await PlaceSearchCache.findOne({ key: cacheKey }).lean().catch(() => null);
+                                if (cached && Array.isArray(cached.candidates)) {
+                                    found = cached.candidates;
+                                    console.log(`[chat grounding] cache HIT for "${gq}" ($0)`);
+                                } else {
+                                    found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId);
+                                    const candidates = (found || []).map(f => ({ placeId: f.place_id, name: f.name, lat: f.geometry?.location?.lat ?? null, lng: f.geometry?.location?.lng ?? null, types: f.types || [] }));
+                                    PlaceSearchCache.updateOne({ key: cacheKey }, { $set: { key: cacheKey, action: 'chat', candidates, expireAt: new Date(Date.now() + 30 * 60 * 1000) } }, { upsert: true }).catch(() => {});
+                                }
                                 googleGroundingNames = (found || []).map(f => f.name).filter(Boolean).slice(0, 8);
-                                if (googleGroundingNames.length) console.log(`[chat grounding] DB thin (${businesses.length + destinations.length}) → Google found ${googleGroundingNames.length} real place(s) for "${gq}"`);
+                                if (googleGroundingNames.length) console.log(`[chat grounding] DB thin (${businesses.length + destinations.length}) → ${googleGroundingNames.length} real place(s) for "${gq}"`);
                             }
                         } catch (e) { console.warn('[chat grounding] Google fallback failed:', e.message); }
                     }
@@ -1336,7 +1354,13 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // Google-grounded real places (thin-DB fallback): give the model the
         // exact real names to recommend, so it never invents or gives filler.
         if (isTravelQuery && googleGroundingNames.length) {
-            enhancedMessage += `\n\n[These REAL, currently-existing places were found for the user's request — recommend from THESE by their exact names, in the **Name** → description ← format. Do NOT invent other names, and do NOT claim none exist.]`;
+            // Google guarantees these EXIST; the model judges which actually FIT
+            // (Google matches loosely — a search for Armenian restaurants can
+            // return non-Armenian ones). So: recommend only genuine matches,
+            // include fewer freely, and NEVER assert a place is what the user
+            // asked for unless it truly is. Existence from Google, relevance from
+            // the model, honesty by instruction.
+            enhancedMessage += `\n\n[These are REAL, currently-existing places Google returned for the user's request. Recommend (in **Name** → description ← format) ONLY the ones that GENUINELY match what the user asked for — it's good to include fewer, or to say which ones you can confirm. Google's list can include places that don't truly fit; do NOT present a place as matching the user's request unless it really does, and do NOT invent names beyond this list. If none genuinely fit, say so honestly.]`;
             googleGroundingNames.forEach(n => { enhancedMessage += `\n- ${n}`; });
         }
         if (isTravelQuery && (businesses.length > 0 || destinations.length > 0)) {

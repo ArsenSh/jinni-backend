@@ -114,6 +114,7 @@ function fastPath(message, userLanguage) {
         isTravel: false,
         actionType: 'general',
         placeNames: [],
+        searchQuery: '',
         needsWeather: false
     };
 }
@@ -142,6 +143,7 @@ Return ONLY this JSON object:
 "is_travel":<true or false>,
 "action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, general>",
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
+"place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
 "needs_weather":<true or false>}
 
 Rules:
@@ -205,6 +207,9 @@ function validateIntent(raw, message) {
         isTravel: raw.is_travel,
         actionType,
         placeNames,
+        // Clean Google-ready search string for the proactive grounding — the LLM
+        // resolves follow-ups, so no fragile filler-stripping downstream.
+        searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),
         needsWeather: raw.needs_weather === true
     };
 }
@@ -277,6 +282,7 @@ async function fallbackClassify(message, userLanguage) {
         isTravel: translationService.isTravelQuery(processed),
         actionType,
         placeNames: translationService.extractPlaceNames(processed),
+        searchQuery: '',   // fallback tier has no clean query; grounding derives one
         needsWeather: /\b(weather|temperature|rain|snow|hot|cold|climate|forecast|season|sunny|humid|warm|freezing|pack|wear|umbrella|week|daily|tomorrow|days)\b/i.test(processed)
     };
 }
