@@ -37,6 +37,7 @@ const User = require('../models/User');
 const AppConfig = require('../models/AppConfig');
 const AiProviderDailyStats = require('../models/AiProviderDailyStats');
 const Itinerary = require('../models/Itinerary');
+const currencyService = require('../services/currencyService');
 // Itinerary completions are logged as quick_action_used so they appear in the
 // admin's quick-action chart next to the other actions from the chat.
 const Analytics = require('../models/Analytics');
@@ -232,6 +233,55 @@ const _datedEvent = (slot) => {
   return isNaN(start.getTime()) ? null : { start, tz: es.timezone || 'UTC' };
 };
 
+/* ── Cost estimate from validator prices (the price CONSUMER) ─────────────────
+ * Stops that resolved to a curated Destination carry a verifiedId; validators
+ * may have entered a real price on those. This batch-loads those prices (ONE
+ * query), attaches them to the slots, and computes an APPROXIMATE per-person,
+ * per-day figure in the user's currency. Trust ladder: only real validator
+ * prices count — a stop with no price is simply excluded (coveredStops reports
+ * how many were priced), so a brand-new area with no curated prices yields no
+ * estimate rather than a fabricated one. Never a hard total; always "~approx".
+ * Async + best-effort: any failure leaves costEstimate null and never blocks. */
+async function attachPricingAndEstimate(days, displayCurrency = 'USD') {
+  try {
+    const Destination = require('../models/Destination');
+    const idset = new Set();
+    for (const day of days) for (const s of (day.slots || []))
+      if (s.place && s.status === 'enriched' && s.place.verifiedModel === 'destination' && s.place.verifiedId) idset.add(String(s.place.verifiedId));
+    if (idset.size) {
+      const rows = await Destination.find({ _id: { $in: [...idset] } }).select('pricing').lean();
+      const byId = new Map(rows.map(r => [String(r._id), r.pricing]));
+      for (const day of days) for (const s of (day.slots || [])) {
+        const p = s.place && s.place.verifiedId ? byId.get(String(s.place.verifiedId)) : null;
+        if (p && (p.isFree || Number.isFinite(p.average) || Number.isFinite(p.min))) s.place.pricing = p;
+      }
+    }
+    // Estimate: average of the per-day sums of priced stops, per person.
+    const cur = (displayCurrency || 'USD').toUpperCase();
+    let totalStops = 0, coveredStops = 0, priceDays = 0, sumPerDay = 0;
+    for (const day of days) {
+      let dayCost = 0, dayHasPrice = false;
+      for (const s of (day.slots || [])) {
+        if (!s.place || s.status !== 'enriched') continue;
+        totalStops++;
+        const p = s.place.pricing;
+        if (!p) continue;
+        if (p.isFree) { coveredStops++; dayHasPrice = true; continue; }
+        const amt = Number.isFinite(p.average) ? p.average : (Number.isFinite(p.min) && Number.isFinite(p.max) ? (p.min + p.max) / 2 : p.min);
+        if (!Number.isFinite(amt)) continue;
+        let usd = amt; try { usd = currencyService.convertToUSD(amt, p.currency || 'USD'); } catch { /* treat as USD */ }
+        dayCost += usd; coveredStops++; dayHasPrice = true;
+      }
+      if (dayHasPrice) { sumPerDay += dayCost; priceDays++; }
+    }
+    if (!coveredStops || !priceDays) return null;
+    let perDayUsd = sumPerDay / priceDays;
+    let perDay = perDayUsd;
+    try { perDay = currencyService.convertFromUSD(perDayUsd, cur); } catch { perDay = perDayUsd; }
+    return { perPersonPerDay: Math.round(perDay), currency: cur, coveredStops, totalStops };
+  } catch (e) { console.warn('[itinerary] cost estimate failed:', e.message); return null; }
+}
+
 function pinDatedEvents(days, startDate) {
   if (!Array.isArray(days) || !days.length) return;
   const tripStart = startDate ? new Date(startDate) : null;
@@ -246,7 +296,12 @@ function pinDatedEvents(days, startDate) {
       const ev = _datedEvent(slot);
       if (!ev) continue;
       const hhmm = _tzTime(ev.start, ev.tz);
-      if (hhmm) slot.time = hhmm;                                  // correct TIME
+      // All-day events (no specific time) are stored at local midnight. Showing
+      // "00:00" implies a real midnight start, so leave those WITHOUT a clock
+      // time (honest: "this day, time unspecified"); the day pin still applies.
+      // A genuinely timed event keeps its real time.
+      if (hhmm && hhmm !== '00:00') slot.time = hhmm;              // correct TIME
+      else slot.time = null;                                       // all-day → no misleading time
       const evDate = _tzISODate(ev.start, ev.tz);
       const target = evDate ? days.find(d => dayDateStr(d.dayNumber) === evDate) : null;
       if (target && target !== day) {                             // correct DAY
@@ -672,8 +727,55 @@ function sanitizeSkeleton(raw, daysCount, pace, { lenient = false } = {}) {
   return days.length ? days : null;
 }
 
-function skeletonPrompt({ destination, daysCount, pace, interests, homeBase, startDate, excludeNames, singleDay, maxKm = MAX_STOP_KM, language = 'en' }) {
+/* ── Trip-budget derivation (DISTINCT from the per-place preference budget) ───
+ * A whole-trip budget → a per-person-per-day spending level → a price tier that
+ * shapes suggestions. Deliberately NOT a hard total: we have price LEVELS, not
+ * real prices, so we steer toward appropriately-priced places and never promise
+ * an exact total. Currency-correct: the total is converted to USD (the tier
+ * thresholds' base) via currencyService, so a budget in AMD/EUR/RUB maps the
+ * same as one in USD. Returns null when no usable trip budget is set — callers
+ * then fall back to the preference budget / style.
+ *
+ * Thresholds are per-person, per-day, for MEALS + PAID STOPS (lodging excluded
+ * — that's a separate line a traveler books themselves). Rough by design and
+ * only ever surfaced with "approximately". */
+const TRIP_TIER_BANDS = [
+  { maxUsdPerDay: 30,  tier: 1, label: 'budget' },
+  { maxUsdPerDay: 75,  tier: 2, label: 'moderate' },
+  { maxUsdPerDay: 200, tier: 3, label: 'upscale' },
+  { maxUsdPerDay: Infinity, tier: 4, label: 'luxury' },
+];
+function deriveTripBudget(tripBudget, daysCount) {
+  const total = Number(tripBudget?.total);
+  const people = Math.max(1, Number(tripBudget?.people) || 1);
+  const days = Math.max(1, Number(daysCount) || 1);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  let totalUsd = total;
+  try { totalUsd = currencyService.convertToUSD(total, tripBudget?.currency || 'USD'); }
+  catch { /* unsupported currency → treat the number as USD (convertToUSD also warns) */ }
+  const perPersonPerDayUsd = totalUsd / people / days;
+  const band = TRIP_TIER_BANDS.find(b => perPersonPerDayUsd <= b.maxUsdPerDay) || TRIP_TIER_BANDS[TRIP_TIER_BANDS.length - 1];
+  return { tier: band.tier, label: band.label, perPersonPerDayUsd: Math.round(perPersonPerDayUsd), people, days };
+}
+
+function skeletonPrompt({ destination, daysCount, pace, interests, homeBase, startDate, excludeNames, singleDay, maxKm = MAX_STOP_KM, language = 'en', travelStyle = null, budget = null, tripBudget = null }) {
   const slotsPerDay = PACE_SLOTS[pace] || PACE_SLOTS.balanced;
+  // Style + budget, same signals the quick-action already reads from the user
+  // record — surfaced to the planner so the FIRST plan matches them too, not
+  // just the stops added later via quick-action.
+  const styleLine = travelStyle
+    ? `Travel style: ${travelStyle}. Prefer ${/lux/i.test(travelStyle) ? 'upscale, premium, well-reviewed' : 'affordable, good-value, well-reviewed'} places for meals and paid stops.`
+    : '';
+  // Trip budget is DISTINCT from and OVERRIDES the per-place preference budget:
+  // a whole-trip total the traveler set for THIS itinerary wins over their
+  // general spending band. Falls back to the preference band when no trip
+  // budget is set.
+  const TIER_WORD = { 1: 'budget/affordable', 2: 'moderately priced', 3: 'upscale', 4: 'luxury/premium' };
+  const budgetLine = tripBudget
+    ? `Trip budget: about ${tripBudget.perPersonPerDayUsd} USD per person per day (${tripBudget.people} traveler(s), ${tripBudget.days} day(s)) — choose ${TIER_WORD[tripBudget.tier]} places for meals and paid stops, and do NOT include stops clearly pricier than that level.`
+    : (budget && Number.isFinite(budget.min) && Number.isFinite(budget.max))
+      ? `Budget guidance: choose places whose price level fits roughly ${budget.min}-${budget.max} per person for a meal/ticket — avoid stops clearly above this range.`
+      : '';
   const dayWord = singleDay ? '1 day (regenerating one day of a longer trip)' : `${daysCount} day(s)`;
   return [
     `Plan a ${dayWord} travel itinerary for ${destination.name} (around lat ${destination.lat}, lng ${destination.lng}).`,
@@ -686,6 +788,8 @@ function skeletonPrompt({ destination, daysCount, pace, interests, homeBase, sta
     `Balance the day: at most 2 stops of category "historical" or "museum" per day, and never two of them back-to-back — separate heavy sights with food, a viewpoint, a walk, shopping, or a hidden gem.`,
     `Assume realistic visit durations when choosing how much fits in a day: viewpoint/photo spot ~30 min, market/shopping ~45-60 min, historical site ~60-75 min, museum ~90 min, meal ~75 min — plus travel time between stops.`,
     interests?.length ? `Traveler interests: ${interests.join(', ')}. Bias stop selection toward these.` : '',
+    styleLine,
+    budgetLine,
     homeBase?.name ? `The traveler stays at "${homeBase.name}" (lat ${homeBase.latitude ?? homeBase.lat}, lng ${homeBase.longitude ?? homeBase.lng}). Make the first stop of each day reasonably close to it and let the day naturally loop back toward it; do NOT list the accommodation itself as a stop.` : '',
     excludeNames?.length ? `NEVER include any of these (already used or rejected): ${excludeNames.slice(0, 80).join('; ')}.` : '',
     `Every stop MUST be a real, currently existing, findable-on-Google place located IN ${destination.name} or within roughly ${Math.max(3, Math.min(30, Math.round(maxKm / 2)))} km of it. NEVER suggest a place in another city, region, or country, and never use a brand's branch from elsewhere. Do not invent names. Prefer well-known, verifiable places over obscure guesses. Mix categories through the day (sights, food around meal times, a viewpoint or walk, etc.).`,
@@ -967,6 +1071,7 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
       homeBase = null,             // { placeId, name, lat, lng } | null
       nearbyMode = false,          // Nearby → compact plan within the user's nearby radius
       language: bodyLang = null,
+      tripBudget = null,           // DISTINCT whole-trip budget { total, currency, people } — budget-style travelers only
     } = req.body || {};
 
     const daysCount = Math.min(Math.max(parseInt(rawDays, 10) || 3, 1), MAX_DAYS);
@@ -1039,6 +1144,13 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
       interests: Array.isArray(interests) ? interests.slice(0, 10).map(String) : [],
       nearbyMode: !!nearbyMode,
       radiusKm,
+      // Whole-trip budget (distinct from the preference budget). Stored so a day
+      // regeneration reuses the same budget without re-asking.
+      ...(tripBudget && Number(tripBudget.total) > 0 ? { tripBudget: {
+        total: Number(tripBudget.total),
+        currency: String(tripBudget.currency || 'USD').toUpperCase().slice(0, 3),
+        people: Math.max(1, parseInt(tripBudget.people, 10) || 1),
+      } } : {}),
       homeBase: resolvedHomeBase,
       days: [],
       status: 'generating',
@@ -1064,7 +1176,7 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     const dislikedNames = await loadDislikedNames(req.user.id);
     let days = null;
     for (let attempt = 0; attempt < 2 && !days; attempt++) {
-      const prompt = skeletonPrompt({ destination: dest, daysCount, pace, interests, homeBase: doc.homeBase, startDate: doc.startDate, excludeNames: dislikedNames, maxKm: radiusKm, language: userLanguage })
+      const prompt = skeletonPrompt({ destination: dest, daysCount, pace, interests, homeBase: doc.homeBase, startDate: doc.startDate, excludeNames: dislikedNames, maxKm: radiusKm, language: userLanguage, travelStyle: user?.preferences?.travelStyle || null, budget: user?.preferences?.budget || null, tripBudget: deriveTripBudget(doc.tripBudget, daysCount) })
         + (attempt ? '\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.' : '');
       const { text } = await callModel({ system: SKELETON_SYSTEM, prompt, maxTokens: 260 * daysCount * (PACE_SLOTS[pace] || 8) / 4 + 600, endpoint: 'itinerary' });
       // Last attempt → accept a partial plan rather than failing the whole trip.
@@ -1107,9 +1219,12 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
       : { lat: dest.lat, lng: dest.lng };
     for (const day of doc.days) optimizeDayOrder(day, startPoint, doc.nearbyMode);
     pinDatedEvents(doc.days, doc.startDate);   // dated events → real day + time
+    // Approximate per-day cost from validator prices of curated stops.
+    doc.costEstimate = await attachPricingAndEstimate(doc.days, user?.settings?.currency || 'USD');
 
     doc.status = 'ready';
     doc.markModified('days');
+    doc.markModified('costEstimate');
     await doc.save();
     // Itinerary is one of the chat's quick actions, but unlike the other seven
     // it runs through its own route and was never recorded — so it showed as
@@ -1149,6 +1264,9 @@ router.post('/:id/regenerate-day-stream', auth, usageTracker, async (req, res) =
     if (!doc) return res.status(404).json({ success: false, error: 'not_found' });
     const day = doc.days.find(d => d.dayNumber === Number(dayNumber));
     if (!day) return res.status(400).json({ success: false, error: 'bad_day' });
+    // Preferences for parity with initial generation (style/budget) — the trip
+    // budget itself lives on the doc.
+    const regenUser = await User.findById(req.user.id).select('preferences');
 
     if (!(await passUsageGate(req, res, `regen ${doc.destination.name}`, PACE_SLOTS[doc.pace] || PACE_SLOTS.balanced, { daysCount: 1 }))) return;
 
@@ -1173,6 +1291,9 @@ router.post('/:id/regenerate-day-stream', auth, usageTracker, async (req, res) =
         homeBase: doc.homeBase, startDate: null, excludeNames, singleDay: true,
         maxKm: doc.radiusKm || MAX_STOP_KM,
         language: doc.language || 'en',
+        travelStyle: regenUser?.preferences?.travelStyle || null,
+        budget: regenUser?.preferences?.budget || null,
+        tripBudget: deriveTripBudget(doc.tripBudget, doc.daysCount),
       }) + (keep.length ? `\nThe traveler is KEEPING these stops on this day — plan the rest of the day around them, do not repeat them: ${keep.map(s => s.place?.name || s.name).join('; ')}.` : '')
         + (attempt ? '\nReply with ONLY the JSON object.' : '');
       const { text } = await callModel({ system: SKELETON_SYSTEM, prompt, maxTokens: 900, endpoint: 'itinerary_regen' });
@@ -1505,6 +1626,7 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
       nearbyMode = false,
       pace: rawPace = 'balanced',
       language: bodyLang = null,
+      tripBudget = null,          // whole-trip budget (distinct from preference budget)
     } = req.body || {};
     const daysCount = Math.min(Math.max(parseInt(rawDays, 10) || 3, 1), MAX_DAYS);
     // Pool builds used to hardcode 'balanced' and ignore the caller entirely,
@@ -1841,6 +1963,7 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
     // ── 5. schedule (order + honest times), then persist ──
     for (const day of days) optimizeDayOrder(day, startPoint, !!nearbyMode, startMinForDay);
     pinDatedEvents(days, null);   // saved/pool events → real clock time (pool builds carry no trip dates, so time-only)
+    const poolCostEstimate = await attachPricingAndEstimate(days, user?.settings?.currency || 'USD');
 
     // ── 5b. nicer day titles — one batched model call in the trip language.
     //  Hard 3s budget: on timeout/failure the algorithmic titles above ship,
@@ -1866,6 +1989,16 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
       interests: [],
       nearbyMode: !!nearbyMode,
       radiusKm,
+      // Persist the whole-trip budget so a later day-regeneration (which uses
+      // the skeleton planner) plans to the same budget. The pool places
+      // themselves already respect the user's per-place preference budget from
+      // the quick-actions that gathered them.
+      ...(tripBudget && Number(tripBudget.total) > 0 ? { tripBudget: {
+        total: Number(tripBudget.total),
+        currency: String(tripBudget.currency || 'USD').toUpperCase().slice(0, 3),
+        people: Math.max(1, parseInt(tripBudget.people, 10) || 1),
+      } } : {}),
+      ...(poolCostEstimate ? { costEstimate: poolCostEstimate } : {}),
       homeBase: resolvedHomeBase,
       days,
       status: 'ready',

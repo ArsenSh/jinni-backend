@@ -55,6 +55,17 @@ const PlaceSchema = new mongoose.Schema({
     isRecurring: { type: Boolean, default: false },
     timezone:    { type: String, default: null },   // IANA zone the time is written in
   },
+  // Validator-entered price (mirrors Destination.pricing) — attached at build
+  // time for stops that resolve to a curated Destination. The trust-ladder
+  // price signal for the cost estimate: validator price → (else) Google level
+  // → (else) excluded. Absent on ordinary Google places.
+  pricing: {
+    isFree:   { type: Boolean, default: false },
+    min:      { type: Number,  default: null },
+    max:      { type: Number,  default: null },
+    average:  { type: Number,  default: null },
+    currency: { type: String,  default: 'USD' },
+  },
 }, { _id: false });
 
 const SlotSchema = new mongoose.Schema({
@@ -103,6 +114,20 @@ const ItinerarySchema = new mongoose.Schema({
   pace:      { type: String, enum: ['relaxed', 'balanced', 'packed'], default: 'balanced' },
   interests: { type: [String], default: [] },
 
+  // ── Trip budget (DISTINCT from the user's per-place preference budget) ──────
+  // The preference budget (User.preferences.budget) is a per-PLACE spending
+  // band used everywhere in chat. THIS is a whole-TRIP budget the traveler
+  // sets for one itinerary: a total, its currency, and how many people share
+  // it. total ÷ people ÷ days → a per-person-per-day figure → a price tier that
+  // shapes which places the plan suggests (see deriveTripBudget). Set only when
+  // the traveler is on "budget" style and fills the itinerary budget step;
+  // otherwise null and the plan falls back to the preference budget / style.
+  tripBudget: {
+    total:    { type: Number, default: null },     // amount in `currency`
+    currency: { type: String, default: 'USD' },
+    people:   { type: Number, default: 1 },
+  },
+
   // Planning geofence. Nearby mode stores the user's compact nearby radius;
   // Discovery stores the wider one. Reused by day regeneration so a Nearby
   // trip stays compact when a day is replanned.
@@ -118,6 +143,17 @@ const ItinerarySchema = new mongoose.Schema({
   // leaves this state; the GET endpoint downgrades stale 'generating' docs to
   // 'ready' so the UI never spins forever).
   status:   { type: String, enum: ['generating', 'ready', 'failed'], default: 'generating' },
+
+  // Approximate per-person, per-day cost — computed at build time from the
+  // validator prices of curated stops (trust-ladder: only real prices count;
+  // stops with no validator price are excluded, hence coveredStops < totalStops
+  // is normal). ALWAYS surfaced with "approximately"; null when no priced stop.
+  costEstimate: {
+    perPersonPerDay: { type: Number, default: null },
+    currency:        { type: String, default: 'USD' },
+    coveredStops:    { type: Number, default: 0 },
+    totalStops:      { type: Number, default: 0 },
+  },
   language: { type: String, default: 'en' },
   title:    { type: String, default: '' },       // display title, editable
 }, {
