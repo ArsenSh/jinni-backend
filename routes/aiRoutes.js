@@ -1305,14 +1305,14 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                 // "armenian restaurants Dubai" costs one Places call, not one
                                 // per user per ask. Key: query + rounded area.
                                 const rLat = locationToUse.lat.toFixed(2), rLng = locationToUse.lng.toFixed(2);
-                                const cacheKey = `chatground:${gq.toLowerCase()}:${rLat}:${rLng}`;
+                                const cacheKey = `chatground2:${gq.toLowerCase()}:${rLat}:${rLng}`;   // v2: 15 results + types
                                 let found = null;
                                 const cached = await PlaceSearchCache.findOne({ key: cacheKey }).lean().catch(() => null);
                                 if (cached && Array.isArray(cached.candidates)) {
                                     found = cached.candidates;
                                     console.log(`[chat grounding] cache HIT for "${gq}" ($0)`);
                                 } else {
-                                    found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId);
+                                    found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId, { maxResultCount: 15 });
                                     const candidates = (found || []).map(f => ({ placeId: f.place_id, name: f.name, lat: f.geometry?.location?.lat ?? null, lng: f.geometry?.location?.lng ?? null, types: f.types || [], primaryType: f.primaryType || null }));
                                     PlaceSearchCache.updateOne({ key: cacheKey }, { $set: { key: cacheKey, action: 'chat', candidates, expireAt: new Date(Date.now() + 30 * 60 * 1000) } }, { upsert: true }).catch(() => {});
                                 }
@@ -1323,8 +1323,21 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                  * "Armenian restaurant" then drops Puzatic (russian/uzbek) while
                                  * keeping Nairi and any place Google leaves cuisine-untyped
                                  * (ambiguous → kept, the model still hedges). */
-                                const CUISINES = ['armenian','russian','georgian','azerbaijani','ukrainian','uzbek','lebanese','turkish','persian','iranian','afghan','italian','chinese','japanese','korean','thai','vietnamese','indian','french','greek','mexican','spanish','american','brazilian','mediterranean','seafood','sushi','ramen','ethiopian','moroccan','indonesian','filipino','german','portuguese'];
-                                const targetCuisine = CUISINES.find(c => new RegExp('\\b' + c + '\\b', 'i').test(gq));
+                                /* Cuisine grouped by REGION, because Google has no type for
+                                 * every cuisine (no `armenian_restaurant`) and tags Armenian
+                                 * food as middle_eastern/mediterranean. So we drop a place only
+                                 * when Google tags it as a cuisine from a DIFFERENT region than
+                                 * asked (Russian/Uzbek ≠ Armenian → drop), while keeping
+                                 * same-region ones (middle_eastern/mediterranean/turkish/…). */
+                                const CUISINE_REGION = {
+                                    armenian:'me', georgian:'me', azerbaijani:'me', turkish:'me', persian:'me', iranian:'me', lebanese:'me', mediterranean:'me', greek:'me', middle_eastern:'me', arabic:'me', afghan:'me',
+                                    russian:'slav', ukrainian:'slav', uzbek:'slav', polish:'slav',
+                                    italian:'euro', french:'euro', spanish:'euro', portuguese:'euro', german:'euro',
+                                    chinese:'easia', japanese:'easia', korean:'easia', sushi:'easia', ramen:'easia', thai:'sea', vietnamese:'sea', indonesian:'sea', filipino:'sea', indian:'sasia',
+                                    mexican:'latam', brazilian:'latam', american:'am', ethiopian:'afr', moroccan:'afr',
+                                };
+                                const targetCuisine = Object.keys(CUISINE_REGION).find(c => new RegExp('\\b' + c + '\\b', 'i').test(gq));
+                                const targetRegion = targetCuisine ? CUISINE_REGION[targetCuisine] : null;
                                 let cands = (found || []);
                                 // General KIND guard (works for restaurants, hotels, historical,
                                 // shopping): drop candidates Google classifies as a different kind
@@ -1335,16 +1348,18 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                     cands = cands.filter(c => googleService.placeMatchesActionType(detectedActionType, null, c.types || [], c.primaryType || null));
                                     if (cands.length !== beforeK) console.log(`[chat grounding] kind filter (${detectedActionType}): dropped ${beforeK - cands.length} off-type place(s)`);
                                 }
-                                if (targetCuisine) {
+                                if (targetRegion) {
                                     const before = cands.length;
                                     cands = cands.filter(c => {
                                         const ct = (c.types || []).map(t => String(t).toLowerCase()).filter(t => t.endsWith('_restaurant') && t !== 'restaurant');
-                                        if (!ct.length) return true;                       // no cuisine tag → ambiguous, keep
-                                        return ct.some(t => t.includes(targetCuisine));     // has tag(s) → keep only a match
+                                        if (!ct.length) return true;                       // no cuisine tag → keep (model hedges)
+                                        const regions = ct.map(t => { const k = Object.keys(CUISINE_REGION).find(c => t.includes(c)); return k ? CUISINE_REGION[k] : null; }).filter(Boolean);
+                                        if (!regions.length) return true;                  // cuisine we don't map → keep
+                                        return regions.includes(targetRegion);             // drop only if ALL tags are a different region
                                     });
-                                    if (cands.length !== before) console.log(`[chat grounding] cuisine filter (${targetCuisine}): dropped ${before - cands.length} off-cuisine place(s)`);
+                                    if (cands.length !== before) console.log(`[chat grounding] cuisine filter (${targetCuisine}/${targetRegion}): dropped ${before - cands.length} off-region place(s)`);
                                 }
-                                googleGroundingNames = cands.map(c => c.name).filter(Boolean).slice(0, 8);
+                                googleGroundingNames = cands.map(c => c.name).filter(Boolean).slice(0, 10);
                                 if (googleGroundingNames.length) console.log(`[chat grounding] DB thin (${businesses.length + destinations.length}) → ${googleGroundingNames.length} real place(s) for "${gq}"`);
                             }
                         } catch (e) { console.warn('[chat grounding] Google fallback failed:', e.message); }

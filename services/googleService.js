@@ -103,7 +103,9 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
     return withRateLimit(async () => {
         trackApiCall('findPlaces', requestId);
         console.log('[findPlaces] query="' + query + '" loc=' + (userLocation ? userLocation.lat + ',' + userLocation.lng : 'none'));
-        const body = {textQuery: query, languageCode: 'en', maxResultCount: 5};
+        // Default 5; callers can ask for more (Google Places allows up to 20).
+        // Same billing SKU regardless of count — a larger list costs no extra.
+        const body = {textQuery: query, languageCode: 'en', maxResultCount: Math.min(20, Math.max(1, options.maxResultCount || 5))};
         if (userLocation && userLocation.lat && userLocation.lng) {body.locationBias = {circle: {center: { latitude: userLocation.lat, longitude: userLocation.lng }, radius: 50000.0}}}
         else {body.locationBias = {circle: {center: { latitude: 40.1772, longitude: 44.50349 }, radius: 50000.0,}}}
         // Optional type BIAS (non-strict): nudges Google to resolve an
