@@ -198,7 +198,12 @@ function budgetMatchClause(budget) {
  *        returns only jewelry-tagged listings. Ignored for every other action.
  * @returns {Promise<Object>} { businesses: Array, destinations: Array, metadata: Object }
  */
-async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null) {
+async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null, seenPenalty = null) {
+    // Novelty bias: `seenPenalty` is a Map (identity → penalty) the caller
+    // precomputes from the user's PlaceView history. A place already seen loses
+    // a little score so fresh ones rise — SOFT (subtracted before the top-N cut,
+    // never a filter), so a thin market still fills. Applied by _seenPen below.
+    const _seenPen = (p) => seenPenalty ? (seenPenalty.get(p.placeId) || seenPenalty.get(p.googlePlaceId) || seenPenalty.get(String(p._id)) || 0) : 0;
     const startTime = Date.now();
     try {
         if (!userLocation?.lat || !userLocation?.lng) { throw new Error('Valid user location required'); }
@@ -395,7 +400,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
                 return {
                     ...business,
                     preferenceScore: prefScore,
-                    totalScore: prefScore + (radiusKm - business.distance) / 10,
+                    totalScore: prefScore + (radiusKm - business.distance) / 10 - _seenPen(business),
                     // null when the price is unknown or no budget was given —
                     // "not applicable", distinct from "outside the budget".
                     // `price != null` rather than a truthiness test so a free
@@ -409,7 +414,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             .map(dest => ({
                 ...dest,
                 preferenceScore: calculatePreferenceScore(dest.type || [], userInterests),
-                totalScore: calculatePreferenceScore(dest.type || [], userInterests) + (radiusKm - dest.distance) / 10
+                totalScore: calculatePreferenceScore(dest.type || [], userInterests) + (radiusKm - dest.distance) / 10 - _seenPen(dest)
             })).sort((a, b) => b.totalScore - a.totalScore).slice(0, maxResults);
         //console.log(`Final candidates: ${finalBusinesses.length} businesses, ${finalDestinations.length} destinations`);
         //console.log(`All results match action type: ${actionType} and style: ${userStyle}`);

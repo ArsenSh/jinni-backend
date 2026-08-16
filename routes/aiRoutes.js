@@ -22,6 +22,7 @@ const translationService = require('../services/translationService');
 const intentService = require('../services/intentService');
 const PlaceCache = require('../models/PlaceCache');
 const PlaceFeedback = require('../models/PlaceFeedback');
+const PlaceView = require('../models/PlaceView');
 const imageStorageService = require('../services/imageStorageService');
 const { usageTracker, estimateTokens } = require('../middleware/usageTracker');
 const UserAILimit = require('../models/UserAILimit');
@@ -563,6 +564,78 @@ async function resolveEffectiveLocation(user, requestLocation = null, messages =
     // CASE 3: No location available at all
     console.log('❌ No valid location found\n');
     return {error: 'location_required', message: messages.location_required, requiresUserAction: true};
+}
+
+/* "More like this" — the categories a user has LIKED, most-liked first. Every
+ * PlaceFeedback row stores the `action` (category) the place was liked under,
+ * so this covers ALL sources uniformly — Google cache places, curated
+ * destinations, partner businesses, and jinni-events — with no per-source
+ * lookup. Fed into `interests`, where the existing scorer
+ * (calculatePreferenceScore, +2 per matching type) softly boosts similar
+ * places. Never a filter — liked categories float up, nothing is hidden. */
+/* Record that these places were SHOWN to the user (weak signal). Best-effort
+ * bulk upsert at serve time; never blocks the response. Refreshes the TTL
+ * window and never downgrades a place already promoted to 'watched'. */
+const VIEW_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+function recordPlaceViews(userId, recommendations, action = null) {
+    try {
+        const ids = [...new Set((recommendations || []).map(r => r && (r.placeId || r.verifiedId)).filter(Boolean))];
+        if (!userId || !ids.length) return;
+        const now = new Date(), expireAt = new Date(Date.now() + VIEW_TTL_MS);
+        const ops = ids.map(placeId => ({
+            updateOne: {
+                filter: { userId, placeId },
+                update: {
+                    $set: { lastShownAt: now, expireAt, ...(action ? { action } : {}) },
+                    $inc: { shownCount: 1 },
+                    $setOnInsert: { firstSeenAt: now, status: 'shown' },
+                },
+                upsert: true,
+            },
+        }));
+        PlaceView.bulkWrite(ops, { ordered: false })
+            .catch(err => console.warn('[views] recordPlaceViews failed:', err.message));
+    } catch (e) { console.warn('[views] recordPlaceViews error:', e.message); }
+}
+
+// Interactions that promote a place shown → watched (deliberate engagement).
+const WATCHED_INTERACTIONS = new Set([
+    'info_open', 'ai_ask', 'more_images', 'map_open', 'website_click',
+    'phone_click', 'search_click', 'instagram_click', 'facebook_click',
+    'tripadvisor_click', 'place_share',
+]);
+
+/* Novelty policy: turn the user's PlaceView history into a Map(identity →
+ * score penalty) for the ranker. Watched (they engaged) is penalised harder
+ * than shown (just appeared); both DECAY with age so a place seen long ago
+ * feels fresh again. Soft by construction — the ranker subtracts this before
+ * the top-N cut, so seen places sink but never vanish (small markets stay
+ * full). Keyed by placeId so DB and Google identities both match. */
+const SEEN_WATCHED_MAX = 3.0, SEEN_SHOWN_MAX = 1.5, SEEN_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+async function buildSeenPenalty(userId) {
+    try {
+        const rows = await PlaceView.find({ userId }).select('placeId status lastShownAt').lean();
+        if (!rows.length) return null;
+        const now = Date.now(), map = new Map();
+        for (const r of rows) {
+            if (!r.placeId) continue;
+            const age = now - new Date(r.lastShownAt || now).getTime();
+            const freshness = Math.max(0, 1 - age / SEEN_WINDOW_MS);          // 1 = just seen, 0 = old
+            const base = r.status === 'watched' ? SEEN_WATCHED_MAX : SEEN_SHOWN_MAX;
+            map.set(r.placeId, base * freshness);
+        }
+        return map.size ? map : null;
+    } catch (e) { console.warn('[views] buildSeenPenalty failed:', e.message); return null; }
+}
+
+async function likedTasteTags(userId, limit = 6) {
+    try {
+        const likes = await PlaceFeedback.find({ userId, vote: 'like' }).select('action').lean();
+        if (!likes.length) return [];
+        const tally = {};
+        for (const l of likes) if (l.action && l.action !== 'general') tally[l.action] = (tally[l.action] || 0) + 1;
+        return Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([t]) => t);
+    } catch (e) { console.warn('[taste] likedTasteTags failed:', e.message); return []; }
 }
 
 router.post('/chat-stream', auth, usageTracker, async (req, res) => {
@@ -1184,7 +1257,9 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 const user = await User.findById(userId);
                 const excludedPlaceNames = placeNames.map(name => name.toLowerCase());
                 const messageWords = processedMessage.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !['the', 'and', 'for', 'with', 'from', 'this', 'that', 'have', 'been', 'what'].includes(word) && !excludedPlaceNames.includes(word));
-                const temporaryPreferences = { ...user?.preferences || {}, interests: [ ...(user?.preferences?.interests || []), ...messageWords ] };
+                // "More like this": bias ranking toward categories this user has liked.
+                const likedTags = await likedTasteTags(userId);
+                const temporaryPreferences = { ...user?.preferences || {}, interests: [ ...(user?.preferences?.interests || []), ...messageWords, ...likedTags ] };
                 // console.log(`🎯 TEMPORARY PREFERENCES:`, temporaryPreferences);
                 // console.log(`📝 MESSAGE WORDS ADDED:`, messageWords);
                 // console.log(`🚫 EXCLUDED PLACE NAMES:`, excludedPlaceNames);
@@ -1202,7 +1277,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     const userRadius = effectiveLocation ? (nearbyMode ? effectiveLocation.nearbyRadius : effectiveLocation.discoveryRadius) : (nearbyMode ? 5 : 50);
                     const searchOptions = {radius: userRadius, maxResults: nearbyMode ? 6 : 10};
                     // console.log(`📏 Using radius: ${userRadius}km (${nearbyMode ? 'nearby' : 'discovery'} mode)`);
-                    const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId );
+                    const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId, null, await buildSeenPenalty(userId) );
                     businesses = smartProximityResults.businesses;
                     destinations = smartProximityResults.destinations;
                     /* ── Proactive Google grounding (thin-DB fallback) ───────────────
@@ -3112,8 +3187,10 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 if (_hasC && Number.isFinite(rec.latitude) && Number.isFinite(rec.longitude) && _haversineKm(_cLat, _cLng, rec.latitude, rec.longitude) > 300) return false;
                 return true;
             });
-            const streamingRecs = { type: 'recommendations', recommendations: (_streamList.length ? _streamList : recommendations.filter(rec => rec !== null)), isStreaming: true };
+            const _finalRecs = (_streamList.length ? _streamList : recommendations.filter(rec => rec !== null));
+            const streamingRecs = { type: 'recommendations', recommendations: _finalRecs, isStreaming: true };
             res.write(`data: ${JSON.stringify(streamingRecs)}\n\n`);
+            recordPlaceViews(userId, _finalRecs, detectedActionType);   // remember what this user was shown (chat)
             // console.log(`\n✅ Final recommendations count: ${recommendations.length}`);
             // console.log('📊 Recommendations Summary (in order):');
             // recommendations.forEach((rec, idx) => {
@@ -5144,7 +5221,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             if (isClientDisconnected()) return;
             const userRadius = effectiveLocation ? (nearbyMode ? effectiveLocation.nearbyRadius : effectiveLocation.discoveryRadius) : (nearbyMode ? 5 : 50);
             // console.log(`📏 Using radius: ${userRadius}km (${nearbyMode ? 'nearby' : 'discovery'} mode)`);
-            const smartProximityResults = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount, userRegion, requestId, subType);
+            // "More like this": bias ranking toward the user's liked categories.
+            const qaLikedTags = await likedTasteTags(userId);
+            const rankPrefs = qaLikedTags.length ? { ...preferences, interests: [ ...(preferences.interests || []), ...qaLikedTags ] } : preferences;
+            const smartProximityResults = await proximityService.findSmartProximityPlaces(effectiveLocation, rankPrefs, action, userRadius, requestedCount, userRegion, requestId, subType, await buildSeenPenalty(userId));
             nearbyBusinesses = smartProximityResults.businesses;
             nearbyDestinations = smartProximityResults.destinations;
             /* ── Curated destinations are NOT filtered by schedule ────────────────
@@ -7033,6 +7113,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 // Strip internal-only fields (used by the type sanity filter) so they
                 // don't bloat the payload sent to the client.
                 recommendations.forEach(r => { delete r.placeTypes; delete r.placePrimaryType; delete r.requestedName; delete r._isDateCard; delete r._eventVenue; delete r._eventAddress; });
+                recordPlaceViews(userId, recommendations, action);   // remember what this user was shown
                 // console.log('\n📤 Sending completion with recommendations...');
                 const completionPayload = {
                     type: 'complete',
@@ -8572,8 +8653,23 @@ router.delete('/user/account', auth, async (req, res) => {
 
 router.post('/track-interaction', auth, async (req, res) => {
     try {
-        const { verifiedId, placeName, interactionType } = req.body;
+        const { verifiedId, placeId, placeName, interactionType } = req.body;
         const userId = req.user.id;
+        // Promote shown → watched on deliberate engagement. Uses whichever
+        // identity the card carried (Google placeId or verified id), so it
+        // covers Google places, destinations, businesses and jinni-events.
+        const viewId = placeId || verifiedId;
+        if (viewId && WATCHED_INTERACTIONS.has(interactionType)) {
+            PlaceView.updateOne(
+                { userId, placeId: viewId },
+                {
+                    $set: { status: 'watched', watchedAt: new Date(), lastShownAt: new Date(), expireAt: new Date(Date.now() + VIEW_TTL_MS) },
+                    $inc: { engageCount: 1 },
+                    $setOnInsert: { firstSeenAt: new Date() },
+                },
+                { upsert: true },
+            ).catch(err => console.warn('[views] watched promote failed:', err.message));
+        }
         // Map each interactionType to the correct Business analytics counter.
         // Each action writes to its own dedicated field for granular dashboard reporting.
         if (verifiedId) {
