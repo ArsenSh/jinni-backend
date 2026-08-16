@@ -1313,10 +1313,38 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                     console.log(`[chat grounding] cache HIT for "${gq}" ($0)`);
                                 } else {
                                     found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId);
-                                    const candidates = (found || []).map(f => ({ placeId: f.place_id, name: f.name, lat: f.geometry?.location?.lat ?? null, lng: f.geometry?.location?.lng ?? null, types: f.types || [] }));
+                                    const candidates = (found || []).map(f => ({ placeId: f.place_id, name: f.name, lat: f.geometry?.location?.lat ?? null, lng: f.geometry?.location?.lng ?? null, types: f.types || [], primaryType: f.primaryType || null }));
                                     PlaceSearchCache.updateOne({ key: cacheKey }, { $set: { key: cacheKey, action: 'chat', candidates, expireAt: new Date(Date.now() + 30 * 60 * 1000) } }, { upsert: true }).catch(() => {});
                                 }
-                                googleGroundingNames = (found || []).map(f => f.name).filter(Boolean).slice(0, 8);
+                                /* Cuisine-type guard: Google tags many restaurants with a
+                                 * cuisine-specific type (russian_restaurant, …). If the query
+                                 * names a cuisine and a candidate is tagged as a DIFFERENT one,
+                                 * drop it — that's Google's own classification, not a guess.
+                                 * "Armenian restaurant" then drops Puzatic (russian/uzbek) while
+                                 * keeping Nairi and any place Google leaves cuisine-untyped
+                                 * (ambiguous → kept, the model still hedges). */
+                                const CUISINES = ['armenian','russian','georgian','azerbaijani','ukrainian','uzbek','lebanese','turkish','persian','iranian','afghan','italian','chinese','japanese','korean','thai','vietnamese','indian','french','greek','mexican','spanish','american','brazilian','mediterranean','seafood','sushi','ramen','ethiopian','moroccan','indonesian','filipino','german','portuguese'];
+                                const targetCuisine = CUISINES.find(c => new RegExp('\\b' + c + '\\b', 'i').test(gq));
+                                let cands = (found || []);
+                                // General KIND guard (works for restaurants, hotels, historical,
+                                // shopping): drop candidates Google classifies as a different kind
+                                // than the action asked for — a mall for a hotel query, a
+                                // restaurant for a historical one. Lenient on untyped places.
+                                {
+                                    const beforeK = cands.length;
+                                    cands = cands.filter(c => googleService.placeMatchesActionType(detectedActionType, null, c.types || [], c.primaryType || null));
+                                    if (cands.length !== beforeK) console.log(`[chat grounding] kind filter (${detectedActionType}): dropped ${beforeK - cands.length} off-type place(s)`);
+                                }
+                                if (targetCuisine) {
+                                    const before = cands.length;
+                                    cands = cands.filter(c => {
+                                        const ct = (c.types || []).map(t => String(t).toLowerCase()).filter(t => t.endsWith('_restaurant') && t !== 'restaurant');
+                                        if (!ct.length) return true;                       // no cuisine tag → ambiguous, keep
+                                        return ct.some(t => t.includes(targetCuisine));     // has tag(s) → keep only a match
+                                    });
+                                    if (cands.length !== before) console.log(`[chat grounding] cuisine filter (${targetCuisine}): dropped ${before - cands.length} off-cuisine place(s)`);
+                                }
+                                googleGroundingNames = cands.map(c => c.name).filter(Boolean).slice(0, 8);
                                 if (googleGroundingNames.length) console.log(`[chat grounding] DB thin (${businesses.length + destinations.length}) → ${googleGroundingNames.length} real place(s) for "${gq}"`);
                             }
                         } catch (e) { console.warn('[chat grounding] Google fallback failed:', e.message); }
