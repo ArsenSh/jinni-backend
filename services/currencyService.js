@@ -9,6 +9,7 @@ const axios = require('axios');
 // In-memory cache of exchange rates (USD as base)
 let EXCHANGE_RATES = {
     'AED': 3.67,
+    'AMD': 387,      // Armenian Dram — Jinni's home market; ~387 AMD per USD
     'USD': 1.00,
     'EUR': 0.92,
     'GBP': 0.79,
@@ -56,6 +57,11 @@ async function fetchLatestRates() {
                 const rates = api.parse(response.data);                
                 const filteredRates = {
                     'USD': 1.00,
+                    // Keep AED + AMD across refreshes: the fetch REPLACES the table,
+                    // so anything omitted here is silently lost (AED was, and AMD —
+                    // Jinni's home currency — was never carried at all).
+                    'AED': rates.AED || EXCHANGE_RATES.AED,
+                    'AMD': rates.AMD || EXCHANGE_RATES.AMD,
                     'EUR': rates.EUR || EXCHANGE_RATES.EUR,
                     'GBP': rates.GBP || EXCHANGE_RATES.GBP,
                     'RUB': rates.RUB || EXCHANGE_RATES.RUB

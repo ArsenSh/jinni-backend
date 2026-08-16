@@ -269,7 +269,12 @@ async function attachPricingAndEstimate(days, displayCurrency = 'USD') {
         if (p.isFree) { coveredStops++; dayHasPrice = true; continue; }
         const amt = Number.isFinite(p.average) ? p.average : (Number.isFinite(p.min) && Number.isFinite(p.max) ? (p.min + p.max) / 2 : p.min);
         if (!Number.isFinite(amt)) continue;
-        let usd = amt; try { usd = currencyService.convertToUSD(amt, p.currency || 'USD'); } catch { /* treat as USD */ }
+        // Skip currencies the converter can't handle (e.g. AMD) — otherwise
+        // convertToUSD returns the RAW number and 18,296 AMD becomes $18,296.
+        // An honest gap beats a fabricated total.
+        const pc = (p.currency || 'USD').toUpperCase();
+        if (pc !== 'USD' && !currencyService.isCurrencySupported(pc)) continue;
+        let usd = amt; try { usd = currencyService.convertToUSD(amt, pc); } catch { continue; }
         dayCost += usd; coveredStops++; dayHasPrice = true;
       }
       if (dayHasPrice) { sumPerDay += dayCost; priceDays++; }
@@ -1219,8 +1224,13 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
       : { lat: dest.lat, lng: dest.lng };
     for (const day of doc.days) optimizeDayOrder(day, startPoint, doc.nearbyMode);
     pinDatedEvents(doc.days, doc.startDate);   // dated events → real day + time
-    // Approximate per-day cost from validator prices of curated stops.
-    doc.costEstimate = await attachPricingAndEstimate(doc.days, user?.settings?.currency || 'USD');
+    // Approximate per-day cost — a budget-planning aid, so shown only to
+    // budget-style travelers (luxury travelers don't want a running cost line).
+    // Show the estimate in the currency the traveler set WITH their budget in
+    // onboarding (that's the number they think in), then display currency, USD.
+    doc.costEstimate = (user?.preferences?.travelStyle === 'budget')
+      ? await attachPricingAndEstimate(doc.days, user?.preferences?.budget?.currency || user?.settings?.currency || 'USD')
+      : null;
 
     doc.status = 'ready';
     doc.markModified('days');
@@ -1963,7 +1973,9 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
     // ── 5. schedule (order + honest times), then persist ──
     for (const day of days) optimizeDayOrder(day, startPoint, !!nearbyMode, startMinForDay);
     pinDatedEvents(days, null);   // saved/pool events → real clock time (pool builds carry no trip dates, so time-only)
-    const poolCostEstimate = await attachPricingAndEstimate(days, user?.settings?.currency || 'USD');
+    const poolCostEstimate = (user?.preferences?.travelStyle === 'budget')
+      ? await attachPricingAndEstimate(days, user?.preferences?.budget?.currency || user?.settings?.currency || 'USD')
+      : null;
 
     // ── 5b. nicer day titles — one batched model call in the trip language.
     //  Hard 3s budget: on timeout/failure the algorithmic titles above ship,
