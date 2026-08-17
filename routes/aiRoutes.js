@@ -1520,6 +1520,18 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
             const feedChunk = (content) => {
                 if (streamAborted || isClientDisconnected()) return;
                 if (!content) return;
+                // ── Card gate (deterministic, model-proof) ────────────────────
+                // Cards are a place-recommendation feature. On a NON-place turn
+                // (meta / "how do you work" / chit-chat, isTravelQuery === false)
+                // strip the recommendation markers (→ … ←) HERE — the single point
+                // every token flows through, BEFORE they reach fullResponse. The
+                // live parser then never opens a card block (it enters only on '→'),
+                // AND processStreamCompletion (which parses fullResponse) finds
+                // nothing to verify. No card can form no matter what the model emits
+                // — so a rhetorical bold like "listen first" can never become a
+                // random real business card. The prose itself still streams normally.
+                if (!isTravelQuery) content = content.replace(/[→←]/g, '');
+                if (!content) return;
                 fullResponse += content;
 
                 // CASE 1: Inside arrow block - stream description
