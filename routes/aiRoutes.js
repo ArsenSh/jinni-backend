@@ -1066,6 +1066,13 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         if (contextMessages[0] && typeof contextMessages[0].content === 'string') {
             contextMessages[0].content += `\n\nIMPORTANT — about your own capabilities: you are part of a travel app that verifies places through live Google data. NEVER describe your own architecture, training data, or knowledge cutoff, and NEVER tell the user you "cannot browse the internet", "have a fixed dataset", or "cannot access real-time information". If a specific detail (phone, hours, price) was provided to you as VERIFIED PLACE DATA, use it exactly. If a detail was NOT provided, briefly say that specific detail isn't in your verified data yet — and, when a place card is shown, tell the user they can tap "More" on it for the website, phone, opening hours, and directions. NEVER tell the user to look a place up on Google Maps or an external website; the app itself surfaces those details on the card. Do NOT pad replies with "check their website/Google for hours and the menu" — reserve any suggestion for a genuinely useful tip (a dish worth trying, the best time to visit), never for sending the user elsewhere.`;
         }
+        // MATCH HONESTY — the general fix for "relabel a place to fit the request"
+        // (e.g. presenting an Armenian restaurant as "Uzbek"). Applies to EVERY
+        // recommendation path, not just the grounding block. Additive: it only
+        // forbids overclaiming, so it cannot break a flow.
+        if (contextMessages[0] && typeof contextMessages[0].content === 'string') {
+            contextMessages[0].content += `\n\nMATCH HONESTY (critical): describe every place by its ACTUAL, verified cuisine, type, and features. NEVER relabel or overclaim a place to fit the user's request — do not call an Armenian or Georgian restaurant "Uzbek", a normal café a "rooftop bar", or any place something it is not, just to satisfy the ask. If you are not certain a place genuinely matches the specific thing asked for (a cuisine, a feature, a named place), do NOT claim it does. If nothing you have genuinely matches, SAY SO plainly; if you still mention nearby options, label each by what it truly is (e.g. "not Uzbek, but an excellent Caucasian restaurant"). An honest "I don't have a verified match" always beats a confident wrong label.`;
+        }
         // ── Verified place grounding ──────────────────────────────────────────────────────────
         // When the user asks about a SPECIFIC place — by typing its name or via a
         // card's "Ask" button (which sends a plain message, so name-matching here
@@ -1294,16 +1301,21 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId, null, await buildSeenPenalty(userId) );
                     businesses = smartProximityResults.businesses;
                     destinations = smartProximityResults.destinations;
-                    /* ── Proactive Google grounding (thin-DB fallback) ───────────────
-                     * Our DB covers the home market well but not the whole world.
-                     * When it returns almost nothing for a place query — Armenian
-                     * restaurants in Dubai — hand the model REAL options from Google
-                     * Places instead of letting it invent names or give filler. One
-                     * Text Search, only on a thin result, only for a concrete place
-                     * type. The names verify into cards in processStreamCompletion's
-                     * Google step; if Google finds nothing either, the model can say
-                     * so truthfully. Fails safe: any error leaves the reply as-is. */
-                    if ((businesses.length + destinations.length) < 3 && detectedActionType && detectedActionType !== 'general') {
+                    /* ── Proactive Google grounding (deterministic retrieval) ────────
+                     * The DB is proximity-ranked and home-market-biased, so a SPECIFIC
+                     * ask ("Uzbek restaurant", "vegan brunch", a venue by name) can come
+                     * back as generic nearby places that don't truly match — and the
+                     * model then relabels them to fit. We do NOT try to guess which asks
+                     * are "specific" (word lists and classifiers all have a failure tail).
+                     * Instead, for every concrete place request we run ONE live Google
+                     * Text Search on the user's ACTUAL query and hand those REAL options
+                     * to the model. Google is the retriever that actually holds the long
+                     * tail, so the true match ("Uzbechka") is always in the candidate set;
+                     * if Google has nothing either, the model says so truthfully. Cached
+                     * 30 min (repeats are free). Fails safe: any error leaves reply as-is.
+                     * Trust > ads: a genuine match may outrank an off-topic partner here,
+                     * which is intended (CLAUDE.md: recommendation trust first). */
+                    if (detectedActionType && detectedActionType !== 'general') {
                         try {
                             const city = locationToUse.city || effectiveLocation?.city || placeCoordinates?.placeName || '';
                             // Prefer the intent LLM's clean query ("armenian restaurant
@@ -3467,7 +3479,13 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                     // pipeline verified-then-demoted — the frontend linkifier turns
                     // marked bolds into click-to-search without any guessing. Invisible
                     // if a client renders it raw, survives session persistence.
-                    restoredText.set(idx, desc ? `**⁣${dispName}**\n${desc}` : `**⁣${dispName}**`);
+                    // GUARD: stamp ONLY when the demoted rec has a REAL verified identity
+                    // (placeId/verifiedId) — a genuine place demoted for location/category.
+                    // An unverified shell the model wrongly formatted as a rec (e.g. the
+                    // category "Adventure activities") has no place to look up, so it
+                    // restores as plain bold prose and is never clickable.
+                    const _mk = (r.placeId || r.verifiedId) ? '⁣' : '';
+                    restoredText.set(idx, desc ? `**${_mk}${dispName}**\n${desc}` : `**${_mk}${dispName}**`);
                     console.log(`[chat] card "${dispName}" dropped — its text restored as prose`);
                 });
                 recommendations = keptOldIdx.map(oldIdx => recommendations[oldIdx]);
