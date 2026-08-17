@@ -88,7 +88,7 @@ class JinniContextManager {
         this.TOKEN_LIMITS = {chat_stream: 3000, quick_action: 1200, view_more: 800, general_query: 2500, max_response: 1000};
         this.MESSAGE_LIMITS = {chat_stream: 10, quick_action: 4, view_more: 3, short_conversation: 6, long_conversation: 8};
         this.STRATEGY_THRESHOLDS = {short_conversation: 15, medium_conversation: 30, long_conversation: 31};
-        this.SESSION_LIMITS = {WARNING_THRESHOLD: 20, MAX_MESSAGES: 23, TOKEN_ESTIMATE_PER_MESSAGE: 250};
+        this.SESSION_LIMITS = {WARNING_THRESHOLD: 40, MAX_MESSAGES: 50, TOKEN_ESTIMATE_PER_MESSAGE: 250};
     }
     checkSessionHealth(session) {
         if (!session || !session.messages) { return { shouldWarn: false, shouldBlock: false, messageCount: 0 } }
