@@ -1737,7 +1737,15 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     if (streamAborted) { return }
                     console.error('CLAUDE ERROR:', claudeErr.message);
                     if (!completionFired) {
-                        res.write(`data: ${JSON.stringify({ type: 'error', message: messages.connection_error })}\n\n`);
+                        // Classify capacity/limit/overload errors (SDK status 429=rate/daily
+                        // cap, 529=overloaded; or a message mentioning limit/quota/overload)
+                        // and tag the event reason:'capacity' so the client cools the INPUT
+                        // down at the same moment — not just print a message — instead of the
+                        // user hammering a capped provider. (Failover supersedes this later.)
+                        const _em = String((claudeErr && (claudeErr.message || (claudeErr.error && claudeErr.error.message))) || '');
+                        const _st = claudeErr && (claudeErr.status || claudeErr.statusCode);
+                        const _cap = _st === 429 || _st === 529 || /\b(limit|quota|overload|capacity|too many|rate)\b/i.test(_em);
+                        res.write(`data: ${JSON.stringify({ type: 'error', reason: _cap ? 'capacity' : 'connection', message: messages.connection_error })}\n\n`);
                         res.end();
                     }
                 }
