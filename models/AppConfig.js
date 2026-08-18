@@ -51,6 +51,14 @@ const appConfigSchema = new mongoose.Schema({
      * only: a validator's curated record is a deliberate human decision and is
      * never hidden by this. 0 disables the limit. */
     eventHorizonDays: { type: Number, default: 7 },
+    /* Tier limits (admin Limits tab). Free values act as the floor the
+     * per-user records are max'ed against; premium values, when set,
+     * override the per-user premiumBenefits. UserAILimit.setTierConfig()
+     * consumes these — call it after every change. */
+    limitFreeDailyTokens:    { type: Number, default: 10000 },
+    limitFreeDailyPlaces:    { type: Number, default: 100 },
+    limitPremiumDailyTokens: { type: Number, default: 50000 },
+    limitPremiumDailyPlaces: { type: Number, default: 200 },
     /* Discover each country's event sources automatically (one small AI call
      * per country per week, verified before use). A manual
      * claudeWebSearchAllowedDomains always wins where it is set; this only
@@ -144,6 +152,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
+        'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',

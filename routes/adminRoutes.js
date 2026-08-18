@@ -373,10 +373,13 @@ router.get('/ai-usage/daily', async (req, res) => {
 // ─── BUSINESS STATS ───────────────────────────────────────────────────────────
 router.get('/businesses', async (req, res) => {
     try {
-        const { page = 1, limit = 20, sort = 'analytics.views', order = 'desc', search = '', partner = '', status = '', location = '' } = req.query;
+        const { page = 1, limit = 20, sort = 'analytics.views', order = 'desc', search = '', partner = '', status = '', location = '', type = '' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const query = {};
         if (search) query.name = { $regex: search, $options: 'i' };
+        // Category filter — same convention as /destinations ('restaurants' or
+        // a comma list for the Shopping group); matches the type array.
+        if (type) query.type = { $in: String(type).split(',').map(t => t.trim()).filter(Boolean) };
         if (partner === 'true') query['partnership.tier'] = { $in: ['spotlight', 'signature'] };
         if (partner === 'false') query['partnership.tier'] = 'verified';
         // Status filter: only accept the documented enum values to avoid bogus regex queries
@@ -1045,13 +1048,16 @@ router.post('/zones/:zoneKey/backfill', async (req, res) => {
 // ─── DESTINATIONS ─────────────────────────────────────────────────────────────
 router.get('/destinations', async (req, res) => {
     try {
-        const { page = 1, limit = 20, search = '', filter = '' } = req.query;
+        const { page = 1, limit = 20, search = '', filter = '', type = '' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const query = {};
         if (search) query.name = { $regex: search, $options: 'i' };
         if (filter === 'active') query.isActive = true;
         if (filter === 'inactive') query.isActive = false;
         if (filter === 'hidden_gem') query.isHiddenGem = true;
+        // Category filter — 'restaurants' or a comma list ('market,mall,…' for
+        // the Shopping group); matches the destination's type array.
+        if (type) query.type = { $in: String(type).split(',').map(t => t.trim()).filter(Boolean) };
         const [destinations, total, summaryAgg, interactionAgg] = await Promise.all([
             Destination.find(query)
                 .populate('nearbyBusinesses', 'name')
@@ -1243,6 +1249,35 @@ router.get('/places', async (req, res) => {
     } catch (error) {
         console.error('Admin places error:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch places' });
+    }
+});
+
+// Edit a cached place — whitelisted contact/identity fields only. The cache
+// mirrors Google data, but names/addresses are sometimes wrong or stale and
+// the admin needs a pen. Sets `manuallyEdited` so a future refresh knows a
+// human touched it.
+router.patch('/places/:placeId/edit', async (req, res) => {
+    try {
+        const EDITABLE = {
+            name: 'name',
+            address: 'details.formatted_address',
+            phone: 'details.formatted_phone_number',
+            website: 'details.website'
+        };
+        const $set = { manuallyEdited: true, manuallyEditedAt: new Date() };
+        for (const [key, path] of Object.entries(EDITABLE)) {
+            if (typeof req.body[key] === 'string') $set[path] = req.body[key].trim();
+        }
+        const place = await PlaceCache.findOneAndUpdate(
+            { placeId: req.params.placeId },
+            { $set },
+            { new: true, strict: false }
+        ).select('-photos.data -__v').lean();
+        if (!place) return res.status(404).json({ success: false, error: 'Place not found in cache' });
+        res.json({ success: true, data: place });
+    } catch (error) {
+        console.error('Place edit error:', error);
+        res.status(500).json({ success: false, error: 'Failed to edit place' });
     }
 });
 
@@ -2165,6 +2200,83 @@ router.delete('/staff/:id/permanent', async (req, res) => {
     } catch (err) {
         console.error('[staff permanent delete] error:', err);
         return res.status(500).json({ success: false, error: 'Failed to delete staff' });
+    }
+});
+
+// ── Tier limits (Limits tab): read config + tier analytics, save config ──────
+router.get('/limits', async (req, res) => {
+    try {
+        const cfg = await AppConfig.getConfig();
+        const startToday = new Date(); startToday.setUTCHours(0, 0, 0, 0);
+        const freeTok = cfg.limitFreeDailyTokens || 10000, premTok = cfg.limitPremiumDailyTokens || 50000;
+        const [tierCounts, todayAgg, cooldownAgg, nearAgg] = await Promise.all([
+            UserAILimit.aggregate([{ $group: { _id: '$isPremium', n: { $sum: 1 } } }]),
+            UserAILimit.aggregate([
+                { $match: { 'dailyUsage.lastResetDate': { $gte: startToday } } },
+                { $group: {
+                    _id: '$isPremium',
+                    tokens: { $sum: '$dailyUsage.tokensUsed' }, places: { $sum: '$dailyUsage.placesViewed' },
+                    queries: { $sum: '$dailyUsage.queriesMade' },
+                    active: { $sum: { $cond: [{ $gt: [{ $add: ['$dailyUsage.tokensUsed', '$dailyUsage.placesViewed'] }, 0] }, 1, 0] } }
+                } }
+            ]),
+            UserAILimit.aggregate([
+                { $match: { cooldownUntil: { $gt: new Date() } } },
+                { $group: { _id: '$isPremium', n: { $sum: 1 } } }
+            ]),
+            // Users at ≥80% of their tier's token limit today (approaching the wall)
+            UserAILimit.aggregate([
+                { $match: { 'dailyUsage.lastResetDate': { $gte: startToday } } },
+                { $project: { isPremium: 1, t: '$dailyUsage.tokensUsed' } },
+                { $group: {
+                    _id: '$isPremium',
+                    near: { $sum: { $cond: [{ $gte: ['$t', { $multiply: [{ $cond: ['$_id', premTok, freeTok] }, 0.8] }] }, 1, 0] } }
+                } }
+            ])
+        ]);
+        const pick = (agg, premium, field = 'n') => agg.find(x => !!x._id === premium)?.[field] ?? 0;
+        const tier = (premium) => {
+            const t = todayAgg.find(x => !!x._id === premium) || {};
+            return {
+                users: pick(tierCounts, premium),
+                activeToday: t.active || 0,
+                tokensToday: t.tokens || 0, placesToday: t.places || 0, queriesToday: t.queries || 0,
+                onCooldown: pick(cooldownAgg, premium),
+                nearLimit: pick(nearAgg, premium, 'near')
+            };
+        };
+        res.json({ success: true, data: {
+            config: {
+                limitFreeDailyTokens: cfg.limitFreeDailyTokens || 10000,
+                limitFreeDailyPlaces: cfg.limitFreeDailyPlaces || 100,
+                limitPremiumDailyTokens: cfg.limitPremiumDailyTokens || 50000,
+                limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200
+            },
+            free: tier(false),
+            premium: tier(true)
+        }});
+    } catch (error) {
+        console.error('Limits read error:', error);
+        res.status(500).json({ success: false, error: 'Failed to read limits' });
+    }
+});
+
+router.post('/limits', async (req, res) => {
+    try {
+        const fields = ['limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces'];
+        const patch = {};
+        for (const f of fields) {
+            const v = parseInt(req.body[f], 10);
+            if (!Number.isFinite(v) || v < 1) return res.status(400).json({ success: false, error: `${f} must be a positive number` });
+            patch[f] = v;
+        }
+        const cfg = await AppConfig.updateConfig(patch, req.user?.id || null);
+        // Apply immediately — enforcement reads the in-memory tier config.
+        UserAILimit.setTierConfig(cfg);
+        res.json({ success: true, data: patch });
+    } catch (error) {
+        console.error('Limits save error:', error);
+        res.status(500).json({ success: false, error: 'Failed to save limits' });
     }
 });
 

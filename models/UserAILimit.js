@@ -12,6 +12,12 @@ const mongoose = require('mongoose');
 const FREE_DAILY_PLACES = 100;
 const FREE_DAILY_TOKENS = 10000;
 
+/* Admin-configurable tier limits (Limits tab → AppConfig → setTierConfig).
+ * Free values replace the hardcoded floors; premium values, when present,
+ * override the per-user premiumBenefits. Hydrated from AppConfig once the
+ * DB connects, refreshed on every admin save. */
+let TIER = { freeTokens: FREE_DAILY_TOKENS, freePlaces: FREE_DAILY_PLACES, premiumTokens: null, premiumPlaces: null };
+
 const userAILimitSchema = new mongoose.Schema({
     userId: { 
         type: mongoose.Schema.Types.ObjectId, 
@@ -117,8 +123,8 @@ userAILimitSchema.methods.checkAndUpdateUsage = async function(tokensToAdd = 0, 
     const isPremium = user ? isPremiumActive(user) : this.isPremium;
     // Floor the stored values at the current free-tier allowance (see the
     // constants at the top) so existing records inherit raises automatically.
-    const dailyTokenLimit = isPremium ? this.premiumBenefits.dailyTokens : Math.max(this.limits.dailyTokens || 0, FREE_DAILY_TOKENS);
-    const dailyPlaceLimit = isPremium ? this.premiumBenefits.dailyPlaces : Math.max(this.limits.dailyPlaces || 0, FREE_DAILY_PLACES);    
+    const dailyTokenLimit = isPremium ? (TIER.premiumTokens ?? this.premiumBenefits.dailyTokens) : Math.max(this.limits.dailyTokens || 0, TIER.freeTokens);
+    const dailyPlaceLimit = isPremium ? (TIER.premiumPlaces ?? this.premiumBenefits.dailyPlaces) : Math.max(this.limits.dailyPlaces || 0, TIER.freePlaces);    
     if (this.onCooldown) {
         const hoursLeft = this.cooldownUntil ? Math.ceil((this.cooldownUntil - now) / (1000 * 60 * 60)) : 4;
         throw new Error(`AI services are on cooldown. Available in ${hoursLeft} hours.`);
@@ -220,8 +226,8 @@ userAILimitSchema.methods.getUsageStatus = async function() {
     const isPremium = user ? isPremiumActive(user) : this.isPremium;
     // Floor the stored values at the current free-tier allowance (see the
     // constants at the top) so existing records inherit raises automatically.
-    const dailyTokenLimit = isPremium ? this.premiumBenefits.dailyTokens : Math.max(this.limits.dailyTokens || 0, FREE_DAILY_TOKENS);
-    const dailyPlaceLimit = isPremium ? this.premiumBenefits.dailyPlaces : Math.max(this.limits.dailyPlaces || 0, FREE_DAILY_PLACES);
+    const dailyTokenLimit = isPremium ? (TIER.premiumTokens ?? this.premiumBenefits.dailyTokens) : Math.max(this.limits.dailyTokens || 0, TIER.freeTokens);
+    const dailyPlaceLimit = isPremium ? (TIER.premiumPlaces ?? this.premiumBenefits.dailyPlaces) : Math.max(this.limits.dailyPlaces || 0, TIER.freePlaces);
     return {
         daily: {
             tokens: {
@@ -269,4 +275,31 @@ userAILimitSchema.methods.getUsageStatus = async function() {
         limits: { dailyTokens: dailyTokenLimit, dailyPlaces: dailyPlaceLimit, maxSessionHours: this.limits.maxSessionDuration / (1000 * 60 * 60) }
     };
 };
-module.exports = mongoose.model('UserAILimit', userAILimitSchema);
+/* Apply admin-configured tier limits (Limits tab). Values <= 0 or missing
+ * fall back: free → the hardcoded floors, premium → each user's stored
+ * premiumBenefits. */
+userAILimitSchema.statics.setTierConfig = function (cfg = {}) {
+    TIER = {
+        freeTokens: cfg.limitFreeDailyTokens > 0 ? cfg.limitFreeDailyTokens : FREE_DAILY_TOKENS,
+        freePlaces: cfg.limitFreeDailyPlaces > 0 ? cfg.limitFreeDailyPlaces : FREE_DAILY_PLACES,
+        premiumTokens: cfg.limitPremiumDailyTokens > 0 ? cfg.limitPremiumDailyTokens : null,
+        premiumPlaces: cfg.limitPremiumDailyPlaces > 0 ? cfg.limitPremiumDailyPlaces : null
+    };
+};
+userAILimitSchema.statics.getTierConfig = function () { return { ...TIER }; };
+
+const UserAILimitModel = mongoose.model('UserAILimit', userAILimitSchema);
+
+/* Hydrate the tier config from AppConfig once the DB is reachable, so a
+ * server restart doesn't silently fall back to the hardcoded defaults. */
+const hydrateTiers = async () => {
+    try {
+        const cfg = await require('./AppConfig').getConfig();
+        UserAILimitModel.setTierConfig(cfg);
+        console.log('[limits] tier config hydrated from AppConfig');
+    } catch (e) { console.warn('[limits] tier hydrate failed (using defaults):', e.message); }
+};
+if (mongoose.connection.readyState === 1) { hydrateTiers(); }
+else { mongoose.connection.once('connected', hydrateTiers); }
+
+module.exports = UserAILimitModel;
