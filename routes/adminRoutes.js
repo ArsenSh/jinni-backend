@@ -1246,6 +1246,20 @@ router.get('/places', async (req, res) => {
     }
 });
 
+// Full cached record for one place (the admin "click to read" modal) —
+// everything PlaceCache knows except the raw image buffers.
+router.get('/places/:placeId/full', async (req, res) => {
+    try {
+        const place = await PlaceCache.findOne({ placeId: req.params.placeId })
+            .select('-photos.data -__v').lean();
+        if (!place) return res.status(404).json({ success: false, error: 'Place not found in cache' });
+        res.json({ success: true, data: place });
+    } catch (error) {
+        console.error('Place full-detail error:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch place details' });
+    }
+});
+
 // Bulk delete stale places — must be before /:placeId
 router.delete('/places/stale/:days', async (req, res) => {
     try {
@@ -2240,6 +2254,30 @@ router.get('/ai-usage/monthly', async (req, res) => {
     } catch (error) {
         console.error('AI monthly forecast error:', error);
         res.status(500).json({ success: false, error: 'Failed to build AI monthly forecast' });
+    }
+});
+
+// ── Map routing (OpenRouteService) usage vs the free daily cap ───────────────
+router.get('/routing-usage', async (req, res) => {
+    try {
+        const RoutingDailyStats = require('../models/RoutingDailyStats');
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const monthStr = todayStr.slice(0, 7);
+        const [todayRow, monthAgg] = await Promise.all([
+            RoutingDailyStats.findOne({ date: todayStr }).lean(),
+            RoutingDailyStats.aggregate([
+                { $match: { date: { $gte: monthStr + '-01' } } },
+                { $group: { _id: null, directions: { $sum: '$directions' }, rateLimited: { $sum: '$rateLimited' }, failed: { $sum: '$failed' } } }
+            ])
+        ]);
+        res.json({ success: true, data: {
+            capDaily: 2000,     // ORS free tier: ~2,000 directions/day, 40/min
+            today: { directions: todayRow?.directions || 0, rateLimited: todayRow?.rateLimited || 0, failed: todayRow?.failed || 0 },
+            month: monthAgg[0] ? { directions: monthAgg[0].directions, rateLimited: monthAgg[0].rateLimited, failed: monthAgg[0].failed } : { directions: 0, rateLimited: 0, failed: 0 }
+        }});
+    } catch (error) {
+        console.error('Routing usage error:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch routing usage' });
     }
 });
 

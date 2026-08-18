@@ -12,6 +12,7 @@ const router = express.Router();
 //   ORS_API_KEY=...    (free key from https://openrouteservice.org/dev/#/signup)
 
 const ORS_BASE = 'https://api.openrouteservice.org/v2/directions';
+const RoutingDailyStats = require('../models/RoutingDailyStats');
 const ALLOWED_PROFILES = new Set(['driving-car', 'foot-walking', 'cycling-regular', 'wheelchair']);
 
 // Fail loudly at boot so a missing key is obvious in the logs, not a silent 500.
@@ -65,10 +66,13 @@ router.post('/directions', auth, async (req, res) => {
             console.error('[routing] ORS error', orsRes.status, text.slice(0, 300));
             // 403 = daily quota exhausted, 429 = per-minute limit
             if (orsRes.status === 403 || orsRes.status === 429) {
+                RoutingDailyStats.track('rateLimited');
                 return res.status(503).json({ success: false, error: 'routing_rate_limited', message: 'Routing is busy right now. Please try again shortly.' });
             }
+            RoutingDailyStats.track('failed');
             return res.status(502).json({ success: false, error: 'routing_failed', message: 'Could not calculate a route for these points.' });
         }
+        RoutingDailyStats.track('directions');
 
         const data = await orsRes.json();
         const feature = data && data.features && data.features[0];
