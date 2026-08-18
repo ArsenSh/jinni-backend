@@ -1,6 +1,151 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
 
+/* Localized strings for the USER-FACING transactional emails (verification,
+ * password reset, chat-sessions deleted, account deleted). Language choice:
+ * existing users → their saved settings.language (callers pass it); signup →
+ * the UI locale the frontend sends. Staff/business emails stay English.
+ * Keys mirror the app's six locales; anything unknown falls back to en. */
+const EMAIL_I18N = {
+    en: {
+        explorer: 'Explorer', hello: 'Hello', rights: '© 2026 Jinni AI. All rights reserved.',
+        auto: 'This is an automated message, please do not reply.',
+        expiry: 'This code will expire in 15 minutes and can only be used once.',
+        vSubject: 'Verify Your Email - Jinni', vTitle: 'Welcome to Jinni', vSub: 'Verify your email to get started',
+        vIntro: 'We are glad to see you join Jinni. To complete your registration, please enter the verification code below:',
+        vCodeLabel: 'Your verification code is:', vEnter: 'Enter this code in the verification form to activate your account.',
+        vIgnore: "If you didn't request this code, please ignore this email.",
+        rSubject: 'Reset Your Password - Jinni', rTitle: 'Password Reset', rSub: 'Reset your Jinni account password',
+        rIntro: 'We received a request to reset your password. Use the code below to create a new password:',
+        rCodeLabel: 'Your password reset code is:', rEnter: 'Enter this code along with your new password to reset your account.',
+        rIgnore: "If you didn't request this reset, please ignore this email.",
+        cSubject: 'Your Chat Sessions Have Been Deleted - Jinni', cSub: 'Chat Sessions Deleted',
+        cBody: 'All of your chat sessions have been permanently deleted from Jinni.',
+        removedTitle: 'What was removed:', cItems: ['All conversation history', 'All session data'],
+        cUntouched: 'Your account and settings remain untouched. You can start fresh conversations anytime.',
+        support: 'If you did not perform this action, please contact support immediately.',
+        aSubject: 'Your Account Has Been Deleted - Jinni', aSub: 'Account Deleted',
+        aBody: 'Your Jinni account has been permanently deleted.',
+        aItems: ['Your account and profile', 'All chat sessions and conversation history', 'All preferences and settings', 'All associated data'],
+        aPermanent: 'This action is permanent and cannot be undone.'
+    },
+    ru: {
+        explorer: 'Путешественник', hello: 'Здравствуйте', rights: '© 2026 Jinni AI. Все права защищены.',
+        auto: 'Это автоматическое сообщение, пожалуйста, не отвечайте на него.',
+        expiry: 'Код действителен 15 минут и может быть использован только один раз.',
+        vSubject: 'Подтвердите ваш email — Jinni', vTitle: 'Добро пожаловать в Jinni', vSub: 'Подтвердите email, чтобы начать',
+        vIntro: 'Рады видеть вас в Jinni. Чтобы завершить регистрацию, введите код подтверждения ниже:',
+        vCodeLabel: 'Ваш код подтверждения:', vEnter: 'Введите этот код в форму подтверждения, чтобы активировать аккаунт.',
+        vIgnore: 'Если вы не запрашивали этот код, просто проигнорируйте это письмо.',
+        rSubject: 'Сброс пароля — Jinni', rTitle: 'Сброс пароля', rSub: 'Сброс пароля аккаунта Jinni',
+        rIntro: 'Мы получили запрос на сброс пароля. Используйте код ниже, чтобы создать новый пароль:',
+        rCodeLabel: 'Ваш код для сброса пароля:', rEnter: 'Введите этот код вместе с новым паролем.',
+        rIgnore: 'Если вы не запрашивали сброс, просто проигнорируйте это письмо.',
+        cSubject: 'Ваши чаты удалены — Jinni', cSub: 'Чаты удалены',
+        cBody: 'Все ваши чат-сессии были безвозвратно удалены из Jinni.',
+        removedTitle: 'Что было удалено:', cItems: ['Вся история переписки', 'Все данные сессий'],
+        cUntouched: 'Ваш аккаунт и настройки не затронуты. Вы можете начать новые беседы в любой момент.',
+        support: 'Если это сделали не вы, немедленно свяжитесь со службой поддержки.',
+        aSubject: 'Ваш аккаунт удалён — Jinni', aSub: 'Аккаунт удалён',
+        aBody: 'Ваш аккаунт Jinni был безвозвратно удалён.',
+        aItems: ['Аккаунт и профиль', 'Все чаты и история переписки', 'Все предпочтения и настройки', 'Все связанные данные'],
+        aPermanent: 'Это действие необратимо.'
+    },
+    hy: {
+        explorer: 'Ճանապարհորդ', hello: 'Բարև', rights: '© 2026 Jinni AI. Բոլոր իրավունքները պաշտպանված են։',
+        auto: 'Սա ավտոմատ հաղորդագրություն է, խնդրում ենք չպատասխանել։',
+        expiry: 'Կոդը գործում է 15 րոպե և կարող է օգտագործվել միայն մեկ անգամ։',
+        vSubject: 'Հաստատեք ձեր email-ը — Jinni', vTitle: 'Բարի գալուստ Jinni', vSub: 'Հաստատեք email-ը՝ սկսելու համար',
+        vIntro: 'Ուրախ ենք տեսնել ձեզ Jinni-ում։ Գրանցումն ավարտելու համար մուտքագրեք ստորև նշված հաստատման կոդը՝',
+        vCodeLabel: 'Ձեր հաստատման կոդը՝', vEnter: 'Մուտքագրեք այս կոդը հաստատման դաշտում՝ հաշիվն ակտիվացնելու համար։',
+        vIgnore: 'Եթե դուք չեք պահանջել այս կոդը, պարզապես անտեսեք այս նամակը։',
+        rSubject: 'Գաղտնաբառի վերականգնում — Jinni', rTitle: 'Գաղտնաբառի վերականգնում', rSub: 'Վերականգնեք ձեր Jinni հաշվի գաղտնաբառը',
+        rIntro: 'Ստացել ենք գաղտնաբառի վերականգնման հայտ։ Օգտագործեք ստորև նշված կոդը՝ նոր գաղտնաբառ ստեղծելու համար՝',
+        rCodeLabel: 'Ձեր վերականգնման կոդը՝', rEnter: 'Մուտքագրեք այս կոդը նոր գաղտնաբառի հետ միասին։',
+        rIgnore: 'Եթե դուք չեք պահանջել վերականգնում, պարզապես անտեսեք այս նամակը։',
+        cSubject: 'Ձեր զրույցները ջնջվել են — Jinni', cSub: 'Զրույցները ջնջված են',
+        cBody: 'Ձեր բոլոր զրույցներն անվերադարձ ջնջվել են Jinni-ից։',
+        removedTitle: 'Ինչ է ջնջվել՝', cItems: ['Զրույցների ամբողջ պատմությունը', 'Սեսիաների բոլոր տվյալները'],
+        cUntouched: 'Ձեր հաշիվը և կարգավորումները մնացել են անփոփոխ։ Կարող եք ցանկացած պահի սկսել նոր զրույցներ։',
+        support: 'Եթե դա դուք չեք արել, անմիջապես կապվեք աջակցության հետ։',
+        aSubject: 'Ձեր հաշիվը ջնջվել է — Jinni', aSub: 'Հաշիվը ջնջված է',
+        aBody: 'Ձեր Jinni հաշիվն անվերադարձ ջնջվել է։',
+        aItems: ['Հաշիվը և պրոֆիլը', 'Բոլոր զրույցներն ու պատմությունը', 'Բոլոր նախապատվությունները և կարգավորումները', 'Բոլոր կապակցված տվյալները'],
+        aPermanent: 'Այս գործողությունն անվերադարձ է։'
+    },
+    fr: {
+        explorer: 'Explorateur', hello: 'Bonjour', rights: '© 2026 Jinni AI. Tous droits réservés.',
+        auto: 'Ceci est un message automatique, merci de ne pas répondre.',
+        expiry: 'Ce code expirera dans 15 minutes et ne peut être utilisé qu\'une seule fois.',
+        vSubject: 'Vérifiez votre email — Jinni', vTitle: 'Bienvenue sur Jinni', vSub: 'Vérifiez votre email pour commencer',
+        vIntro: 'Nous sommes ravis de vous voir rejoindre Jinni. Pour terminer votre inscription, saisissez le code de vérification ci-dessous :',
+        vCodeLabel: 'Votre code de vérification :', vEnter: 'Saisissez ce code dans le formulaire de vérification pour activer votre compte.',
+        vIgnore: 'Si vous n\'avez pas demandé ce code, ignorez simplement cet email.',
+        rSubject: 'Réinitialisez votre mot de passe — Jinni', rTitle: 'Réinitialisation du mot de passe', rSub: 'Réinitialisez le mot de passe de votre compte Jinni',
+        rIntro: 'Nous avons reçu une demande de réinitialisation de votre mot de passe. Utilisez le code ci-dessous pour en créer un nouveau :',
+        rCodeLabel: 'Votre code de réinitialisation :', rEnter: 'Saisissez ce code avec votre nouveau mot de passe.',
+        rIgnore: 'Si vous n\'avez pas demandé cette réinitialisation, ignorez simplement cet email.',
+        cSubject: 'Vos conversations ont été supprimées — Jinni', cSub: 'Conversations supprimées',
+        cBody: 'Toutes vos conversations ont été définitivement supprimées de Jinni.',
+        removedTitle: 'Ce qui a été supprimé :', cItems: ['Tout l\'historique des conversations', 'Toutes les données de session'],
+        cUntouched: 'Votre compte et vos paramètres restent intacts. Vous pouvez démarrer de nouvelles conversations à tout moment.',
+        support: 'Si vous n\'êtes pas à l\'origine de cette action, contactez immédiatement le support.',
+        aSubject: 'Votre compte a été supprimé — Jinni', aSub: 'Compte supprimé',
+        aBody: 'Votre compte Jinni a été définitivement supprimé.',
+        aItems: ['Votre compte et votre profil', 'Toutes les conversations et l\'historique', 'Toutes les préférences et tous les paramètres', 'Toutes les données associées'],
+        aPermanent: 'Cette action est définitive et irréversible.'
+    },
+    ar: {
+        rtl: true,
+        explorer: 'مستكشف', hello: 'مرحباً', rights: '© 2026 Jinni AI. جميع الحقوق محفوظة.',
+        auto: 'هذه رسالة تلقائية، يرجى عدم الرد عليها.',
+        expiry: 'تنتهي صلاحية هذا الرمز خلال 15 دقيقة ويمكن استخدامه مرة واحدة فقط.',
+        vSubject: 'تحقق من بريدك الإلكتروني — Jinni', vTitle: 'مرحباً بك في Jinni', vSub: 'تحقق من بريدك الإلكتروني للبدء',
+        vIntro: 'يسعدنا انضمامك إلى Jinni. لإكمال تسجيلك، يرجى إدخال رمز التحقق أدناه:',
+        vCodeLabel: 'رمز التحقق الخاص بك:', vEnter: 'أدخل هذا الرمز في نموذج التحقق لتفعيل حسابك.',
+        vIgnore: 'إذا لم تطلب هذا الرمز، يرجى تجاهل هذه الرسالة.',
+        rSubject: 'إعادة تعيين كلمة المرور — Jinni', rTitle: 'إعادة تعيين كلمة المرور', rSub: 'إعادة تعيين كلمة مرور حساب Jinni',
+        rIntro: 'تلقينا طلباً لإعادة تعيين كلمة المرور. استخدم الرمز أدناه لإنشاء كلمة مرور جديدة:',
+        rCodeLabel: 'رمز إعادة التعيين الخاص بك:', rEnter: 'أدخل هذا الرمز مع كلمة المرور الجديدة.',
+        rIgnore: 'إذا لم تطلب إعادة التعيين، يرجى تجاهل هذه الرسالة.',
+        cSubject: 'تم حذف محادثاتك — Jinni', cSub: 'تم حذف المحادثات',
+        cBody: 'تم حذف جميع محادثاتك نهائياً من Jinni.',
+        removedTitle: 'ما تم حذفه:', cItems: ['كل سجل المحادثات', 'كل بيانات الجلسات'],
+        cUntouched: 'حسابك وإعداداتك لم يتأثرا. يمكنك بدء محادثات جديدة في أي وقت.',
+        support: 'إذا لم تقم بهذا الإجراء، يرجى التواصل مع الدعم فوراً.',
+        aSubject: 'تم حذف حسابك — Jinni', aSub: 'تم حذف الحساب',
+        aBody: 'تم حذف حساب Jinni الخاص بك نهائياً.',
+        aItems: ['حسابك وملفك الشخصي', 'جميع المحادثات والسجل', 'جميع التفضيلات والإعدادات', 'جميع البيانات المرتبطة'],
+        aPermanent: 'هذا الإجراء نهائي ولا يمكن التراجع عنه.'
+    },
+    zh: {
+        explorer: '探索者', hello: '您好', rights: '© 2026 Jinni AI. 保留所有权利。',
+        auto: '这是一封自动发送的邮件，请勿回复。',
+        expiry: '此验证码将在 15 分钟后失效，且只能使用一次。',
+        vSubject: '验证您的邮箱 — Jinni', vTitle: '欢迎来到 Jinni', vSub: '验证邮箱即可开始使用',
+        vIntro: '很高兴您加入 Jinni。请输入以下验证码以完成注册：',
+        vCodeLabel: '您的验证码是：', vEnter: '请在验证表单中输入此验证码以激活您的账户。',
+        vIgnore: '如果您没有请求此验证码，请忽略此邮件。',
+        rSubject: '重置您的密码 — Jinni', rTitle: '密码重置', rSub: '重置您的 Jinni 账户密码',
+        rIntro: '我们收到了重置密码的请求。请使用以下验证码创建新密码：',
+        rCodeLabel: '您的密码重置码是：', rEnter: '请输入此验证码和您的新密码。',
+        rIgnore: '如果您没有请求重置密码，请忽略此邮件。',
+        cSubject: '您的聊天记录已删除 — Jinni', cSub: '聊天记录已删除',
+        cBody: '您在 Jinni 的所有聊天会话已被永久删除。',
+        removedTitle: '已删除的内容：', cItems: ['所有对话历史', '所有会话数据'],
+        cUntouched: '您的账户和设置未受影响，您可以随时开始新的对话。',
+        support: '如果这不是您本人的操作，请立即联系客服。',
+        aSubject: '您的账户已删除 — Jinni', aSub: '账户已删除',
+        aBody: '您的 Jinni 账户已被永久删除。',
+        aItems: ['您的账户和个人资料', '所有聊天会话和对话历史', '所有偏好和设置', '所有相关数据'],
+        aPermanent: '此操作是永久性的，无法撤销。'
+    }
+};
+function emailLang(language) {
+    const code = String(language || 'en').toLowerCase().slice(0, 2);
+    return EMAIL_I18N[code] || EMAIL_I18N.en;
+}
+
 class EmailService {
     constructor() {
         this.transporter = nodemailer.createTransport({
@@ -13,12 +158,14 @@ class EmailService {
             }
         });
     }
-    async sendVerificationEmail(email, code, name) {
+    async sendVerificationEmail(email, code, name, language) {
+        const L = emailLang(language);
+        const dir = L.rtl ? 'rtl' : 'ltr';
         try {
             const mailOptions = {
                 from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
                 to: email,
-                subject: 'Verify Your Email - Jinni',
+                subject: L.vSubject,
                 html: `
                     <!DOCTYPE html>
                     <html>
@@ -36,38 +183,39 @@ class EmailService {
                             .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
                         </style>
                     </head>
-                    <body>
+                    <body dir="${dir}">
                         <div class="container">
                             <div class="header">
-                                <h1>Welcome to Jinni</h1>
-                                <p>Verify your email to get started</p>
+                                <h1>${L.vTitle}</h1>
+                                <p>${L.vSub}</p>
                             </div>
                             <div class="content">
-                                <h2>Hello ${name || 'Explorer'}!</h2>
-                                <p>We are glad seeing you to join this AI. To complete your registration, please enter the verification code below:</p>
+                                <h2>${L.hello} ${name || L.explorer}!</h2>
+                                <p>${L.vIntro}</p>
                                 <div class="code-container">
-                                    <p>Your verification code is:</p>
+                                    <p>${L.vCodeLabel}</p>
                                     <div class="code">${code}</div>
                                 </div>
-                                <p>Enter this code in the verification form to activate your account.</p>
-                                <p class="warning">This code will expire in 15 minutes and can only be used once.</p>
-                                <p class="warning">If you didn't request this code, please ignore this email.</p>
+                                <p>${L.vEnter}</p>
+                                <p class="warning">${L.expiry}</p>
+                                <p class="warning">${L.vIgnore}</p>
                             </div>
                             <div class="footer">
-                                <p>© 2026 Jinni AI. All rights reserved.</p>
-                                <p>This is an automated message, please do not reply.</p>
+                                <p>${L.rights}</p>
+                                <p>${L.auto}</p>
                             </div>
                         </div>
                     </body>
                     </html>
                 `,
                 text: `
-Welcome to Jinni!
-Hello ${name || 'Explorer'}!
-Your verification code is: ${code}
-This code will expire in 15 minutes. Enter it in the verification form to complete your registration.
-If you didn't request this code, please ignore this email.
-© 2026 Jinni
+${L.vTitle}
+${L.hello} ${name || L.explorer}!
+${L.vCodeLabel} ${code}
+${L.expiry}
+${L.vEnter}
+${L.vIgnore}
+${L.rights}
                 `
             };
             const result = await this.transporter.sendMail(mailOptions);
@@ -78,12 +226,14 @@ If you didn't request this code, please ignore this email.
             throw new Error('Failed to send verification email');
         }
     }
-    async sendPasswordResetEmail(email, code, name) {
+    async sendPasswordResetEmail(email, code, name, language) {
+        const L = emailLang(language);
+        const dir = L.rtl ? 'rtl' : 'ltr';
         try {
             const mailOptions = {
                 from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
                 to: email,
-                subject: 'Reset Your Password - Jinni',
+                subject: L.rSubject,
                 html: `
                 <!DOCTYPE html>
                 <html>
@@ -101,38 +251,39 @@ If you didn't request this code, please ignore this email.
                         .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
                     </style>
                 </head>
-                <body>
+                <body dir="${dir}">
                     <div class="container">
                         <div class="header">
-                            <h1>Password Reset</h1>
-                            <p>Reset your Jinni account password</p>
+                            <h1>${L.rTitle}</h1>
+                            <p>${L.rSub}</p>
                         </div>
                         <div class="content">
-                            <h2>Hello ${name || 'Explorer'}!</h2>
-                            <p>We received a request to reset your password. Use the code below to create a new password:</p>
+                            <h2>${L.hello} ${name || L.explorer}!</h2>
+                            <p>${L.rIntro}</p>
                             <div class="code-container">
-                                <p>Your password reset code is:</p>
+                                <p>${L.rCodeLabel}</p>
                                 <div class="code">${code}</div>
                             </div>
-                            <p>Enter this code along with your new password to reset your account.</p>
-                            <p class="warning">This code will expire in 15 minutes and can only be used once.</p>
-                            <p class="warning">If you didn't request this reset, please ignore this email.</p>
+                            <p>${L.rEnter}</p>
+                            <p class="warning">${L.expiry}</p>
+                            <p class="warning">${L.rIgnore}</p>
                         </div>
                         <div class="footer">
-                            <p>© 2026 Jinni AI. All rights reserved.</p>
-                            <p>This is an automated message, please do not reply.</p>
+                            <p>${L.rights}</p>
+                            <p>${L.auto}</p>
                         </div>
                     </div>
                 </body>
                 </html>
             `,
                 text: `
-Password Reset - Jinni
-Hello ${name || 'Explorer'}!
-Your password reset code is: ${code}
-This code will expire in 15 minutes. Enter it along with your new password to reset your account.
-If you didn't request this reset, please ignore this email.
-© 2026 Jinni
+${L.rTitle}
+${L.hello} ${name || L.explorer}!
+${L.rCodeLabel} ${code}
+${L.expiry}
+${L.rEnter}
+${L.rIgnore}
+${L.rights}
             `
             };
             const result = await this.transporter.sendMail(mailOptions);
@@ -143,12 +294,14 @@ If you didn't request this reset, please ignore this email.
             throw new Error('Failed to send password reset email');
         }
     }
-    async sendChatSessionsDeletedEmail(email, name) {
+    async sendChatSessionsDeletedEmail(email, name, language) {
+        const L = emailLang(language);
+        const dir = L.rtl ? 'rtl' : 'ltr';
         try {
             const mailOptions = {
                 from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
                 to: email,
-                subject: 'Your Chat Sessions Have Been Deleted - Jinni',
+                subject: L.cSubject,
                 html: `
                     <!DOCTYPE html>
                     <html>
@@ -167,48 +320,46 @@ If you didn't request this reset, please ignore this email.
                             .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
                         </style>
                     </head>
-                    <body>
+                    <body dir="${dir}">
                         <div class="container">
                             <div class="header">
                                 <h1>Jinni</h1>
-                                <p>Chat Sessions Deleted</p>
+                                <p>${L.cSub}</p>
                             </div>
                             <div class="content">
                                 <div class="icon-box">🗑️</div>
-                                <h2>Hello ${name || 'Explorer'}</h2>
-                                <p>All of your chat sessions have been permanently deleted from Jinni.</p>
+                                <h2>${L.hello} ${name || L.explorer}</h2>
+                                <p>${L.cBody}</p>
                                 <div class="info-box">
-                                    <p><strong>What was removed:</strong></p>
-                                    <p>• All conversation history</p>
-                                    <p>• All session data</p>
+                                    <p><strong>${L.removedTitle}</strong></p>
+                                    ${L.cItems.map(i => `<p>• ${i}</p>`).join('\n                                    ')}
                                 </div>
-                                <p>Your account and settings remain untouched. You can start fresh conversations anytime.</p>
-                                <p class="warning">If you did not perform this action, please contact support immediately.</p>
+                                <p>${L.cUntouched}</p>
+                                <p class="warning">${L.support}</p>
                             </div>
                             <div class="footer">
-                                <p>© 2026 Jinni AI. All rights reserved.</p>
-                                <p>This is an automated message, please do not reply.</p>
+                                <p>${L.rights}</p>
+                                <p>${L.auto}</p>
                             </div>
                         </div>
                     </body>
                     </html>
                 `,
                 text: `
-Chat Sessions Deleted - Jinni
+${L.cSub} - Jinni
 
-Hello ${name || 'Explorer'}
+${L.hello} ${name || L.explorer}
 
-All of your chat sessions have been permanently deleted from Jinni
+${L.cBody}
 
-What was removed:
-- All conversation history
-- All session data
+${L.removedTitle}
+${L.cItems.map(i => `- ${i}`).join('\n')}
 
-Your account and settings remain untouched.
+${L.cUntouched}
 
-If you did not perform this action, please contact support immediately.
+${L.support}
 
-© 2026 Jinni
+${L.rights}
                 `
             };
             const result = await this.transporter.sendMail(mailOptions);
@@ -219,12 +370,14 @@ If you did not perform this action, please contact support immediately.
             throw new Error('Failed to send chat sessions deleted email');
         }
     }
-    async sendAccountDeletedEmail(email, name) {
+    async sendAccountDeletedEmail(email, name, language) {
+        const L = emailLang(language);
+        const dir = L.rtl ? 'rtl' : 'ltr';
         try {
             const mailOptions = {
                 from: `"Jinni AI" <${process.env.EMAIL_USER}>`,
                 to: email,
-                subject: 'Your Account Has Been Deleted - Jinni',
+                subject: L.aSubject,
                 html: `
                     <!DOCTYPE html>
                     <html>
@@ -243,52 +396,46 @@ If you did not perform this action, please contact support immediately.
                             .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
                         </style>
                     </head>
-                    <body>
+                    <body dir="${dir}">
                         <div class="container">
                             <div class="header">
                                 <h1>Jinni</h1>
-                                <p>Account Deleted</p>
+                                <p>${L.aSub}</p>
                             </div>
                             <div class="content">
                                 <div class="icon-box">🔒</div>
-                                <h2>Hello ${name || 'Explorer'}</h2>
-                                <p>Your Jinni account has been permanently deleted.</p>
+                                <h2>${L.hello} ${name || L.explorer}</h2>
+                                <p>${L.aBody}</p>
                                 <div class="info-box">
-                                    <p><strong>What was removed:</strong></p>
-                                    <p>• Your account and profile</p>
-                                    <p>• All chat sessions and conversation history</p>
-                                    <p>• All preferences and settings</p>
-                                    <p>• All associated data</p>
+                                    <p><strong>${L.removedTitle}</strong></p>
+                                    ${L.aItems.map(i => `<p>• ${i}</p>`).join('\n                                    ')}
                                 </div>
-                                <p>This action is permanent and cannot be undone.</p>
-                                <p class="warning">If you did not perform this action, please contact support immediately.</p>
+                                <p>${L.aPermanent}</p>
+                                <p class="warning">${L.support}</p>
                             </div>
                             <div class="footer">
-                                <p>© 2026 Jinni AI. All rights reserved.</p>
-                                <p>This is an automated message, please do not reply.</p>
+                                <p>${L.rights}</p>
+                                <p>${L.auto}</p>
                             </div>
                         </div>
                     </body>
                     </html>
                 `,
                 text: `
-Account Deleted - Jinni
+${L.aSub} - Jinni
 
-Hello ${name || 'Explorer'},
+${L.hello} ${name || L.explorer},
 
-Your Jinni account has been permanently deleted.
+${L.aBody}
 
-What was removed:
-- Your account and profile
-- All chat sessions and conversation history
-- All preferences and settings
-- All associated data
+${L.removedTitle}
+${L.aItems.map(i => `- ${i}`).join('\n')}
 
-This action is permanent and cannot be undone.
+${L.aPermanent}
 
-If you did not perform this action, please contact support immediately.
+${L.support}
 
-© 2026 Jinni
+${L.rights}
                 `
             };
             const result = await this.transporter.sendMail(mailOptions);
@@ -756,7 +903,8 @@ If you did not perform this action, please contact support immediately.
                                     <a class="cta-btn" href="${loginUrl}">Sign in to Jinni</a>
                                 </p>
                                 <div class="recommendation">
-                                    <strong>We strongly recommend changing your password immediately</strong> after your first login. You can do this from the sign-in page using the <em>"Forgot password?"</em> link to receive a reset code at this email address.
+                                    <strong>We strongly recommend changing your password immediately.</strong>
+                                    Note: your workspace page has <strong>no password settings</strong> — the only way to change it is on the <em>sign-in page</em>: tap <em>"Forgot password?"</em>, and a reset code will arrive at this email address.
                                 </div>
                                 <p class="info-line">
                                     If you didn't expect this account, please ignore this email and contact us at ${contactEmail}. The account stays dormant until first use.
@@ -782,9 +930,10 @@ Password: ${tempPassword}
 
 Sign in here: ${loginUrl}
 
-WE STRONGLY RECOMMEND CHANGING YOUR PASSWORD IMMEDIATELY after your first
-login. You can do this from the sign-in page using the "Forgot password?"
-link to receive a reset code at this email address.
+WE STRONGLY RECOMMEND CHANGING YOUR PASSWORD IMMEDIATELY.
+Note: your workspace page has NO password settings — the only way to change
+it is on the SIGN-IN page: tap "Forgot password?" and a reset code will
+arrive at this email address.
 
 If you didn't expect this account, please ignore this email and contact us
 at ${contactEmail}.

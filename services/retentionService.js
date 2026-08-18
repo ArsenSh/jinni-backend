@@ -221,12 +221,16 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
      * Honest caveat: the per-user meter has a known undercount bug (the
      * profile modal "0 requests" issue) — treat these as lower bounds. */
     const startTodayDate = new Date(today + 'T00:00:00Z');
-    const [cooldownCount, meterAgg, pvAgg] = await Promise.all([
-        UserAILimit.countDocuments({ cooldownUntil: { $gt: new Date() }, ...(filterIds ? { userId: { $in: filterIds } } : {}) }),
+    const [cooldownAgg, meterAgg, pvAgg] = await Promise.all([
+        UserAILimit.aggregate([
+            { $match: { cooldownUntil: { $gt: new Date() }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $group: { _id: '$isPremium', n: { $sum: 1 } } }
+        ]),
+        // Grouped by tier so the card can split free vs premium consumption
         UserAILimit.aggregate([
             { $match: { 'dailyUsage.lastResetDate': { $gte: startTodayDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
             { $group: {
-                _id: null,
+                _id: '$isPremium',
                 tokens: { $sum: '$dailyUsage.tokensUsed' },
                 places: { $sum: '$dailyUsage.placesViewed' },
                 meteredUsers: { $sum: { $cond: [{ $gt: [{ $add: ['$dailyUsage.tokensUsed', '$dailyUsage.placesViewed'] }, 0] }, 1, 0] } }
@@ -238,11 +242,21 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
             { $project: { shown: 1, engaged: 1, viewers: { $size: '$viewers' } } }
         ])
     ]);
+    const meterTier = (premium) => {
+        const r = meterAgg.find(x => !!x._id === premium) || {};
+        return { tokens: r.tokens || 0, places: r.places || 0, users: r.meteredUsers || 0 };
+    };
+    const cdTier = (premium) => cooldownAgg.find(x => !!x._id === premium)?.n || 0;
+    const freeTier = meterTier(false), premiumTier = meterTier(true);
     const usage = {
-        usersOnCooldown: cooldownCount,
-        todayTokens: meterAgg[0]?.tokens || 0,
-        todayPlaces: meterAgg[0]?.places || 0,
-        todayMeteredUsers: meterAgg[0]?.meteredUsers || 0,
+        usersOnCooldown: cdTier(false) + cdTier(true),
+        cooldownFree: cdTier(false),
+        cooldownPremium: cdTier(true),
+        todayTokens: freeTier.tokens + premiumTier.tokens,
+        todayPlaces: freeTier.places + premiumTier.places,
+        todayMeteredUsers: freeTier.users + premiumTier.users,
+        free: freeTier,
+        premium: premiumTier,
         cardViews: pvAgg[0]?.shown || 0,
         cardEngagements: pvAgg[0]?.engaged || 0,
         cardViewers: pvAgg[0]?.viewers || 0

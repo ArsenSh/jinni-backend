@@ -8386,7 +8386,7 @@ router.delete('/chat-sessions/all', auth, async (req, res) => {
         }
         const result = await ChatSession.deleteMany({ userId });
         const user = await User.findById(userId).select('email name');
-        if (user?.email) {emailService.sendChatSessionsDeletedEmail(user.email, user.name).then(() => console.log(`✅ Chat sessions deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send chat sessions deleted email:', err.message))}
+        if (user?.email) {emailService.sendChatSessionsDeletedEmail(user.email, user.name, user.settings?.language).then(() => console.log(`✅ Chat sessions deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send chat sessions deleted email:', err.message))}
         res.json({success: true, deletedCount: result.deletedCount, message: 'All chat sessions deleted successfully'});
     } catch (error) {
         console.error('❌ Delete all chats error:', error);
@@ -8755,7 +8755,7 @@ router.delete('/user/account', auth, async (req, res) => {
         await ChatSession.deleteMany({ userId });
         await UserAILimit.deleteMany({ userId });
         await User.findByIdAndDelete(userId);
-        if (user?.email) {emailService.sendAccountDeletedEmail(user.email, user.name).then(() => console.log(`✅ Account deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send account deleted email:', err.message))}
+        if (user?.email) {emailService.sendAccountDeletedEmail(user.email, user.name, user.settings?.language).then(() => console.log(`✅ Account deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send account deleted email:', err.message))}
         res.json({success: true, message: 'Account and all associated data deleted successfully'});
     } catch (error) {
         console.error('🗑️ ========================================');

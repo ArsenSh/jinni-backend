@@ -45,7 +45,7 @@ exports.sendVerificationEmail = async (req, res) => {
         await EmailVerification.deleteMany({ email: email.toLowerCase() });
         const verification = new EmailVerification({email: email.toLowerCase(), code: verificationCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000), userData: {name: name.trim(), password: hashedPassword, language: normalizeLanguage(language)}});
         await verification.save();
-        await emailService.sendVerificationEmail(email.toLowerCase(), verificationCode, name.trim());
+        await emailService.sendVerificationEmail(email.toLowerCase(), verificationCode, name.trim(), normalizeLanguage(language));
         res.status(200).json({message: 'Verification code sent to your email', email: email.toLowerCase(), expiresIn: '15 minutes'});
     } catch (error) {
         console.error('Send verification error:', error);
@@ -135,7 +135,7 @@ exports.resendVerificationCode = async (req, res) => {
         verification.attempts = 0;
         verification.expiresAt = new Date(Date.now() + 15 * 60 * 1000);
         await verification.save();
-        await emailService.sendVerificationEmail(verification.email, newCode, verification.userData.name);
+        await emailService.sendVerificationEmail(verification.email, newCode, verification.userData.name, verification.userData.language);
         res.status(200).json({message: 'New verification code sent to your email', expiresIn: '15 minutes'});
     } catch (error) {
         console.error('Resend verification error:', error);
@@ -154,7 +154,7 @@ exports.sendPasswordResetCode = async (req, res) => {
         await PasswordReset.deleteMany({ email: email.toLowerCase() });
         const passwordReset = new PasswordReset({email: email.toLowerCase(), code: resetCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000)});
         await passwordReset.save();
-        await emailService.sendPasswordResetEmail(email.toLowerCase(), resetCode, user.name);
+        await emailService.sendPasswordResetEmail(email.toLowerCase(), resetCode, user.name, user.settings?.language);
         res.status(200).json({message: 'Password reset code sent to your email', expiresIn: '15 minutes'});
     } catch (error) {
         console.error('Send password reset error:', error);
