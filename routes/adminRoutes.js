@@ -1704,9 +1704,11 @@ router.get('/quick-action-stats', async (req, res) => {
 router.get('/preference-stats', async (req, res) => {
     try {
         const [travelStyles, interestsAgg, currenciesAgg, locationModeAgg, budgetAgg, onboardingAgg] = await Promise.all([
-            // Travel style distribution
+            // Travel style distribution. Whitelisted: the app's only styles
+            // are luxury and budget — legacy docs carry stray values
+            // ('family' etc.) from an old onboarding version.
             User.aggregate([
-                { $match: { onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $ne: null, $ne: '' } } },
+                { $match: { onboardingCompleted: true, 'preferences.travelStyle': { $in: ['luxury', 'budget'] } } },
                 { $group: { _id: '$preferences.travelStyle', count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
             ]),
@@ -2149,6 +2151,47 @@ router.delete('/staff/:id/permanent', async (req, res) => {
     } catch (err) {
         console.error('[staff permanent delete] error:', err);
         return res.status(500).json({ success: false, error: 'Failed to delete staff' });
+    }
+});
+
+// ── Live server vitals (the backend runs ON the Hetzner box, so os.* IS the
+// server) — powers the numeric rows in the Prices tab's Hetzner card. ────────
+router.get('/server-stats', async (req, res) => {
+    try {
+        const os = require('os');
+        const fs = require('fs');
+        // RAM: prefer MemAvailable from /proc/meminfo (os.freemem() ignores
+        // reclaimable page cache and wildly overstates usage on Linux).
+        let availMem = os.freemem();
+        try {
+            const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+            const m = meminfo.match(/MemAvailable:\s+(\d+) kB/);
+            if (m) availMem = parseInt(m[1]) * 1024;
+        } catch (_) { /* non-Linux dev machine — os.freemem is fine */ }
+
+        let disk = null;
+        try {
+            const s = await fs.promises.statfs('/');
+            disk = {
+                totalGB: Math.round(s.blocks * s.bsize / 1e9),
+                freeGB: Math.round(s.bavail * s.bsize / 1e9)
+            };
+        } catch (_) { /* statfs needs Node 18.15+; degrade to null */ }
+
+        const totalMem = os.totalmem();
+        res.json({ success: true, data: {
+            cpus: os.cpus().length,
+            load: os.loadavg().map(v => Math.round(v * 100) / 100),
+            memTotalGB: Math.round(totalMem / 1e8) / 10,
+            memUsedGB: Math.round((totalMem - availMem) / 1e8) / 10,
+            memUsedPct: Math.round(100 * (totalMem - availMem) / totalMem),
+            disk,
+            uptimeDays: Math.round(os.uptime() / 8640) / 10,
+            nodeHeapMB: Math.round(process.memoryUsage().rss / 1e6)
+        }});
+    } catch (error) {
+        console.error('Server stats error:', error);
+        res.status(500).json({ success: false, error: 'Failed to read server stats' });
     }
 });
 

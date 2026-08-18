@@ -152,16 +152,15 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         return { week: w, size: members.length, weeks };
     });
 
-    /* Country / language split (locals vs visitors approximation) */
-    const countBy = (field) => {
-        const m = new Map();
-        for (const u of perUser) {
-            const v = u[field] || 'unknown';
-            m.set(v, (m.get(v) || 0) + 1);
-        }
-        return [...m.entries()].map(([k, n]) => ({ key: k, users: n }))
-            .sort((a, b) => b.users - a.users).slice(0, 8);
-    };
+    /* Language split — over ALL travelers (was: only users with activity
+     * records, which showed "en · 1" while 22 users existed). App language
+     * defaults to 'en', so missing values count as English. */
+    const langAgg = await User.aggregate([
+        { $match: { role: TRAVELER_ROLE, isActive: { $ne: false }, ...locFilter } },
+        { $group: { _id: { $ifNull: ['$settings.language', 'en'] }, n: { $sum: 1 } } },
+        { $sort: { n: -1 } }, { $limit: 8 }
+    ]);
+    const languages = langAgg.map(r => ({ key: r._id || 'en', users: r.n }));
 
     /* Surface usage within the window */
     const surfAgg = await UserActivity.aggregate([
@@ -205,7 +204,9 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
      * preference-stats panel (current saved preferences, travelers only). */
     const [travelStylesAgg, interestsAgg] = await Promise.all([
         User.aggregate([
-            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $nin: [null, ''] }, ...locFilter } },
+            // Whitelist: the app's only styles are luxury and budget — legacy
+            // docs carry stray values ('family' etc.) from an old onboarding.
+            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.travelStyle': { $in: ['luxury', 'budget'] }, ...locFilter } },
             { $group: { _id: '$preferences.travelStyle', n: { $sum: 1 } } },
             { $sort: { n: -1 } }
         ]),
@@ -287,7 +288,7 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         daily,
         returnRates,
         cohorts,
-        languages: countBy('language'),
+        languages,
         surfaces,
         quickActions,
         preferences,
