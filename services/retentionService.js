@@ -33,14 +33,33 @@ function weekStart(day) {
     return dayStr(new Date(d.getTime() - dow * DAY_MS));
 }
 
-async function buildRetentionReport({ windowDays = 30 } = {}) {
+async function buildRetentionReport({ windowDays = 30, country = '', city = '' } = {}) {
     const today = dayStr(new Date());
     const windowStart = addDays(today, -(windowDays - 1));
+
+    /* $nin, not role:'user' — legacy accounts registered before the role
+     * field existed carry NO role in the DB, and a positive match would
+     * exclude all of them. */
+    const TRAVELER_ROLE = { $nin: ['staff', 'admin'] };
+
+    /* Optional country/city filter (marketing page dropdowns). The filter is
+     * the users' CURRENT profile location (settings.location) — same source
+     * as the "Users by country/city" cards, so the numbers stay consistent. */
+    const locFilter = {};
+    if (country) locFilter['settings.location.countryName'] = country;
+    if (city) locFilter['settings.location.city'] = city;
+    const filtering = !!(country || city);
+    let filterSet = null, filterIds = null;
+    if (filtering) {
+        const ids = await User.find({ role: TRAVELER_ROLE, ...locFilter }).select('_id').lean();
+        filterIds = ids.map(d => d._id);
+        filterSet = new Set(filterIds.map(String));
+    }
 
     /* Per-user lifetime shape: first/last active day + every active day.
      * Fine at current scale (hundreds–thousands of users); revisit with a
      * windowed variant past ~50k users. */
-    const perUser = await UserActivity.aggregate([
+    let perUser = await UserActivity.aggregate([
         { $sort: { day: 1 } },
         { $group: {
             _id: '$userId',
@@ -51,6 +70,7 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
             language: { $last: '$language' }
         } }
     ]);
+    if (filterSet) perUser = perUser.filter(u => filterSet.has(String(u._id)));
 
     const activeByDay = new Map();      // day → Set(userIdStr)
     for (const u of perUser) {
@@ -145,7 +165,7 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
 
     /* Surface usage within the window */
     const surfAgg = await UserActivity.aggregate([
-        { $match: { day: { $gte: windowStart, $lte: today } } },
+        { $match: { day: { $gte: windowStart, $lte: today }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
         { $group: {
             _id: null,
             chat: { $sum: '$surfaces.chat' }, quickAction: { $sum: '$surfaces.quickAction' },
@@ -156,24 +176,21 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
     const surfaces = surfAgg[0] || {};
     delete surfaces._id;
 
-    /* $nin, not role:'user' — legacy accounts registered before the role
-     * field existed carry NO role in the DB, and a positive match would
-     * exclude all of them from every count here. */
-    const TRAVELER_ROLE = { $nin: ['staff', 'admin'] };
-    const totalUsers = await User.countDocuments({ role: TRAVELER_ROLE, isActive: { $ne: false } });
-    const newUsers7 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 7 * DAY_MS) } });
-    const newUsers30 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 30 * DAY_MS) } });
+    const totalUsers = await User.countDocuments({ role: TRAVELER_ROLE, isActive: { $ne: false }, ...locFilter });
+    const newUsers7 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 7 * DAY_MS) }, ...locFilter });
+    const newUsers30 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 30 * DAY_MS) }, ...locFilter });
 
     /* What people ask for — quick-action categories + free chat (windowed).
      * Same Analytics events the admin quick-action-stats panel reads. */
     const windowStartDate = new Date(windowStart + 'T00:00:00Z');
+    const userScope = filterIds ? { userId: { $in: filterIds } } : {};
     const [qaAgg, chatAgg] = await Promise.all([
         Analytics.aggregate([
-            { $match: { type: 'quick_action_used', createdAt: { $gte: windowStartDate } } },
+            { $match: { type: 'quick_action_used', createdAt: { $gte: windowStartDate }, ...userScope } },
             { $group: { _id: '$metadata.action', n: { $sum: 1 } } }
         ]),
         Analytics.aggregate([
-            { $match: { type: 'ai_chat_interaction', 'metadata.actionType': 'stream_chat', createdAt: { $gte: windowStartDate } } },
+            { $match: { type: 'ai_chat_interaction', 'metadata.actionType': 'stream_chat', createdAt: { $gte: windowStartDate }, ...userScope } },
             { $count: 'n' }
         ])
     ]);
@@ -188,12 +205,12 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
      * preference-stats panel (current saved preferences, travelers only). */
     const [travelStylesAgg, interestsAgg] = await Promise.all([
         User.aggregate([
-            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $nin: [null, ''] } } },
+            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $nin: [null, ''] }, ...locFilter } },
             { $group: { _id: '$preferences.travelStyle', n: { $sum: 1 } } },
             { $sort: { n: -1 } }
         ]),
         User.aggregate([
-            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.interests.0': { $exists: true } } },
+            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.interests.0': { $exists: true }, ...locFilter } },
             { $unwind: '$preferences.interests' },
             { $group: { _id: '$preferences.interests', n: { $sum: 1 } } },
             { $sort: { n: -1 } },
@@ -208,7 +225,7 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
     /* Where users are + where they plan to travel — same aggregations as the
      * admin users page (settings.location = home, preferences.destination =
      * chosen trip), aggregate counts only. */
-    const locMatch = { role: TRAVELER_ROLE, isActive: { $ne: false } };
+    const locMatch = { role: TRAVELER_ROLE, isActive: { $ne: false }, ...locFilter };
     const [locCountry, locCity, destCountry, destCity] = await Promise.all([
         User.aggregate([
             { $match: { ...locMatch, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
@@ -238,9 +255,27 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
         destinations: { byCountry: asRows(destCountry), byCity: asRows(destCity) }
     };
 
+    /* Dropdown options for the report's own filters — always the FULL list
+     * of countries (so a filtered view can still switch away), plus the
+     * cities of the currently selected country. */
+    const [optCountries, optCities] = await Promise.all([
+        User.aggregate([
+            { $match: { role: TRAVELER_ROLE, isActive: { $ne: false }, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
+            { $group: { _id: '$settings.location.countryName' } },
+            { $sort: { _id: 1 } }
+        ]),
+        country ? User.aggregate([
+            { $match: { role: TRAVELER_ROLE, isActive: { $ne: false }, 'settings.location.countryName': country, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
+            { $group: { _id: '$settings.location.city' } },
+            { $sort: { _id: 1 } }
+        ]) : Promise.resolve([])
+    ]);
+
     return {
         generatedAt: new Date().toISOString(),
         windowDays,
+        filters: { country: country || '', city: city || '' },
+        filterOptions: { countries: optCountries.map(c => c._id), cities: optCities.map(c => c._id) },
         totals: { totalUsers, newUsers7, newUsers30, dau, wau, mau, trackedUsers: perUser.length },
         daily,
         returnRates,
@@ -253,14 +288,18 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
     };
 }
 
-/* 10-minute in-process cache so marketers refreshing the page cost ~nothing. */
-let _cache = null, _cacheAt = 0;
-async function buildRetentionReportCached(opts) {
+/* 10-minute in-process cache (keyed by window + filters) so marketers
+ * refreshing or switching filters back and forth cost ~nothing. */
+const _cache = new Map();   // key → { at, report }
+async function buildRetentionReportCached(opts = {}) {
+    const key = `${opts.windowDays || 30}|${opts.country || ''}|${opts.city || ''}`;
     const now = Date.now();
-    if (_cache && now - _cacheAt < 10 * 60 * 1000) return _cache;
-    _cache = await buildRetentionReport(opts);
-    _cacheAt = now;
-    return _cache;
+    const hit = _cache.get(key);
+    if (hit && now - hit.at < 10 * 60 * 1000) return hit.report;
+    const report = await buildRetentionReport(opts);
+    if (_cache.size > 50) _cache.clear();
+    _cache.set(key, { at: now, report });
+    return report;
 }
 
 module.exports = { buildRetentionReport, buildRetentionReportCached };

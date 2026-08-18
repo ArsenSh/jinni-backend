@@ -157,7 +157,9 @@ router.get('/users/locations', async (req, res) => {
 router.get('/retention', async (req, res) => {
     try {
         const windowDays = Math.min(parseInt(req.query.days) || 30, 90);
-        const report = await require('../services/retentionService').buildRetentionReport({ windowDays });
+        const country = String(req.query.country || '').slice(0, 80);
+        const city = String(req.query.city || '').slice(0, 80);
+        const report = await require('../services/retentionService').buildRetentionReport({ windowDays, country, city });
         res.json({ success: true, data: report });
     } catch (error) {
         console.error('Retention report error:', error);

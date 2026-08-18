@@ -23,7 +23,9 @@ router.get('/marketing-report', auth, async (req, res) => {
         const allowed = u?.role === 'admin' || u?.isAdmin === true ||
             (u?.role === 'staff' && u?.staffAssignment?.permissions?.viewMarketing === true);
         if (!allowed) return res.status(403).json({ error: 'Not allowed' });
-        const report = await require('../services/retentionService').buildRetentionReportCached({ windowDays: 30 });
+        const country = String(req.query.country || '').slice(0, 80);
+        const city = String(req.query.city || '').slice(0, 80);
+        const report = await require('../services/retentionService').buildRetentionReportCached({ windowDays: 30, country, city });
         res.json({ success: true, data: report });
     } catch (error) {
         console.error('Marketing report (authed) error:', error);
@@ -36,7 +38,9 @@ router.get('/marketing-report/:token', async (req, res) => {
         const expected = process.env.MARKETING_REPORT_TOKEN;
         if (!expected) return res.status(404).json({ error: 'Not found' });
         if (req.params.token !== expected) return res.status(403).json({ error: 'Invalid link' });
-        const report = await require('../services/retentionService').buildRetentionReportCached({ windowDays: 30 });
+        const country = String(req.query.country || '').slice(0, 80);
+        const city = String(req.query.city || '').slice(0, 80);
+        const report = await require('../services/retentionService').buildRetentionReportCached({ windowDays: 30, country, city });
         res.json({ success: true, data: report });
     } catch (error) {
         console.error('Marketing report error:', error);
