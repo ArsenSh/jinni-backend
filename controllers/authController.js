@@ -257,7 +257,10 @@ exports.login = async (req, res) => {
             });
         }
         const token = jwt.sign({ userId: user._id.toString(), businessId: user.businessId || null }, process.env.JWT_SECRET, { expiresIn: '1d' });
-        res.status(200).json({token, user: {id: user._id, name: user.name, email: user.email, onboardingCompleted: user.onboardingCompleted, preferences: user.preferences, isAdmin: user.isAdmin || false, role: user.role || (user.isAdmin ? 'admin' : 'user'), businessId: user.businessId || null}});
+        res.status(200).json({token, user: {id: user._id, name: user.name, email: user.email, onboardingCompleted: user.onboardingCompleted, preferences: user.preferences, isAdmin: user.isAdmin || false, role: user.role || (user.isAdmin ? 'admin' : 'user'), businessId: user.businessId || null,
+            // Router needs staff permissions to route validators vs marketing
+            // staff to the right locked page (StaffValidation vs /marketing).
+            staffPermissions: user.role === 'staff' ? (user.staffAssignment?.permissions || null) : null}});
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Server error' });

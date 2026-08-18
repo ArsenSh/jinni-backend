@@ -1,4 +1,5 @@
 const { isPremiumExpired } = require('../utils/premium');
+const { recordActivity } = require('../services/userActivityService');
 const UserAILimit = require('../models/UserAILimit');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
@@ -69,6 +70,9 @@ module.exports = async (req, res, next) => {
         // into slow requests. Failures are logged and ignored.
         User.findByIdAndUpdate(user._id.toString(), { $set: { 'analytics.lastActive': new Date() } })
             .catch(updateError => console.log('⚠️ Warning: Could not update last active time:', updateError.message));
+        // Day-level retention rollup (UserActivity) — throttled + fire-and-forget
+        // inside the service; skips admin/staff/business roles.
+        recordActivity(user, req.originalUrl);
         next();
     } catch (error) {
         // Database unreachable → 503, and DON'T log the full stack on every

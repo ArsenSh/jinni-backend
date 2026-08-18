@@ -151,6 +151,20 @@ router.get('/users/locations', async (req, res) => {
     }
 });
 
+// ─── RETENTION (comeback tracking) ────────────────────────────────────────
+// DAU/WAU/MAU, new-vs-returning, D1/D7/D30 return rates, weekly cohorts.
+// Same report the marketing page serves — see services/retentionService.js.
+router.get('/retention', async (req, res) => {
+    try {
+        const windowDays = Math.min(parseInt(req.query.days) || 30, 90);
+        const report = await require('../services/retentionService').buildRetentionReport({ windowDays });
+        res.json({ success: true, data: report });
+    } catch (error) {
+        console.error('Retention report error:', error);
+        res.status(500).json({ success: false, error: 'Failed to build retention report' });
+    }
+});
+
 // User registrations over time (last 30 days)
 router.get('/users/registrations', async (req, res) => {
     try {
@@ -1494,6 +1508,125 @@ router.get('/google-usage/daily', async (req, res) => {
     }
 });
 
+// ── Monthly free-tier & billing forecast ─────────────────────────────────────
+// One month per request ('?month=YYYY-MM', default current). Free caps reset
+// on the 1st, so everything here is computed from the month's own days. For
+// the CURRENT month it also projects month-end calls per SKU:
+//   pace   = average calls/day over the last 7 days (falls back to MTD pace)
+//   growth = last-7-days pace vs the 7 days before (clamped 0.5×–2× so one
+//            spiky test day can't produce a silly forecast)
+//   projected = MTD + pace × growth × remaining days
+// The point: see BEFORE the bill exists which SKU will cross its free cap and
+// roughly when — that's the "turn Google off for warm cities / heavy actions"
+// decision signal.
+router.get('/google-usage/monthly', async (req, res) => {
+    try {
+        const SKUS = [
+            { key: 'findPlaces',      label: 'Text Search',   rate: 0.032, free: 5000,
+              drives: 'Chat grounding + quick-action searches & View More refills' },
+            { key: 'getPlaceDetails', label: 'Place Details', rate: 0.020, free: 1000,
+              drives: 'Card "More" info (hours/phone/website) + venue resolution' },
+            { key: 'imageDownload',   label: 'Place Photos',  rate: 0.007, free: 1000,
+              drives: 'Card images — paid once per place, then cached forever' },
+            { key: 'reverseGeocode',  label: 'Geocoding',     rate: 0.005, free: 10000,
+              drives: 'Location & address resolution' },
+        ];
+
+        const now = new Date();
+        const currentMonth = now.toISOString().slice(0, 7);
+        const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : currentMonth;
+        const isCurrent = month === currentMonth;
+
+        // Navigable months: from the earliest recorded day to the current month.
+        const first = await GoogleApiStats.findOne().sort({ date: 1 }).select('date').lean();
+        const months = [];
+        if (first) {
+            let m = first.date.slice(0, 7);
+            while (m <= currentMonth) {
+                months.push(m);
+                const [y, mo] = m.split('-').map(Number);
+                m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`;
+            }
+        }
+
+        const rows = await GoogleApiStats.find({ date: { $gte: month + '-01', $lte: month + '-31' } })
+            .sort({ date: 1 })
+            .select('date findPlaces getPlaceDetails reverseGeocode imageDownload')
+            .lean();
+
+        const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+        const todayStr = now.toISOString().slice(0, 10);
+        const dayOfMonth = isCurrent ? Number(todayStr.slice(8, 10)) : daysInMonth;
+        const daysRemaining = isCurrent ? daysInMonth - dayOfMonth : 0;
+
+        // Gap-filled daily series for the chart.
+        const daily = [];
+        for (let i = 1; i <= (isCurrent ? dayOfMonth : daysInMonth); i++) {
+            const dateStr = `${month}-${String(i).padStart(2, '0')}`;
+            const r = rows.find(x => x.date === dateStr) || {};
+            daily.push({
+                date: dateStr,
+                findPlaces: r.findPlaces || 0, getPlaceDetails: r.getPlaceDetails || 0,
+                reverseGeocode: r.reverseGeocode || 0, imageDownload: r.imageDownload || 0,
+            });
+        }
+
+        // Pace: last 7 recorded days vs the 7 before (current month only; the
+        // windows may reach into the previous month so early-month forecasts
+        // still have a real baseline).
+        const paceWindow = async (endOffsetDays, len) => {
+            const end = new Date(now); end.setDate(end.getDate() - endOffsetDays);
+            const start = new Date(end); start.setDate(start.getDate() - (len - 1));
+            const ws = start.toISOString().slice(0, 10), we = end.toISOString().slice(0, 10);
+            const wr = await GoogleApiStats.find({ date: { $gte: ws, $lte: we } }).lean();
+            const sums = {};
+            for (const s of SKUS) sums[s.key] = wr.reduce((a, r) => a + (r[s.key] || 0), 0) / len;
+            return sums;
+        };
+        const [pace7, prev7] = isCurrent ? await Promise.all([paceWindow(0, 7), paceWindow(7, 7)]) : [null, null];
+
+        const skus = SKUS.map(s => {
+            const total = daily.reduce((a, d) => a + d[s.key], 0);
+            const billed = Math.max(0, total - s.free) * s.rate;
+            let projected = null, projectedBilled = null, capCrossDate = null, growth = null;
+            if (isCurrent) {
+                const base = pace7[s.key] > 0 ? pace7[s.key] : (dayOfMonth ? total / dayOfMonth : 0);
+                growth = prev7[s.key] > 0 ? Math.min(2, Math.max(0.5, pace7[s.key] / prev7[s.key])) : 1;
+                const dailyRate = base * growth;
+                projected = Math.round(total + dailyRate * daysRemaining);
+                projectedBilled = Math.max(0, projected - s.free) * s.rate;
+                if (total < s.free && dailyRate > 0 && projected > s.free) {
+                    const daysToCap = Math.ceil((s.free - total) / dailyRate);
+                    const d = new Date(now); d.setDate(d.getDate() + daysToCap);
+                    capCrossDate = d.toISOString().slice(0, 10);
+                } else if (total >= s.free) {
+                    capCrossDate = 'crossed';
+                }
+            }
+            return {
+                ...s, total,
+                billed: parseFloat(billed.toFixed(2)),
+                usedPct: Math.min(100, Math.round(100 * total / s.free)),
+                projected, projectedPct: projected === null ? null : Math.round(100 * projected / s.free),
+                projectedBilled: projectedBilled === null ? null : parseFloat(projectedBilled.toFixed(2)),
+                capCrossDate,
+                growth: growth === null ? null : parseFloat(growth.toFixed(2)),
+            };
+        });
+
+        res.json({ success: true, data: {
+            month, months, isCurrent, daysInMonth, dayOfMonth, daysRemaining, daily, skus,
+            totals: {
+                billed: parseFloat(skus.reduce((a, s) => a + s.billed, 0).toFixed(2)),
+                projectedBilled: isCurrent ? parseFloat(skus.reduce((a, s) => a + (s.projectedBilled || 0), 0).toFixed(2)) : null,
+            }
+        }});
+    } catch (error) {
+        console.error('Google monthly forecast error:', error);
+        res.status(500).json({ success: false, error: 'Failed to build monthly Google forecast' });
+    }
+});
+
 router.get('/quick-action-stats', async (req, res) => {
     try {
         // Must mirror JinniChat.vue's `quickActions` list. When the chat gained
@@ -1772,12 +1905,13 @@ router.post('/staff', async (req, res) => {
         let permissions = {
             validateBusinesses: pIn.validateBusinesses !== false,   // default true
             manageDestinations: pIn.manageDestinations === true,    // default false
-            moderateExplore:    pIn.moderateExplore === true        // default false
+            moderateExplore:    pIn.moderateExplore === true,       // default false
+            viewMarketing:      pIn.viewMarketing === true          // default false
         };
-        if (!permissions.validateBusinesses && !permissions.manageDestinations && !permissions.moderateExplore) {
+        if (!permissions.validateBusinesses && !permissions.manageDestinations && !permissions.moderateExplore && !permissions.viewMarketing) {
             return res.status(400).json({
                 success: false,
-                error: 'Staff must have at least one permission (validate businesses, manage destinations, or moderate Explore)'
+                error: 'Staff must have at least one permission (validate businesses, manage destinations, moderate Explore, or marketing report)'
             });
         }
 
@@ -1888,9 +2022,12 @@ router.patch('/staff/:id/assignment', async (req, res) => {
                     : !!current.manageDestinations,
                 moderateExplore: req.body.permissions.moderateExplore !== undefined
                     ? !!req.body.permissions.moderateExplore
-                    : !!current.moderateExplore
+                    : !!current.moderateExplore,
+                viewMarketing: req.body.permissions.viewMarketing !== undefined
+                    ? !!req.body.permissions.viewMarketing
+                    : !!current.viewMarketing
             };
-            if (!next.validateBusinesses && !next.manageDestinations && !next.moderateExplore) {
+            if (!next.validateBusinesses && !next.manageDestinations && !next.moderateExplore && !next.viewMarketing) {
                 return res.status(400).json({
                     success: false,
                     error: 'Staff must keep at least one permission enabled'

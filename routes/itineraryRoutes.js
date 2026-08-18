@@ -2076,6 +2076,22 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
       title: `${dest.name} \u2014 ${daysCount} ${daysCount === 1 ? 'day' : 'days'}`,
     });
 
+    // Same usage logging as /generate-stream (line ~1306) \u2014 without this,
+    // pool-built itineraries were invisible to the admin Feature Usage chart
+    // (the "Itinerary shows 0" bug: only one of the two build paths logged).
+    Analytics.create({
+      type: 'quick_action_used',
+      userId: req.user?._id || req.user?.id,
+      metadata: {
+        sessionId: 'itinerary_pool',
+        action: 'itinerary',
+        subType: null,
+        value: doc.days?.length || 0,
+        count: doc.days?.length || 0,
+        hasLocation: !!(dest?.lat && dest?.lng)
+      }
+    }).catch(err => console.warn('[itinerary] analytics log failed:', err.message));
+
     return res.json({ success: true, itinerary: doc.toObject() });
   } catch (error) {
     console.error(`[${requestId}] pool build failed:`, error);

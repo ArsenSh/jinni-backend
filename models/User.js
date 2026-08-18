@@ -98,6 +98,10 @@ const userSchema = new mongoose.Schema({
         //                        their assigned scope (countries / cities)
         //   moderateExplore    : can hide / verify cached places on the Explore
         //                        page within their assigned scope
+        //   viewMarketing      : can view the Growth & Retention report
+        //                        (/marketing) — for marketing partners; a
+        //                        marketing-only staff is locked to that page
+        //                        the same way validators are locked to their queue
         // Defaults:
         //   - validateBusinesses true → preserves behaviour for staff created
         //     before this field existed (legacy docs read the default).
@@ -106,7 +110,8 @@ const userSchema = new mongoose.Schema({
         permissions: {
             validateBusinesses: { type: Boolean, default: true  },
             manageDestinations: { type: Boolean, default: false },
-            moderateExplore:    { type: Boolean, default: false }
+            moderateExplore:    { type: Boolean, default: false },
+            viewMarketing:      { type: Boolean, default: false }
         }
     },
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business', default: null },  // set when user owns a business listing
