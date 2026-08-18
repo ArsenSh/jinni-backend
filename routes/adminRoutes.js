@@ -98,35 +98,49 @@ router.get('/users', async (req, res) => {
 // User location breakdown — home locations AND travel destinations
 router.get('/users/locations', async (req, res) => {
     try {
-        const [byCountry, byCity, byDestCountry, byDestCity] = await Promise.all([
-            // Home/current location — by country
+        /* MODE-BASED split. The old version read settings.location for "home"
+         * and preferences.destination for "destinations" — but onboarding
+         * writes the SAME object into both fields in both modes, so the two
+         * panels always showed identical numbers and cities. The reliable
+         * signal is settings.privacy.autoDetectLocation:
+         *   true / missing → GPS mode  (settings.location = where they ARE)
+         *   false          → destination mode (settings.location = the place
+         *                    they chose to explore)
+         * Both panels read settings.location — the mode flag disambiguates
+         * what it means. */
+        const GPS_MODE  = { isActive: true, 'settings.privacy.autoDetectLocation': { $ne: false } };
+        const DEST_MODE = { isActive: true, 'settings.privacy.autoDetectLocation': false };
+        const [byCountry, byCity, byDestCountry, byDestCity, gpsUsers, destUsers] = await Promise.all([
+            // GPS mode — where users physically are, by country
             User.aggregate([
-                { $match: { isActive: true, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
+                { $match: { ...GPS_MODE, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
                 { $group: { _id: '$settings.location.countryName', count: { $sum: 1 }, premium: { $sum: { $cond: ['$isPremium', 1, 0] } } } },
                 { $sort: { count: -1 } },
                 { $limit: 20 }
             ]),
-            // Home/current location — by city
+            // GPS mode — by city
             User.aggregate([
-                { $match: { isActive: true, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
+                { $match: { ...GPS_MODE, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
                 { $group: { _id: '$settings.location.city', country: { $first: '$settings.location.countryName' }, count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
                 { $limit: 10 }
             ]),
-            // Travel destinations — by country
+            // Destination mode — chosen destination, by country
             User.aggregate([
-                { $match: { isActive: true, 'preferences.destination.countryName': { $nin: ['', null] } } },
-                { $group: { _id: '$preferences.destination.countryName', count: { $sum: 1 }, premium: { $sum: { $cond: ['$isPremium', 1, 0] } } } },
+                { $match: { ...DEST_MODE, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
+                { $group: { _id: '$settings.location.countryName', count: { $sum: 1 }, premium: { $sum: { $cond: ['$isPremium', 1, 0] } } } },
                 { $sort: { count: -1 } },
                 { $limit: 20 }
             ]),
-            // Travel destinations — by city
+            // Destination mode — by city
             User.aggregate([
-                { $match: { isActive: true, 'preferences.destination.city': { $nin: ['', null] } } },
-                { $group: { _id: '$preferences.destination.city', country: { $first: '$preferences.destination.countryName' }, count: { $sum: 1 } } },
+                { $match: { ...DEST_MODE, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
+                { $group: { _id: '$settings.location.city', country: { $first: '$settings.location.countryName' }, count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
                 { $limit: 10 }
-            ])
+            ]),
+            User.countDocuments(GPS_MODE),
+            User.countDocuments(DEST_MODE)
         ]);
 
         const homeTotal = byCountry.reduce((s, c) => s + c.count, 0);
@@ -138,6 +152,7 @@ router.get('/users/locations', async (req, res) => {
                 byCountry,
                 byCity,
                 total: homeTotal,
+                modeSplit: { gps: gpsUsers, destination: destUsers },
                 destinations: {
                     byCountry: byDestCountry,
                     byCity: byDestCity,
@@ -1725,31 +1740,12 @@ router.get('/preference-stats', async (req, res) => {
                     ] }, 1, 0] } }
                 }}
             ]),
-            // Budget bucketing by midpoint of min+max range
-            User.aggregate([
-                { $match: { onboardingCompleted: true, 'preferences.budget.max': { $exists: true, $gt: 0 } } },
-                { $addFields: {
-                    budgetMid: {
-                        $divide: [
-                            { $add: [{ $ifNull: ['$preferences.budget.min', 0] }, '$preferences.budget.max'] },
-                            2
-                        ]
-                    }
-                }},
-                { $group: {
-                    _id: {
-                        $switch: {
-                            branches: [
-                                { case: { $lte: ['$budgetMid', 300] },  then: 'Budget' },
-                                { case: { $lte: ['$budgetMid', 1000] }, then: 'Mid-range' }
-                            ],
-                            default: 'Luxury'
-                        }
-                    },
-                    count: { $sum: 1 }
-                }},
-                { $sort: { count: -1 } }
-            ]),
+            // Budgets raw — bucketed in JS AFTER currency conversion. The old
+            // aggregation bucketed raw numbers, so a 300,000 AMD (~$780)
+            // budget landed in "Luxury $1k+" and the tile lied whenever a
+            // user picked a non-USD currency.
+            User.find({ onboardingCompleted: true, 'preferences.budget.max': { $gt: 0 } })
+                .select('preferences.budget').lean(),
             // Onboarding completion stats
             User.aggregate([
                 { $group: {
@@ -1763,6 +1759,29 @@ router.get('/preference-stats', async (req, res) => {
         const locMode = locationModeAgg[0] || { destination: 0, currentLocation: 0 };
         const ob = onboardingAgg[0] || { total: 0, completed: 0 };
 
+        /* Bucket budgets by the USD midpoint of each user's min–max range.
+         * All in daily-spend terms as entered at onboarding. */
+        const currencyService = require('../services/currencyService');
+        const BUDGET_BUCKETS = [
+            { label: '≤ $300', max: 300 },
+            { label: '$300 – $1,000', max: 1000 },
+            { label: '$1,000+', max: Infinity }
+        ];
+        const bucketCounts = new Map(BUDGET_BUCKETS.map(b => [b.label, 0]));
+        let budgetSumUsd = 0, budgetUsers = 0;
+        for (const doc of budgetAgg) {
+            const norm = currencyService.normalizeBudgetToUSD(doc.preferences?.budget);
+            const mid = ((norm.min || 0) + (norm.max || 0)) / 2;
+            if (!(mid > 0)) continue;
+            budgetUsers++;
+            budgetSumUsd += mid;
+            const bucket = BUDGET_BUCKETS.find(b => mid <= b.max);
+            bucketCounts.set(bucket.label, bucketCounts.get(bucket.label) + 1);
+        }
+        const budgetBuckets = BUDGET_BUCKETS
+            .map(b => ({ _id: b.label, count: bucketCounts.get(b.label) }))
+            .filter(b => b.count > 0);
+
         res.json({
             success: true,
             data: {
@@ -1773,7 +1792,12 @@ router.get('/preference-stats', async (req, res) => {
                     { _id: 'Set Destination', count: locMode.destination },
                     { _id: 'Current Location', count: locMode.currentLocation }
                 ],
-                budgetBuckets: budgetAgg,
+                budgetBuckets,
+                budgetStats: {
+                    usersWithBudget: budgetUsers,
+                    onboarded: ob.completed,
+                    avgUsd: budgetUsers ? Math.round(budgetSumUsd / budgetUsers) : null
+                },
                 onboarding: {
                     total: ob.total,
                     completed: ob.completed,
@@ -2074,6 +2098,57 @@ router.delete('/staff/:id', async (req, res) => {
     } catch (err) {
         console.error('[staff revoke] error:', err);
         return res.status(500).json({ success: false, error: 'Failed to revoke staff' });
+    }
+});
+
+/**
+ * POST /api/admin/staff/:id/restore
+ * Undo a revoke: reactivate the account with permissions and territory
+ * intact. Without this, revoke was one-way — the email address was burned
+ * (recreate hits the duplicate-email check) with no way back.
+ */
+router.post('/staff/:id/restore', async (req, res) => {
+    try {
+        const target = await User.findById(req.params.id);
+        if (!target) return res.status(404).json({ success: false, error: 'Staff member not found' });
+        if (target.role !== 'staff') {
+            return res.status(400).json({ success: false, error: 'User is not a staff member' });
+        }
+        if (target.isActive !== false) {
+            return res.status(400).json({ success: false, error: 'Staff member is already active' });
+        }
+        target.isActive = true;
+        await target.save();
+        return res.json({ success: true, id: target._id, isActive: true });
+    } catch (err) {
+        console.error('[staff restore] error:', err);
+        return res.status(500).json({ success: false, error: 'Failed to restore staff' });
+    }
+});
+
+/**
+ * DELETE /api/admin/staff/:id/permanent
+ * Hard delete — removes the account for good and frees the email address
+ * for reuse. Guarded: only allowed on an ALREADY-REVOKED staff account, so
+ * a mis-click can never destroy an active one (revoke first, then delete).
+ */
+router.delete('/staff/:id/permanent', async (req, res) => {
+    try {
+        const target = await User.findById(req.params.id);
+        if (!target) return res.status(404).json({ success: false, error: 'Staff member not found' });
+        if (target.role !== 'staff') {
+            return res.status(400).json({ success: false, error: 'User is not a staff member' });
+        }
+        if (target.isActive !== false) {
+            return res.status(400).json({ success: false, error: 'Revoke the staff member first — only revoked accounts can be permanently deleted' });
+        }
+        await User.deleteOne({ _id: target._id });
+        // Clean up the AI-limit doc the user post-save hook created.
+        await UserAILimit.deleteOne({ userId: target._id }).catch(() => {});
+        return res.json({ success: true, id: req.params.id, deleted: true });
+    } catch (err) {
+        console.error('[staff permanent delete] error:', err);
+        return res.status(500).json({ success: false, error: 'Failed to delete staff' });
     }
 });
 

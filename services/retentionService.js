@@ -225,26 +225,33 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     /* Where users are + where they plan to travel — same aggregations as the
      * admin users page (settings.location = home, preferences.destination =
      * chosen trip), aggregate counts only. */
+    /* Mode-based, like the admin users page: onboarding writes the same
+     * object to settings.location AND preferences.destination, so the old
+     * "destinations" read was a duplicate of "users". autoDetectLocation
+     * (true/missing = GPS, false = destination mode) is the real signal;
+     * settings.location is the field each mode actually maintains. */
     const locMatch = { role: TRAVELER_ROLE, isActive: { $ne: false }, ...locFilter };
+    const gpsMatch = { ...locMatch, 'settings.privacy.autoDetectLocation': { $ne: false } };
+    const destMatch = { ...locMatch, 'settings.privacy.autoDetectLocation': false };
     const [locCountry, locCity, destCountry, destCity] = await Promise.all([
         User.aggregate([
-            { $match: { ...locMatch, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
+            { $match: { ...gpsMatch, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
             { $group: { _id: '$settings.location.countryName', n: { $sum: 1 } } },
             { $sort: { n: -1 } }, { $limit: 10 }
         ]),
         User.aggregate([
-            { $match: { ...locMatch, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
+            { $match: { ...gpsMatch, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
             { $group: { _id: '$settings.location.city', country: { $first: '$settings.location.countryName' }, n: { $sum: 1 } } },
             { $sort: { n: -1 } }, { $limit: 10 }
         ]),
         User.aggregate([
-            { $match: { ...locMatch, 'preferences.destination.countryName': { $nin: ['', null] } } },
-            { $group: { _id: '$preferences.destination.countryName', n: { $sum: 1 } } },
+            { $match: { ...destMatch, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },
+            { $group: { _id: '$settings.location.countryName', n: { $sum: 1 } } },
             { $sort: { n: -1 } }, { $limit: 10 }
         ]),
         User.aggregate([
-            { $match: { ...locMatch, 'preferences.destination.city': { $nin: ['', null] } } },
-            { $group: { _id: '$preferences.destination.city', country: { $first: '$preferences.destination.countryName' }, n: { $sum: 1 } } },
+            { $match: { ...destMatch, 'settings.location.city': { $nin: ['', 'Select a city', null] } } },
+            { $group: { _id: '$settings.location.city', country: { $first: '$settings.location.countryName' }, n: { $sum: 1 } } },
             { $sort: { n: -1 } }, { $limit: 10 }
         ])
     ]);
