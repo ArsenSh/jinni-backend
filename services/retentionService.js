@@ -156,9 +156,13 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
     const surfaces = surfAgg[0] || {};
     delete surfaces._id;
 
-    const totalUsers = await User.countDocuments({ role: 'user', isActive: { $ne: false } });
-    const newUsers7 = await User.countDocuments({ role: 'user', 'analytics.registrationDate': { $gte: new Date(Date.now() - 7 * DAY_MS) } });
-    const newUsers30 = await User.countDocuments({ role: 'user', 'analytics.registrationDate': { $gte: new Date(Date.now() - 30 * DAY_MS) } });
+    /* $nin, not role:'user' — legacy accounts registered before the role
+     * field existed carry NO role in the DB, and a positive match would
+     * exclude all of them from every count here. */
+    const TRAVELER_ROLE = { $nin: ['staff', 'admin'] };
+    const totalUsers = await User.countDocuments({ role: TRAVELER_ROLE, isActive: { $ne: false } });
+    const newUsers7 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 7 * DAY_MS) } });
+    const newUsers30 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 30 * DAY_MS) } });
 
     /* What people ask for — quick-action categories + free chat (windowed).
      * Same Analytics events the admin quick-action-stats panel reads. */
@@ -184,12 +188,12 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
      * preference-stats panel (current saved preferences, travelers only). */
     const [travelStylesAgg, interestsAgg] = await Promise.all([
         User.aggregate([
-            { $match: { role: 'user', onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $nin: [null, ''] } } },
+            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.travelStyle': { $exists: true, $nin: [null, ''] } } },
             { $group: { _id: '$preferences.travelStyle', n: { $sum: 1 } } },
             { $sort: { n: -1 } }
         ]),
         User.aggregate([
-            { $match: { role: 'user', onboardingCompleted: true, 'preferences.interests.0': { $exists: true } } },
+            { $match: { role: TRAVELER_ROLE, onboardingCompleted: true, 'preferences.interests.0': { $exists: true } } },
             { $unwind: '$preferences.interests' },
             { $group: { _id: '$preferences.interests', n: { $sum: 1 } } },
             { $sort: { n: -1 } },
@@ -204,7 +208,7 @@ async function buildRetentionReport({ windowDays = 30 } = {}) {
     /* Where users are + where they plan to travel — same aggregations as the
      * admin users page (settings.location = home, preferences.destination =
      * chosen trip), aggregate counts only. */
-    const locMatch = { role: 'user', isActive: { $ne: false } };
+    const locMatch = { role: TRAVELER_ROLE, isActive: { $ne: false } };
     const [locCountry, locCity, destCountry, destCity] = await Promise.all([
         User.aggregate([
             { $match: { ...locMatch, 'settings.location.countryName': { $nin: ['', 'Select a country', null] } } },

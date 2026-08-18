@@ -57,8 +57,10 @@ const TYPE_TO_SURFACE = {
     await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
     console.log(`Connected. Mode: ${APPLY ? 'APPLY' : 'DRY RUN'}`);
 
-    // Only real travelers
-    const travelers = await User.find({ role: 'user' }).select('_id settings.location.country settings.language').lean();
+    // Only real travelers. $nin (not role:'user') because users registered
+    // before the role field existed have NO role in the DB — a positive match
+    // would silently drop every legacy account from the backfill.
+    const travelers = await User.find({ role: { $nin: ['staff', 'admin'] } }).select('_id settings.location.country settings.language').lean();
     const travelerSet = new Map(travelers.map(u => [String(u._id), u]));
     console.log(`Travelers (role=user): ${travelers.length}`);
 
