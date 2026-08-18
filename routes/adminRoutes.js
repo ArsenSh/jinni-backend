@@ -2250,7 +2250,8 @@ router.get('/limits', async (req, res) => {
                 limitFreeDailyTokens: cfg.limitFreeDailyTokens || 10000,
                 limitFreeDailyPlaces: cfg.limitFreeDailyPlaces || 100,
                 limitPremiumDailyTokens: cfg.limitPremiumDailyTokens || 50000,
-                limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200
+                limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200,
+                zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, historical: 500, hidden_gems: 900 }
             },
             free: tier(false),
             premium: tier(true)
@@ -2270,9 +2271,22 @@ router.post('/limits', async (req, res) => {
             if (!Number.isFinite(v) || v < 1) return res.status(400).json({ success: false, error: `${f} must be a positive number` });
             patch[f] = v;
         }
+        // Business limits: per-category visibility radius (50–5000 m)
+        if (req.body.zoneRadiusM && typeof req.body.zoneRadiusM === 'object') {
+            const zr = {};
+            for (const k of ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems']) {
+                const v = parseInt(req.body.zoneRadiusM[k], 10);
+                if (!Number.isFinite(v) || v < 50 || v > 5000) {
+                    return res.status(400).json({ success: false, error: `zoneRadiusM.${k} must be 50–5000 meters` });
+                }
+                zr[k] = v;
+            }
+            patch.zoneRadiusM = zr;
+        }
         const cfg = await AppConfig.updateConfig(patch, req.user?.id || null);
-        // Apply immediately — enforcement reads the in-memory tier config.
+        // Apply immediately — enforcement reads the in-memory configs.
         UserAILimit.setTierConfig(cfg);
+        if (cfg.zoneRadiusM) Business.setZoneRadiusConfig(cfg.zoneRadiusM);
         res.json({ success: true, data: patch });
     } catch (error) {
         console.error('Limits save error:', error);

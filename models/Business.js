@@ -370,6 +370,16 @@ const ZONE_GRID_STEP = {
     hidden_gems: 0.009,
 };
 
+/* Admin-configurable visibility radii (Limits tab → AppConfig.zoneRadiusM).
+ * MUTATES the shared table in place — businessRoutes destructures the object
+ * reference at require time, so reassignment would silently disconnect it.
+ * The zone GRID step stays hardcoded (it keys auction slots). */
+businessSchema.statics.setZoneRadiusConfig = function (m = {}) {
+    for (const k of Object.keys(ZONE_RADIUS_M)) {
+        const v = Number(m[k]);
+        if (Number.isFinite(v) && v >= 50 && v <= 5000) ZONE_RADIUS_M[k] = v;
+    }
+};
 businessSchema.statics.ZONE_RADIUS_M  = ZONE_RADIUS_M;
 businessSchema.statics.ZONE_GRID_STEP = ZONE_GRID_STEP;
 
@@ -389,3 +399,14 @@ module.exports              = mongoose.model('Business', businessSchema);
 module.exports.ZONE_RADIUS_M     = ZONE_RADIUS_M;
 module.exports.ZONE_GRID_STEP    = ZONE_GRID_STEP;
 module.exports.IMAGE_CONSTRAINTS = IMAGE_CONSTRAINTS;
+
+/* Hydrate configured zone radii once the DB connects (survives restarts). */
+const hydrateZoneRadii = async () => {
+    try {
+        const cfg = await require('./AppConfig').getConfig();
+        if (cfg.zoneRadiusM) module.exports.setZoneRadiusConfig(cfg.zoneRadiusM);
+        console.log('[limits] zone radii hydrated from AppConfig');
+    } catch (e) { console.warn('[limits] zone radii hydrate failed (using defaults):', e.message); }
+};
+if (mongoose.connection.readyState === 1) { hydrateZoneRadii(); }
+else { mongoose.connection.once('connected', hydrateZoneRadii); }

@@ -59,6 +59,17 @@ const appConfigSchema = new mongoose.Schema({
     limitFreeDailyPlaces:    { type: Number, default: 100 },
     limitPremiumDailyTokens: { type: Number, default: 50000 },
     limitPremiumDailyPlaces: { type: Number, default: 200 },
+    /* Business limits: per-category visibility radius (meters) — the
+     * ZONE_RADIUS_M table in models/Business.js. The zone GRID step is
+     * deliberately NOT configurable: it keys auction slots, and changing it
+     * would re-shuffle existing Signature zones. */
+    zoneRadiusM: {
+        restaurants: { type: Number, default: 300 },
+        hotels:      { type: Number, default: 900 },
+        events:      { type: Number, default: 300 },
+        historical:  { type: Number, default: 500 },
+        hidden_gems: { type: Number, default: 900 },
+    },
     /* Discover each country's event sources automatically (one small AI call
      * per country per week, verified before use). A manual
      * claudeWebSearchAllowedDomains always wins where it is set; this only
@@ -152,7 +163,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
-        'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces',
+        'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces', 'zoneRadiusM',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',
