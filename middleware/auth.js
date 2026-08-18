@@ -71,8 +71,9 @@ module.exports = async (req, res, next) => {
         User.findByIdAndUpdate(user._id.toString(), { $set: { 'analytics.lastActive': new Date() } })
             .catch(updateError => console.log('⚠️ Warning: Could not update last active time:', updateError.message));
         // Day-level retention rollup (UserActivity) — throttled + fire-and-forget
-        // inside the service; skips admin/staff/business roles.
-        recordActivity(user, req.originalUrl);
+        // inside the service; skips admin/staff/business roles. Body is passed
+        // for the nearby-vs-discovery search-mode split (chat/quick-action).
+        recordActivity(user, req.originalUrl, req.body);
         next();
     } catch (error) {
         // Database unreachable → 503, and DON'T log the full stack on every

@@ -1,6 +1,8 @@
 const UserActivity = require('../models/UserActivity');
 const User = require('../models/User');
 const Analytics = require('../models/Analytics');
+const UserAILimit = require('../models/UserAILimit');
+const PlaceView = require('../models/PlaceView');
 
 /* Mirrors JinniChat.vue's quick-action list (same map as the admin
  * quick-action-stats panel — keep the two in sync). */
@@ -162,18 +164,31 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     ]);
     const languages = langAgg.map(r => ({ key: r._id || 'en', users: r.n }));
 
-    /* Surface usage within the window */
-    const surfAgg = await UserActivity.aggregate([
-        { $match: { day: { $gte: windowStart, $lte: today }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
-        { $group: {
-            _id: null,
-            chat: { $sum: '$surfaces.chat' }, quickAction: { $sum: '$surfaces.quickAction' },
-            explore: { $sum: '$surfaces.explore' }, itinerary: { $sum: '$surfaces.itinerary' },
-            saves: { $sum: '$surfaces.saves' }, other: { $sum: '$surfaces.other' }
-        } }
+    /* Surface usage + search-mode split within the window, plus how many
+     * distinct users touched the map (route/distance calculations). */
+    const actScope = filterIds ? { userId: { $in: filterIds } } : {};
+    const [surfAgg, mapUsersAgg] = await Promise.all([
+        UserActivity.aggregate([
+            { $match: { day: { $gte: windowStart, $lte: today }, ...actScope } },
+            { $group: {
+                _id: null,
+                chat: { $sum: '$surfaces.chat' }, quickAction: { $sum: '$surfaces.quickAction' },
+                explore: { $sum: '$surfaces.explore' }, itinerary: { $sum: '$surfaces.itinerary' },
+                saves: { $sum: '$surfaces.saves' }, map: { $sum: '$surfaces.map' }, other: { $sum: '$surfaces.other' },
+                nearby: { $sum: '$modes.nearby' }, discovery: { $sum: '$modes.discovery' }
+            } }
+        ]),
+        UserActivity.aggregate([
+            { $match: { day: { $gte: windowStart, $lte: today }, 'surfaces.map': { $gt: 0 }, ...actScope } },
+            { $group: { _id: '$userId' } },
+            { $count: 'n' }
+        ])
     ]);
     const surfaces = surfAgg[0] || {};
     delete surfaces._id;
+    const searchModes = { nearby: surfaces.nearby || 0, discovery: surfaces.discovery || 0 };
+    delete surfaces.nearby; delete surfaces.discovery;
+    const mapUsers = mapUsersAgg[0]?.n || 0;
 
     const totalUsers = await User.countDocuments({ role: TRAVELER_ROLE, isActive: { $ne: false }, ...locFilter });
     const newUsers7 = await User.countDocuments({ role: TRAVELER_ROLE, 'analytics.registrationDate': { $gte: new Date(Date.now() - 7 * DAY_MS) }, ...locFilter });
@@ -199,6 +214,38 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     const chatN = chatAgg[0]?.n || 0;
     if (chatN) quickActions.push({ key: 'chat', label: 'Chat (free-form)', n: chatN });
     quickActions.sort((a, b) => b.n - a.n);
+
+    /* Usage & limits: cooldowns right now, today's metered AI usage, and
+     * card views over the window (PlaceView shown/engaged counters).
+     * Honest caveat: the per-user meter has a known undercount bug (the
+     * profile modal "0 requests" issue) — treat these as lower bounds. */
+    const startTodayDate = new Date(today + 'T00:00:00Z');
+    const [cooldownCount, meterAgg, pvAgg] = await Promise.all([
+        UserAILimit.countDocuments({ cooldownUntil: { $gt: new Date() }, ...(filterIds ? { userId: { $in: filterIds } } : {}) }),
+        UserAILimit.aggregate([
+            { $match: { 'dailyUsage.lastResetDate': { $gte: startTodayDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $group: {
+                _id: null,
+                tokens: { $sum: '$dailyUsage.tokensUsed' },
+                places: { $sum: '$dailyUsage.placesViewed' },
+                meteredUsers: { $sum: { $cond: [{ $gt: [{ $add: ['$dailyUsage.tokensUsed', '$dailyUsage.placesViewed'] }, 0] }, 1, 0] } }
+            } }
+        ]),
+        PlaceView.aggregate([
+            { $match: { lastShownAt: { $gte: windowStartDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $group: { _id: null, shown: { $sum: '$shownCount' }, engaged: { $sum: '$engageCount' }, viewers: { $addToSet: '$userId' } } },
+            { $project: { shown: 1, engaged: 1, viewers: { $size: '$viewers' } } }
+        ])
+    ]);
+    const usage = {
+        usersOnCooldown: cooldownCount,
+        todayTokens: meterAgg[0]?.tokens || 0,
+        todayPlaces: meterAgg[0]?.places || 0,
+        todayMeteredUsers: meterAgg[0]?.meteredUsers || 0,
+        cardViews: pvAgg[0]?.shown || 0,
+        cardEngagements: pvAgg[0]?.engaged || 0,
+        cardViewers: pvAgg[0]?.viewers || 0
+    };
 
     /* Aggregate onboarding preferences — same source as the admin
      * preference-stats panel (current saved preferences, travelers only). */
@@ -290,6 +337,9 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         cohorts,
         languages,
         surfaces,
+        searchModes,
+        mapUsers,
+        usage,
         quickActions,
         preferences,
         locations

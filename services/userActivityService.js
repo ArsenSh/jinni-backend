@@ -22,10 +22,11 @@ function surfaceFor(url) {
     if (url.includes('/explore')) return 'explore';
     if (url.startsWith('/api/itinerary')) return 'itinerary';
     if (url.startsWith('/api/saves')) return 'saves';
+    if (url.startsWith('/api/routing')) return 'map';
     return 'other';
 }
 
-function recordActivity(user, originalUrl) {
+function recordActivity(user, originalUrl, body) {
     try {
         // Admin/staff/business sessions would poison the retention read —
         // only real travelers count.
@@ -41,6 +42,11 @@ function recordActivity(user, originalUrl) {
         if (lastWrite.size > MAP_CAP) lastWrite.clear();
         lastWrite.set(key, now.getTime());
 
+        const inc = { requests: 1, [`surfaces.${surface}`]: 1 };
+        // Search-mode split: only chat/quick-action bodies carry nearbyMode.
+        if (body && typeof body.nearbyMode === 'boolean' && (surface === 'chat' || surface === 'quickAction')) {
+            inc[body.nearbyMode ? 'modes.nearby' : 'modes.discovery'] = 1;
+        }
         UserActivity.updateOne(
             { userId: user._id, day },
             {
@@ -50,7 +56,7 @@ function recordActivity(user, originalUrl) {
                     country: user.settings?.location?.country || '',
                     language: user.settings?.language || ''
                 },
-                $inc: { requests: 1, [`surfaces.${surface}`]: 1 }
+                $inc: inc
             },
             { upsert: true }
         ).catch(err => {

@@ -27,7 +27,16 @@ const userActivitySchema = new mongoose.Schema({
         explore:     { type: Number, default: 0 },
         itinerary:   { type: Number, default: 0 },
         saves:       { type: Number, default: 0 },
+        map:         { type: Number, default: 0 },   // /api/routing — map route/distance calculations
         other:       { type: Number, default: 0 }
+    },
+    // Search mode per request, when the request body carries the nearbyMode
+    // flag (chat + quick-action). nearby = around the user's GPS position;
+    // discovery = browsing a destination. Requests without the flag count in
+    // neither — this is a mode split of SEARCHES, not of all traffic.
+    modes: {
+        nearby:    { type: Number, default: 0 },
+        discovery: { type: Number, default: 0 }
     },
     country:  { type: String, default: '' },        // user's settings.location.country at activity time
     language: { type: String, default: '' },        // user's settings.language at activity time
