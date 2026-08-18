@@ -8788,6 +8788,17 @@ router.post('/track-interaction', auth, async (req, res) => {
                 { upsert: true },
             ).catch(err => console.warn('[views] watched promote failed:', err.message));
         }
+        // Global windowed log of button-level engagement (map/directions, Ask
+        // AI, more info, more images, shares…) — the per-business counters
+        // below can't answer "how often is this used overall / per user",
+        // which the marketing retention report needs. Fire-and-forget.
+        if (interactionType) {
+            Analytics.create({
+                type: 'place_interaction',
+                userId,
+                metadata: { action: interactionType, placeId: viewId || null }
+            }).catch(() => {});
+        }
         // Map each interactionType to the correct Business analytics counter.
         // Each action writes to its own dedicated field for granular dashboard reporting.
         if (verifiedId) {

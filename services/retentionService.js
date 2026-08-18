@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Analytics = require('../models/Analytics');
 const UserAILimit = require('../models/UserAILimit');
 const PlaceView = require('../models/PlaceView');
+const ChatSession = require('../models/ChatSession');
 
 /* Mirrors JinniChat.vue's quick-action list (same map as the admin
  * quick-action-stats panel — keep the two in sync). */
@@ -247,6 +248,41 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         cardViewers: pvAgg[0]?.viewers || 0
     };
 
+    /* Engagement actions over the window — chat sessions started, places
+     * saved/shared, likes/dislikes, View More, and the card buttons (map/
+     * directions, Ask AI, more info, more images — those four are logged
+     * globally only since the track-interaction log shipped, so they count
+     * from that deploy onward). */
+    const [engAgg, chatSessions] = await Promise.all([
+        Analytics.aggregate([
+            { $match: {
+                createdAt: { $gte: windowStartDate },
+                type: { $in: ['place_interaction', 'place_share', 'recommendation_feedback', 'message_feedback', 'view_more_clicked', 'place_unsaved'] },
+                ...userScope
+            } },
+            { $group: { _id: { t: '$type', a: '$metadata.action' }, n: { $sum: 1 } } }
+        ]),
+        ChatSession.countDocuments({ createdAt: { $gte: windowStartDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) })
+    ]);
+    const engCounts = {};
+    for (const r of engAgg) {
+        const key = r._id.t === 'place_interaction' ? (r._id.a || 'other') : r._id.t;
+        engCounts[key] = (engCounts[key] || 0) + r.n;
+    }
+    const engagement = {
+        chatSessions,
+        saved: engCounts.place_saved || 0,
+        unsaved: engCounts.place_unsaved || 0,
+        shares: (engCounts.place_share || 0),
+        cardFeedback: engCounts.recommendation_feedback || 0,
+        messageFeedback: engCounts.message_feedback || 0,
+        viewMore: engCounts.view_more_clicked || 0,
+        mapOpens: engCounts.map_open || 0,
+        askAi: engCounts.ai_ask || 0,
+        moreInfo: engCounts.info_open || 0,
+        moreImages: engCounts.more_images || 0
+    };
+
     /* Aggregate onboarding preferences — same source as the admin
      * preference-stats panel (current saved preferences, travelers only). */
     const [travelStylesAgg, interestsAgg] = await Promise.all([
@@ -340,6 +376,7 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         searchModes,
         mapUsers,
         usage,
+        engagement,
         quickActions,
         preferences,
         locations
