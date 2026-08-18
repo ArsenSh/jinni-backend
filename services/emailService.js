@@ -687,13 +687,27 @@ If you did not perform this action, please contact support immediately.
         }
     }
     
-    async sendStaffCredentialsEmail(email, name, tempPassword) {
+    async sendStaffCredentialsEmail(email, name, tempPassword, permissions = {}) {
         try {
-            const loginUrl = (process.env.FRONTEND_URL || 'https://jinni.ai').replace(/\/$/, '') + '/auth';
+            // Marketing-only accounts get marketing wording — a "validate
+            // businesses" welcome makes no sense to a marketing partner.
+            const isMarketing = !!permissions.viewMarketing && !permissions.validateBusinesses
+                && !permissions.manageDestinations && !permissions.moderateExplore;
+            const roleHeadline = isMarketing ? 'Your marketing dashboard account is ready' : 'Your validation account is ready';
+            const roleIntro = isMarketing
+                ? "An admin has created a Jinni account for you. After signing in you'll land on the Growth &amp; Retention dashboard — live user, retention and usage numbers for Jinni."
+                : 'An admin has created a Jinni staff account for you. You can use this account to review and validate business applications.';
+            const roleIntroText = isMarketing
+                ? "An admin has created a Jinni account for you. After signing in you'll land on the Growth & Retention dashboard — live user, retention and usage numbers for Jinni."
+                : 'An admin has created a Jinni staff account for you. You can use this account to review and validate business applications.';
+            const contactEmail = process.env.SUPPORT_EMAIL || process.env.EMAIL_USER;
+            const loginUrl = (process.env.FRONTEND_URL || 'https://jinni.travel').replace(/\/$/, '') + '/auth';
             const mailOptions = {
                 from: `"Jinni" <${process.env.EMAIL_USER}>`,
                 to: email,
-                subject: 'Your Jinni Staff Account — Credentials Inside',
+                // No "password"/"credentials" words in the subject — those are
+                // classic spam-filter triggers on top of a gmail.com sender.
+                subject: isMarketing ? 'Your Jinni marketing account is ready' : 'Your Jinni staff account is ready',
                 html: `
                     <!DOCTYPE html>
                     <html>
@@ -722,12 +736,12 @@ If you did not perform this action, please contact support immediately.
                     <body>
                         <div class="container">
                             <div class="header">
-                                <h1>Welcome to Jinni Staff</h1>
-                                <p>Your validation account is ready</p>
+                                <h1>Welcome to Jinni</h1>
+                                <p>${roleHeadline}</p>
                             </div>
                             <div class="content">
                                 <h2>Hello ${name || 'there'},</h2>
-                                <p>An admin has created a Jinni staff account for you. You can use this account to review and validate business applications.</p>
+                                <p>${roleIntro}</p>
                                 <div class="creds-box">
                                     <div class="creds-row">
                                         <div class="creds-label">Email</div>
@@ -745,7 +759,7 @@ If you did not perform this action, please contact support immediately.
                                     <strong>We strongly recommend changing your password immediately</strong> after your first login. You can do this from the sign-in page using the <em>"Forgot password?"</em> link to receive a reset code at this email address.
                                 </div>
                                 <p class="info-line">
-                                    If you didn't expect this account, please ignore this email and contact us at support@jinni.ai. The account stays dormant until first use.
+                                    If you didn't expect this account, please ignore this email and contact us at ${contactEmail}. The account stays dormant until first use.
                                 </p>
                             </div>
                             <div class="footer">
@@ -757,12 +771,11 @@ If you did not perform this action, please contact support immediately.
                     </html>
                 `,
                 text: `
-Welcome to Jinni Staff
+Welcome to Jinni
 
 Hello ${name || 'there'},
 
-An admin has created a Jinni staff account for you. You can use this account
-to review and validate business applications.
+${roleIntroText}
 
 Email:    ${email}
 Password: ${tempPassword}
@@ -774,7 +787,7 @@ login. You can do this from the sign-in page using the "Forgot password?"
 link to receive a reset code at this email address.
 
 If you didn't expect this account, please ignore this email and contact us
-at support@jinni.ai.
+at ${contactEmail}.
 
 © 2026 Jinni AI
                 `

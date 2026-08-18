@@ -1942,7 +1942,7 @@ router.post('/staff', async (req, res) => {
         let emailSent = false;
         if (sendEmail) {
             try {
-                await emailService.sendStaffCredentialsEmail(cleanEmail, staff.name, tempPassword);
+                await emailService.sendStaffCredentialsEmail(cleanEmail, staff.name, tempPassword, permissions);
                 emailSent = true;
             } catch (e) {
                 console.warn('[staff create] credentials email failed:', e.message);
