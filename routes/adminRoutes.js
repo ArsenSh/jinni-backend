@@ -2154,6 +2154,95 @@ router.delete('/staff/:id/permanent', async (req, res) => {
     }
 });
 
+// ── Monthly AI cost forecast (DeepSeek + Claude) ─────────────────────────────
+// Sibling of /google-usage/monthly, computed from AiProviderDailyStats. AI has
+// no free-tier caps (DeepSeek = prepaid balance, Claude = tier TPD), so the
+// forecast is about COST: month-to-date vs projected month-end per provider,
+// using the same 7-day-pace × growth (clamped 0.5–2×) model as Google.
+router.get('/ai-usage/monthly', async (req, res) => {
+    try {
+        const PROVIDERS = [
+            { key: 'deepseek', label: 'DeepSeek', tokenRate: 0.50 / 1e6, searchRate: 0 },
+            { key: 'claude',   label: 'Claude Haiku', tokenRate: 2.00 / 1e6, searchRate: 0.01 },
+        ];
+        const now = new Date();
+        const currentMonth = now.toISOString().slice(0, 7);
+        const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : currentMonth;
+        const isCurrent = month === currentMonth;
+
+        const first = await AiProviderDailyStats.findOne().sort({ date: 1 }).select('date').lean();
+        const months = [];
+        if (first) {
+            let m = first.date.slice(0, 7);
+            while (m <= currentMonth) {
+                months.push(m);
+                const [y, mo] = m.split('-').map(Number);
+                m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`;
+            }
+        }
+
+        const rows = await AiProviderDailyStats.find({ date: { $gte: month + '-01', $lte: month + '-31' } })
+            .select('date provider tokens queries searches').lean();
+        const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+        const dayOfMonth = isCurrent ? Number(now.toISOString().slice(8, 10)) : daysInMonth;
+        const daysRemaining = isCurrent ? daysInMonth - dayOfMonth : 0;
+
+        // Pace windows may reach into the previous month (early-month forecasts
+        // still need a baseline) — same approach as the Google forecast.
+        const paceWindow = async (endOffsetDays, len) => {
+            const end = new Date(now); end.setDate(end.getDate() - endOffsetDays);
+            const start = new Date(end); start.setDate(start.getDate() - (len - 1));
+            const ws = start.toISOString().slice(0, 10), we = end.toISOString().slice(0, 10);
+            const wr = await AiProviderDailyStats.find({ date: { $gte: ws, $lte: we } }).lean();
+            const sums = {};
+            for (const p of PROVIDERS) {
+                const mine = wr.filter(r => r.provider === p.key);
+                sums[p.key] = {
+                    tokens: mine.reduce((a, r) => a + (r.tokens || 0), 0) / len,
+                    searches: mine.reduce((a, r) => a + (r.searches || 0), 0) / len
+                };
+            }
+            return sums;
+        };
+        const [pace7, prev7] = isCurrent ? await Promise.all([paceWindow(0, 7), paceWindow(7, 7)]) : [null, null];
+
+        const providers = PROVIDERS.map(p => {
+            const mine = rows.filter(r => r.provider === p.key);
+            const tokens = mine.reduce((a, r) => a + (r.tokens || 0), 0);
+            const queries = mine.reduce((a, r) => a + (r.queries || 0), 0);
+            const searches = mine.reduce((a, r) => a + (r.searches || 0), 0);
+            const mtdCost = tokens * p.tokenRate + searches * p.searchRate;
+            let projTokens = null, projSearches = null, projCost = null, growth = null;
+            if (isCurrent) {
+                const baseT = pace7[p.key].tokens > 0 ? pace7[p.key].tokens : (dayOfMonth ? tokens / dayOfMonth : 0);
+                const baseS = pace7[p.key].searches > 0 ? pace7[p.key].searches : (dayOfMonth ? searches / dayOfMonth : 0);
+                growth = prev7[p.key].tokens > 0 ? Math.min(2, Math.max(0.5, pace7[p.key].tokens / prev7[p.key].tokens)) : 1;
+                projTokens = Math.round(tokens + baseT * growth * daysRemaining);
+                projSearches = Math.round(searches + baseS * growth * daysRemaining);
+                projCost = projTokens * p.tokenRate + projSearches * p.searchRate;
+            }
+            return {
+                key: p.key, label: p.label, tokens, queries, searches,
+                mtdCost: parseFloat(mtdCost.toFixed(2)),
+                projTokens, projSearches,
+                projCost: projCost === null ? null : parseFloat(projCost.toFixed(2)),
+                growth: growth === null ? null : parseFloat(growth.toFixed(2))
+            };
+        });
+
+        res.json({ success: true, data: {
+            month, months, isCurrent, daysInMonth, dayOfMonth, daysRemaining, providers,
+            totals: {
+                mtdCost: parseFloat(providers.reduce((a, p) => a + p.mtdCost, 0).toFixed(2)),
+                projCost: isCurrent ? parseFloat(providers.reduce((a, p) => a + (p.projCost || 0), 0).toFixed(2)) : null
+            }
+        }});
+    } catch (error) {
+        console.error('AI monthly forecast error:', error);
+        res.status(500).json({ success: false, error: 'Failed to build AI monthly forecast' });
+    }
+});
+
 // ── Live server vitals (the backend runs ON the Hetzner box, so os.* IS the
 // server) — powers the numeric rows in the Prices tab's Hetzner card. ────────
 router.get('/server-stats', async (req, res) => {
