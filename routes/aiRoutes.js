@@ -1726,8 +1726,9 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
 
             if (useClaudeChat) {
                 // ================= CLAUDE PROVIDER (web search optional) =========
+                const chatWsActions = Array.isArray(cfg.claudeWebSearchActionsChat) ? cfg.claudeWebSearchActionsChat : (cfg.claudeWebSearchActions || []);
                 const claudeWebSearch = cfg.claudeWebSearch &&
-                    (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(detectedActionType)) &&
+                    chatWsActions.includes(detectedActionType) &&
                     (await coverageService.marketInfo(effectiveLocation)).mode === 'open' &&   // contained market: no web search
                     (detectedActionType !== 'events' || await coverageService.webSearchAllowed(effectiveLocation));   // regional event-search switch
                 const controller = new AbortController();
@@ -8480,7 +8481,7 @@ router.delete('/chat-sessions/all', auth, async (req, res) => {
             return res.status(401).json({ error: 'User ID not found', debug: {hasReqUser: !!req.user, hasReqUserId: !!req.userId} });
         }
         const result = await ChatSession.deleteMany({ userId });
-        const user = await User.findById(userId).select('email name');
+        const user = await User.findById(userId).select('email name settings.language');   // settings.language: without it the deletion email always falls back to English
         if (user?.email) {emailService.sendChatSessionsDeletedEmail(user.email, user.name, user.settings?.language).then(() => console.log(`✅ Chat sessions deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send chat sessions deleted email:', err.message))}
         res.json({success: true, deletedCount: result.deletedCount, message: 'All chat sessions deleted successfully'});
     } catch (error) {
@@ -8808,7 +8809,7 @@ router.delete('/user/account', auth, async (req, res) => {
             console.error('❌ CRITICAL: No user ID found!');
             return res.status(401).json({error: 'User ID not found', debug: {hasReqUser: !!req.user, hasReqUserId: !!req.userId}});
         }
-        const user = await User.findById(userId).select('email name businessId');
+        const user = await User.findById(userId).select('email name businessId settings.language');
         // ── Cascade-delete business if this user owns one ─────────────────────
         // Look up by owner field (source of truth on Business side) and also
         // fall back to user.businessId in case the bidirectional link drifted.

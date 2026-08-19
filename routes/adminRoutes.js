@@ -2601,6 +2601,7 @@ router.get('/ai-provider', async (req, res) => {
                 claudeWebSearch:        cfg.claudeWebSearch,
                 claudeWebSearchMaxUses: cfg.claudeWebSearchMaxUses,
                 claudeWebSearchActions: cfg.claudeWebSearchActions,
+                claudeWebSearchActionsChat: cfg.claudeWebSearchActionsChat ?? cfg.claudeWebSearchActions,
                 googlePrefetch:         cfg.googlePrefetch,
                 googlePrefetchActions:  cfg.googlePrefetchActions,
                 googlePrefetchCount:    cfg.googlePrefetchCount,
@@ -2621,7 +2622,7 @@ router.patch('/ai-provider', async (req, res) => {
     try {
         const {
             aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
-            claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions,
+            claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions, claudeWebSearchActionsChat,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         } = req.body;
  
@@ -2643,7 +2644,7 @@ router.patch('/ai-provider', async (req, res) => {
  
         const cfg = await AppConfig.updateConfig({
             aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
-            claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions,
+            claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions, claudeWebSearchActionsChat,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         }, req.user?.id || null);
  
@@ -2658,6 +2659,7 @@ router.patch('/ai-provider', async (req, res) => {
 // GET: per-city × per-category cache counts, warmth % and effective gate state.
 router.get('/coverage', async (req, res) => {
     try {
+        if (req.query.fresh === '1') coverageService.invalidate();   // bypass the 10-min table cache
         res.json({ success: true, data: await coverageService.adminView() });
     } catch (error) {
         console.error('Get coverage error:', error);

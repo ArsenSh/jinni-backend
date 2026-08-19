@@ -110,6 +110,10 @@ const appConfigSchema = new mongoose.Schema({
     // master switch to disable entirely). Managed from the admin dashboard's
     // per-action picker. Default seeds events, where freshness matters most.
     claudeWebSearchActions: { type: [String], default: ['events'] },
+    // Same idea, but for CHAT turns (matched against the intent pre-pass
+    // category). Kept separate from the quick-action list so chat can search
+    // for e.g. events + hidden gems while quick actions search events only.
+    claudeWebSearchActionsChat: { type: [String], default: ['events'] },
 
     // ── Google candidate prefetch (quick-action shortlist) ─────────────────
     // Master switch: when on, quick-action-stream runs ONE Google Text Search
@@ -187,7 +191,7 @@ appConfigSchema.statics.getConfig = async function () {
 appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null) {
     const allowed = [
         'aiProviderChat', 'aiProviderQuickAction', 'aiEventsUseClaude', 'claudeModel',
-        'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
+        'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions', 'claudeWebSearchActionsChat',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
         'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces', 'zoneRadiusM',
