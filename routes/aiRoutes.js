@@ -1500,7 +1500,10 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         try {
             // ── Provider selection (DeepSeek default, Claude if toggled) ──────
             const cfg = await AppConfig.getConfig();
-            const useClaudeChat = cfg.aiProviderChat === 'claude';
+            // Events override: an event-intent chat turn goes to Claude even when
+            // chat runs DeepSeek — events need web search, which DeepSeek lacks.
+            const useClaudeChat = cfg.aiProviderChat === 'claude'
+                || (cfg.aiEventsUseClaude && detectedActionType === 'events');
             if (location) { req.body.location = { lat: parseFloat(location.lat), lng: parseFloat(location.lng), source: location.source || 'unknown' } }
 
             // ── Shared stream state (used by BOTH providers) ──────────────────
@@ -5519,7 +5522,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // live tap: 18,052 real input tokens vs ~600 estimated. Null for
                     // providers that report nothing; the estimate is then used unchanged.
                     let qaRealTokens = null;
-                    if (cfg.aiProviderQuickAction === 'claude') {
+                    // Events override: the events action goes to Claude even when
+                    // quick-actions run DeepSeek (events need web search).
+                    const qaUseClaude = cfg.aiProviderQuickAction === 'claude'
+                        || (cfg.aiEventsUseClaude && action === 'events');
+                    if (qaUseClaude) {
                         /* ── Events may search on refills; nothing else may ───────────────
                          * "View More" normally runs WITHOUT web search: restaurants, hotels
                          * and historical sites live in the place cache, so a refill is just
@@ -5660,7 +5667,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     const qaTokens = qaRealTokens != null
                         ? qaRealTokens
                         : Math.ceil(((aiPrompt?.length || 0) + (responseText?.length || 0)) / 4);
-                    AiProviderDailyStats.track(cfg.aiProviderQuickAction, { tokens: qaTokens, queries: 1, searches: qaSearchCount, endpoint: 'quick_action' }).catch(err => console.error('AiProviderDailyStats error:', err));
+                    AiProviderDailyStats.track(qaUseClaude ? 'claude' : 'deepseek', { tokens: qaTokens, queries: 1, searches: qaSearchCount, endpoint: 'quick_action' }).catch(err => console.error('AiProviderDailyStats error:', err));
                     // console.log('\nAI response received:', responseText);
                     let bracketedNames = extractBracketedNames(responseText);
                     // For the events action, each bracket may carry ISO dates

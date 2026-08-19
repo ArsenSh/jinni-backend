@@ -2586,6 +2586,7 @@ router.get('/ai-provider', async (req, res) => {
             data: {
                 aiProviderChat:         cfg.aiProviderChat,
                 aiProviderQuickAction:  cfg.aiProviderQuickAction,
+                aiEventsUseClaude:      cfg.aiEventsUseClaude,
                 claudeModel:            cfg.claudeModel,
                 claudeWebSearch:        cfg.claudeWebSearch,
                 claudeWebSearchMaxUses: cfg.claudeWebSearchMaxUses,
@@ -2609,7 +2610,7 @@ router.get('/ai-provider', async (req, res) => {
 router.patch('/ai-provider', async (req, res) => {
     try {
         const {
-            aiProviderChat, aiProviderQuickAction, claudeModel,
+            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
             claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         } = req.body;
@@ -2631,7 +2632,7 @@ router.patch('/ai-provider', async (req, res) => {
         }
  
         const cfg = await AppConfig.updateConfig({
-            aiProviderChat, aiProviderQuickAction, claudeModel,
+            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
             claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         }, req.user?.id || null);

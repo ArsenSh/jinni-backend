@@ -20,6 +20,13 @@ const appConfigSchema = new mongoose.Schema({
     // (cheap, easy) while leaving chat-stream on DeepSeek, or vice versa.
     aiProviderChat:        { type: String, enum: ['deepseek', 'claude'], default: 'deepseek' },
     aiProviderQuickAction: { type: String, enum: ['deepseek', 'claude'], default: 'deepseek' },
+    /* Events override: even when a surface runs DeepSeek, anything event-flavored
+     * is routed to Claude — the 'events' quick action, and chat messages whose
+     * intent pre-pass detects events. Exists because events are the one category
+     * that needs web search (fresh, dated, uncacheable), which only Claude has;
+     * everything else stays on the cheap provider. Web-search rules
+     * (claudeWebSearch master switch + claudeWebSearchActions) still apply. */
+    aiEventsUseClaude:     { type: Boolean, default: false },
 
     // ── Claude options (ignored entirely when provider is 'deepseek') ──────
     claudeModel:            { type: String,  default: 'claude-haiku-4-5-20251001' },
@@ -167,7 +174,7 @@ appConfigSchema.statics.getConfig = async function () {
 // Patch config from the admin page and refresh the cache immediately.
 appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null) {
     const allowed = [
-        'aiProviderChat', 'aiProviderQuickAction', 'claudeModel',
+        'aiProviderChat', 'aiProviderQuickAction', 'aiEventsUseClaude', 'claudeModel',
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
