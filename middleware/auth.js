@@ -1,4 +1,5 @@
 const { isPremiumExpired } = require('../utils/premium');
+const requestContext = require('../services/requestContext');
 const { recordActivity } = require('../services/userActivityService');
 const UserAILimit = require('../models/UserAILimit');
 const jwt = require('jsonwebtoken');
@@ -74,6 +75,11 @@ module.exports = async (req, res, next) => {
         // inside the service; skips admin/staff/business roles. Body is passed
         // for the nearby-vs-discovery search-mode split (chat/quick-action).
         recordActivity(user, req.originalUrl, req.body);
+        // Per-request attribution context: deep call sites (googleService)
+        // read the userId from here to bill Google calls to the right user.
+        if (user.role === 'user' || !user.role) {
+            return requestContext.als.run({ userId: String(user._id) }, () => next());
+        }
         next();
     } catch (error) {
         // Database unreachable → 503, and DON'T log the full stack on every

@@ -25,6 +25,11 @@ const callStack = new Map();
 
 function trackApiCall(apiName, requestId = null) {
     globalApiStats[apiName]++;
+    // Per-user attribution (fire-and-forget; lazy requires avoid load cycles).
+    try {
+        const { userId } = require('./requestContext').get();
+        if (userId) require('../models/UserGoogleUsage').track(userId, apiName);
+    } catch (e) { /* attribution must never break a Google call */ }
     const stack = new Error().stack;
     const caller = stack.split('\n')[3]?.trim() || 'unknown';
     const callKey = `${apiName}-${requestId || 'no-id'}`;

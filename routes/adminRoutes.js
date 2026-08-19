@@ -24,6 +24,7 @@ const blocklistService   = require('../services/blocklistService');
 const AppConfig = require('../models/AppConfig');
 const AiProviderDailyStats = require('../models/AiProviderDailyStats');
 const UserActivity = require('../models/UserActivity');
+const UserGoogleUsage = require('../models/UserGoogleUsage');
 
 // All routes require auth + admin
 router.use(auth, admin);
@@ -2680,6 +2681,45 @@ router.patch('/ai-provider', async (req, res) => {
     } catch (error) {
         console.error('Update ai-provider error:', error);
         res.status(500).json({ success: false, error: 'Failed to update AI provider config' });
+    }
+});
+
+// ── Per-user Google usage (trigger attribution) ──────────────────────────────
+// Avg billed Google calls + cost per user for a month, optionally filtered to
+// users whose home/destination country matches. Counting starts at deploy —
+// calls made before UserGoogleUsage existed were never attributed.
+router.get('/google-usage/per-user', async (req, res) => {
+    try {
+        const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : new Date().toISOString().slice(0, 7);
+        const country = (req.query.country || '').trim();
+        const RATES = { findPlaces: 0.032, prefetchSearch: 0.032, getPlaceDetails: 0.020, imageDownload: 0.007, reverseGeocode: 0.005 };
+        const userMatch = { role: { $nin: ['staff', 'admin'] } };
+        if (country) userMatch['settings.location.countryName'] = new RegExp(`^${country.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        const [ids, countries] = await Promise.all([
+            User.find(userMatch).distinct('_id'),
+            User.distinct('settings.location.countryName', { role: { $nin: ['staff', 'admin'] }, 'settings.location.countryName': { $nin: [null, ''] } }),
+        ]);
+        const agg = await UserGoogleUsage.aggregate([
+            { $match: { month, userId: { $in: ids } } },
+            { $group: { _id: null, users: { $sum: 1 },
+                findPlaces: { $sum: '$findPlaces' }, prefetchSearch: { $sum: '$prefetchSearch' },
+                getPlaceDetails: { $sum: '$getPlaceDetails' }, imageDownload: { $sum: '$imageDownload' },
+                reverseGeocode: { $sum: '$reverseGeocode' } } },
+        ]);
+        const t = agg[0] || {};
+        const calls = ['findPlaces', 'prefetchSearch', 'getPlaceDetails', 'imageDownload', 'reverseGeocode']
+            .reduce((sum, k) => sum + (t[k] || 0), 0);
+        const cost = Object.entries(RATES).reduce((sum, [k, r]) => sum + (t[k] || 0) * r, 0);
+        const users = t.users || 0;
+        res.json({ success: true, data: {
+            month, country: country || null, attributedUsers: users, totalUsersInScope: ids.length,
+            calls, cost: Math.round(cost * 1000) / 1000,
+            perUser: { calls: users ? Math.round((calls / users) * 10) / 10 : 0, cost: users ? Math.round((cost / users) * 1000) / 1000 : 0 },
+            countries: countries.sort(),
+        } });
+    } catch (error) {
+        console.error('Per-user google usage error:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch per-user Google usage' });
     }
 });
 
