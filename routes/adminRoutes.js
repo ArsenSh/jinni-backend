@@ -2294,6 +2294,43 @@ router.post('/limits', async (req, res) => {
     }
 });
 
+// ── Edit a Jinni-found event (admin Places tab modal). Staff endpoints only
+// moderate status; this fixes the DATA — wrong dates, misspelled names,
+// unresolved venues, missing posters. ────────────────────────────────────────
+router.patch('/ai-events/:id/edit', async (req, res) => {
+    try {
+        const AiFoundEvent = require('../models/AiFoundEvent');
+        const doc = await AiFoundEvent.findById(req.params.id);
+        if (!doc) return res.status(404).json({ success: false, error: 'Event not found' });
+        for (const f of ['name', 'venueName', 'city', 'country', 'sourceUrl', 'image']) {
+            if (typeof req.body[f] === 'string') {
+                const v = req.body[f].trim();
+                if (f === 'name') { if (v) doc.name = v; }         // name must stay non-empty
+                else doc[f] = v || null;
+            }
+        }
+        if (req.body.startDate) {
+            const d = new Date(req.body.startDate);
+            if (!isNaN(d)) doc.startDate = d;
+        }
+        if (req.body.endDate !== undefined) {
+            const d = req.body.endDate ? new Date(req.body.endDate) : null;
+            doc.endDate = d && !isNaN(d) ? d : null;
+        }
+        // Keep the TTL consistent with the (possibly changed) dates: un-hidden
+        // docs self-clean 7 days after the event passes; hidden stay permanent.
+        if (doc.status !== 'hidden') {
+            doc.expireAt = new Date((doc.endDate || doc.startDate).getTime() + 7 * 24 * 3600 * 1000);
+        }
+        doc.moderatedBy = req.user.id;
+        await doc.save();
+        res.json({ success: true, data: doc.toObject() });
+    } catch (error) {
+        console.error('AI event edit error:', error);
+        res.status(500).json({ success: false, error: 'Failed to edit event' });
+    }
+});
+
 // ── AI balances & runway (prepaid model — unlike Google there are no monthly
 // free caps: the question is "how much money is left inside each provider and
 // how much to add for next month"). DeepSeek balance is fetched live from its

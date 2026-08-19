@@ -198,7 +198,15 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     /* What people ask for — quick-action categories + free chat (windowed).
      * Same Analytics events the admin quick-action-stats panel reads. */
     const windowStartDate = new Date(windowStart + 'T00:00:00Z');
-    const userScope = filterIds ? { userId: { $in: filterIds } } : {};
+    /* ALL Analytics/meter-based counts are scoped to true travelers — the
+     * retention rollup already excludes staff/admin by construction, but raw
+     * Analytics events don't carry roles, and the admin's own testing must
+     * not pollute marketing numbers. */
+    let travelerScopeIds = filterIds;
+    if (!travelerScopeIds) {
+        travelerScopeIds = (await User.find({ role: TRAVELER_ROLE }).select('_id').lean()).map(d => d._id);
+    }
+    const userScope = { userId: { $in: travelerScopeIds } };
     const [qaAgg, chatAgg] = await Promise.all([
         Analytics.aggregate([
             { $match: { type: 'quick_action_used', createdAt: { $gte: windowStartDate }, ...userScope } },
@@ -223,12 +231,12 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     const startTodayDate = new Date(today + 'T00:00:00Z');
     const [cooldownAgg, meterAgg, pvAgg] = await Promise.all([
         UserAILimit.aggregate([
-            { $match: { cooldownUntil: { $gt: new Date() }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $match: { cooldownUntil: { $gt: new Date() }, userId: { $in: travelerScopeIds } } },
             { $group: { _id: '$isPremium', n: { $sum: 1 } } }
         ]),
         // Grouped by tier so the card can split free vs premium consumption
         UserAILimit.aggregate([
-            { $match: { 'dailyUsage.lastResetDate': { $gte: startTodayDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $match: { 'dailyUsage.lastResetDate': { $gte: startTodayDate }, userId: { $in: travelerScopeIds } } },
             { $group: {
                 _id: '$isPremium',
                 tokens: { $sum: '$dailyUsage.tokensUsed' },
@@ -237,7 +245,7 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
             } }
         ]),
         PlaceView.aggregate([
-            { $match: { lastShownAt: { $gte: windowStartDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) } },
+            { $match: { lastShownAt: { $gte: windowStartDate }, userId: { $in: travelerScopeIds } } },
             { $group: { _id: null, shown: { $sum: '$shownCount' }, engaged: { $sum: '$engageCount' }, viewers: { $addToSet: '$userId' } } },
             { $project: { shown: 1, engaged: 1, viewers: { $size: '$viewers' } } }
         ])
@@ -276,7 +284,7 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
             } },
             { $group: { _id: { t: '$type', a: '$metadata.action' }, n: { $sum: 1 } } }
         ]),
-        ChatSession.countDocuments({ createdAt: { $gte: windowStartDate }, ...(filterIds ? { userId: { $in: filterIds } } : {}) })
+        ChatSession.countDocuments({ createdAt: { $gte: windowStartDate }, userId: { $in: travelerScopeIds } })
     ]);
     const engCounts = {};
     for (const r of engAgg) {
