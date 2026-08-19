@@ -45,6 +45,14 @@ class ImageStorageService {
                         }
                         console.log(`  📥 Downloading image ${index + 1} from: ${imageUrl.substring(0, 80)}...`);
                         const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000, maxRedirects: 5 });
+                        // Per-user billing attribution at the TRUE billing point: each
+                        // successful photo fetch is one Place Photos SKU ($0.007).
+                        // Cache-served images never reach this code. Lazy requires
+                        // avoid load cycles; failures must never break a download.
+                        try {
+                            const { userId } = require('./requestContext').get();
+                            if (userId) require('../models/UserGoogleUsage').track(userId, 'imageDownload');
+                        } catch (e) { /* attribution only */ }
                         const contentType = response.headers['content-type'] || 'image/jpeg';
                         console.log(`  ✅ Image ${index + 1} downloaded (${(response.data.length / 1024).toFixed(1)} KB, ${contentType})`);
                         return {photoReference, width, height, imageData: Buffer.from(response.data), contentType, storedAt: new Date()};

@@ -26,9 +26,13 @@ const callStack = new Map();
 function trackApiCall(apiName, requestId = null) {
     globalApiStats[apiName]++;
     // Per-user attribution (fire-and-forget; lazy requires avoid load cycles).
+    // imageDownload is attributed in imageStorageService at the actual photo
+    // fetch instead — counting it here too would double-bill the user.
     try {
-        const { userId } = require('./requestContext').get();
-        if (userId) require('../models/UserGoogleUsage').track(userId, apiName);
+        if (apiName !== 'imageDownload') {
+            const { userId } = require('./requestContext').get();
+            if (userId) require('../models/UserGoogleUsage').track(userId, apiName);
+        }
     } catch (e) { /* attribution must never break a Google call */ }
     const stack = new Error().stack;
     const caller = stack.split('\n')[3]?.trim() || 'unknown';
