@@ -32,7 +32,7 @@ const Business = require('../models/Business');
 const AppConfig = require('../models/AppConfig');
 
 const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
-const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30, jinni_events: 20 };
+const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30, jinni_events: 30 };
 // The admin table also shows Jinni-found events (AiFoundEvent, non-hidden) as
 // an informational column. It is NOT in CATEGORIES: the Google gate never
 // consults it — event listings come from Claude web search, not Google.
@@ -198,9 +198,57 @@ async function decide(action, loc) {
     return { allowed: warmth < cutoff, reason: warmth < cutoff ? 'cold' : 'warm', city: city.key, warmth: Math.round(warmth) };
 }
 
+// ── Market gating (admin Coverage tab, per country) ─────────────────────────
+// 'open' (default)   — normal operation.
+// 'contained'        — market alive but serves owned data only: no Google, no
+//                      web search. Growth continues on the cache at near-zero
+//                      marginal cost. Applied inside googleAllowed().
+// 'closed'           — app "hasn't arrived" here: chat/quick-action reply with
+//                      a friendly localized message BEFORE any AI/Google spend.
+// Country resolution reuses the coverage city table (nearest centroid) — no
+// geocode call. Unknown country / error → open (fail-open, like the gate).
+async function marketInfo(loc) {
+    try {
+        const cfg = await AppConfig.getConfig();
+        const ms = cfg.marketStatus || {};
+        if (!Object.keys(ms).length) return { mode: 'open' };
+        const lat = Number(loc && loc.lat), lng = Number(loc && loc.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { mode: 'open' };
+        const city = nearestCity(await getTable(), lat, lng);
+        if (!city || !city.country) return { mode: 'open' };
+        const entry = ms[city.country];
+        if (!entry || !entry.mode || entry.mode === 'open') return { mode: 'open', country: city.country };
+        return { mode: entry.mode, country: city.country, eta: entry.eta || null };
+    } catch (e) {
+        console.warn('[coverage] marketInfo failed, treating as open:', e.message);
+        return { mode: 'open' };
+    }
+}
+
+// "Jinni hasn't arrived yet" — warm launch-announcement tone, not a rejection.
+const MARKET_CLOSED_MSG = {
+    en: (eta) => `✨ Jinni hasn't arrived in this corner of the world yet — it's still on my travel list${eta ? ` (planned arrival: ${eta})` : ''}. When the lamp lands here, you'll be among the first to explore with me. Stay tuned! 🧞`,
+    ru: (eta) => `✨ Джинн ещё не прибыл в эти края — они пока в моём списке путешествий${eta ? ` (планируемое прибытие: ${eta})` : ''}. Когда лампа приземлится здесь, вы одними из первых отправитесь со мной исследовать. Следите за новостями! 🧞`,
+    hy: (eta) => `✨ Ջիննին դեռ չի հասել աշխարհի այս անկյունը — այն դեռ իմ ճամփորդական ցուցակում է${eta ? ` (նախատեսվող ժամանումը՝ ${eta})` : ''}. Երբ կախարդական լամպը վայրէջք կատարի այստեղ, դուք առաջիններից կլինեք։ 🧞`,
+    fr: (eta) => `✨ Jinni n'est pas encore arrivé dans ce coin du monde — il figure toujours sur ma liste de voyage${eta ? ` (arrivée prévue : ${eta})` : ''}. Dès que la lampe atterrira ici, vous serez parmi les premiers à explorer avec moi ! 🧞`,
+    ar: (eta) => `✨ لم يصل جيني إلى هذا الركن من العالم بعد — ما زال على قائمة رحلاتي${eta ? ` (الوصول المتوقع: ${eta})` : ''}. عندما يهبط المصباح هنا، ستكونون من أوائل المستكشفين معي! 🧞`,
+    zh: (eta) => `✨ Jinni 还没有到达世界的这个角落 — 它还在我的旅行清单上${eta ? `（预计到达：${eta}）` : ''}。当神灯降落在这里时，你将是最早和我一起探索的人。敬请期待！🧞`,
+};
+function closedMessage(lang, eta) {
+    const fn = MARKET_CLOSED_MSG[String(lang || 'en').slice(0, 2)] || MARKET_CLOSED_MSG.en;
+    return fn(eta);
+}
+
 // The one call the request paths use. Never throws.
 async function googleAllowed(action, loc) {
     try {
+        // A contained or closed market blocks Google for EVERY category,
+        // independent of the warmth gate's master switch.
+        const m = await marketInfo(loc);
+        if (m.mode !== 'open') {
+            console.log(`[coverage] Google OFF — market ${m.mode} (${m.country})`);
+            return false;
+        }
         const d = await decide(action, loc);
         if (!d.allowed) console.log(`[coverage] Google OFF for action=${action} @ ${d.city} (${d.reason}${d.warmth != null ? ` ${d.warmth}%` : ''})`);
         return d.allowed;
@@ -246,6 +294,7 @@ async function adminView() {
         categories: TABLE_CATEGORIES,
         defaultTargets: { ...DEFAULT_TARGETS, ...(cfg.coverageTargets || {}) },
         config: {
+            marketStatus: cfg.marketStatus || {},
             coverageGate: !!cfg.coverageGate,
             coverageCutoffPct: cutoff,
             coverageTargets: cfg.coverageTargets || {},
@@ -258,4 +307,4 @@ async function adminView() {
 
 function invalidate() { _table = null; _tableAt = 0; }
 
-module.exports = { CATEGORIES, DEFAULT_TARGETS, googleAllowed, decide, adminView, invalidate };
+module.exports = { CATEGORIES, DEFAULT_TARGETS, googleAllowed, decide, adminView, invalidate, marketInfo, closedMessage };

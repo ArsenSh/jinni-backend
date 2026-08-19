@@ -2668,7 +2668,7 @@ router.get('/coverage', async (req, res) => {
 // POST: save gate config (master switch, cutoff %, targets, per-cell overrides).
 router.post('/coverage', async (req, res) => {
     try {
-        const { coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides } = req.body;
+        const { coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides, marketStatus } = req.body;
         if (coverageCutoffPct !== undefined && (!Number.isFinite(Number(coverageCutoffPct)) || coverageCutoffPct < 10 || coverageCutoffPct > 200)) {
             return res.status(400).json({ success: false, error: 'coverageCutoffPct must be 10–200' });
         }
@@ -2681,7 +2681,11 @@ router.post('/coverage', async (req, res) => {
             c && typeof c === 'object' && Object.values(c).every(v => ['auto', 'on', 'off'].includes(v))))) {
             return res.status(400).json({ success: false, error: 'overrides must be auto/on/off' });
         }
-        await AppConfig.updateConfig({ coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides }, req.user?.id || null);
+        if (marketStatus !== undefined && !(marketStatus && typeof marketStatus === 'object' && Object.values(marketStatus).every(v =>
+            v && typeof v === 'object' && ['open', 'contained', 'closed'].includes(v.mode) && (v.eta === undefined || v.eta === null || (typeof v.eta === 'string' && v.eta.length <= 40))))) {
+            return res.status(400).json({ success: false, error: 'marketStatus entries must be { mode: open|contained|closed, eta?: string }' });
+        }
+        await AppConfig.updateConfig({ coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides, marketStatus }, req.user?.id || null);
         coverageService.invalidate();
         res.json({ success: true, data: await coverageService.adminView() });
     } catch (error) {

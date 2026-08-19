@@ -94,6 +94,9 @@ const appConfigSchema = new mongoose.Schema({
     coverageTargets:     { type: mongoose.Schema.Types.Mixed, default: {} },
     coverageCityTargets: { type: mongoose.Schema.Types.Mixed, default: {} },
     coverageOverrides:   { type: mongoose.Schema.Types.Mixed, default: {} },
+    /* Per-country market switch: { "Georgia": { mode: 'contained'|'closed', eta: 'Q1 2027' } }.
+     * Absent/'open' = normal. See coverageService.marketInfo(). */
+    marketStatus:        { type: mongoose.Schema.Types.Mixed, default: {} },
     /* Discover each country's event sources automatically (one small AI call
      * per country per week, verified before use). A manual
      * claudeWebSearchAllowedDomains always wins where it is set; this only
@@ -192,7 +195,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',
-        'coverageGate', 'coverageCutoffPct', 'coverageTargets', 'coverageCityTargets', 'coverageOverrides',
+        'coverageGate', 'coverageCutoffPct', 'coverageTargets', 'coverageCityTargets', 'coverageOverrides', 'marketStatus',
     ];
     const set = {};
     for (const k of allowed) if (patch[k] !== undefined) set[k] = patch[k];

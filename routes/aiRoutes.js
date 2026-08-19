@@ -892,6 +892,22 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         }
         // console.log('\n🎯 EFFECTIVE LOCATION:', effectiveLocation);
 
+        // ── Market gate: a 'closed' country answers with the friendly
+        // "Jinni hasn't arrived yet" message BEFORE any AI/Google spend.
+        // Same token/complete shape as the itinerary clarifier early-returns,
+        // so JinniChat renders it as an ordinary Jinni reply.
+        if (effectiveLocation && !effectiveLocation.error) {
+            const market = await coverageService.marketInfo(effectiveLocation);
+            if (market.mode === 'closed') {
+                const closedMsg = coverageService.closedMessage(user?.settings?.language || req.body?.language, market.eta);
+                res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8','Cache-Control': 'no-cache','Connection': 'keep-alive','Access-Control-Allow-Origin': '*','Access-Control-Allow-Headers': 'Cache-Control, Authorization, Content-Type','Access-Control-Expose-Headers': 'X-Usage-Tokens-Used, X-Usage-Tokens-Remaining, X-Usage-Places-Viewed, X-Usage-Places-Remaining, X-Usage-Requests-Remaining'});
+                res.write(`data: ${JSON.stringify({ type: 'token', content: closedMsg })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'complete', contentParts: [{ type: 'text', content: closedMsg, index: 0 }], recommendations: [], metadata: { marketClosed: true, country: market.country } })}\n\n`);
+                console.log(`[market] chat blocked — ${market.country} is closed`);
+                return res.end();
+            }
+        }
+
         // Pre-pass decides if weather data is actually needed (the old regex
         // matched \b(week|days|hot|wear|pack)\b — "what should I wear tonight"
         // fetched a forecast). Fallback tier still uses the old regex.
@@ -1695,7 +1711,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
             if (useClaudeChat) {
                 // ================= CLAUDE PROVIDER (web search optional) =========
                 const claudeWebSearch = cfg.claudeWebSearch &&
-                    (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(detectedActionType));
+                    (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(detectedActionType)) &&
+                    (await coverageService.marketInfo(effectiveLocation)).mode === 'open';   // contained market: no web search
                 const controller = new AbortController();
                 try {
                     for await (const ev of claudeService.streamChat({
@@ -5211,6 +5228,17 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
         const requestedCount = Math.min(Math.max(count, 3), maxCount);
         // console.log('Count calculation:', { requested: count, max: maxCount, final: requestedCount });
         res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8','Cache-Control': 'no-cache','Connection': 'keep-alive','Access-Control-Allow-Origin': '*','Access-Control-Allow-Headers': 'Cache-Control, Authorization, Content-Type','Access-Control-Expose-Headers': 'X-Usage-Tokens-Used, X-Usage-Tokens-Remaining, X-Usage-Places-Viewed, X-Usage-Places-Remaining, X-Usage-Requests-Remaining'});
+        // ── Market gate: closed country → friendly message, zero spend ──
+        {
+            const market = await coverageService.marketInfo(effectiveLocation);
+            if (market.mode === 'closed') {
+                const closedMsg = coverageService.closedMessage(userLanguage, market.eta);
+                res.write(`data: ${JSON.stringify({ type: 'token', content: closedMsg })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'complete', recommendations: [], metadata: { marketClosed: true, country: market.country, action, timestamp: new Date() } })}\n\n`);
+                console.log(`[market] quick-action blocked — ${market.country} is closed`);
+                return res.end();
+            }
+        }
         let responseText;
         // True once we know the model returned a usable list of place NAMES (bracketed
         // or salvaged from a comma list), as opposed to genuine prose. Set inside the
@@ -5590,7 +5618,8 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             : (Array.isArray(cfg.claudeWebSearchAllowedDomains) ? cfg.claudeWebSearchAllowedDomains : []);
                         if (qaSearchDomains.length) console.log(`[search] ${action}: restricted to ${qaSearchDomains.length} domain(s): ${qaSearchDomains.join(', ')}`);
                         const claudeWebSearch = (isFirstTap || (action === 'events' && !feedCanRefill)) && cfg.claudeWebSearch &&
-                            (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action));
+                            (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action)) &&
+                            (await coverageService.marketInfo(effectiveLocation)).mode === 'open';   // contained market: no web search
                         if (action === 'events' && !isFirstTap) {
                             console.log(`[quick-action] events refill: web search ${claudeWebSearch ? 'ON' : `OFF — ${feedForRefill.length} feed event(s) can refill instead (saves ~1 search + ~18k tokens)`}`);
                         }
