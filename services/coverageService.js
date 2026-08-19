@@ -181,17 +181,29 @@ function targetFor(cfg, cityKey, action) {
     return t > 0 ? t : DEFAULT_TARGETS[action];
 }
 
+// Override lookup tolerant of language-variant keys: the merged city's key
+// can shift as counts change ("Tbilisi|Georgia" vs "T'bilisi|Georgia"), so an
+// override stored under ANY member name of the merged city still applies.
+function overrideFor(cfg, city, action) {
+    const o = cfg.coverageOverrides || {};
+    const keys = [city.key, ...(city.aliases || []).map(a => `${a}|${city.country || ''}`)];
+    for (const k of keys) { const v = o[k] && o[k][action]; if (v) return v; }
+    return null;
+}
+
 async function decide(action, loc) {
     const cfg = await AppConfig.getConfig();
-    if (!cfg.coverageGate) return { allowed: true, reason: 'gate_off' };
     if (!CATEGORIES.includes(action)) return { allowed: true, reason: 'exempt' };
     const lat = Number(loc && loc.lat), lng = Number(loc && loc.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { allowed: true, reason: 'no_location' };
     const city = nearestCity(await getTable(), lat, lng);
     if (!city) return { allowed: true, reason: 'cold_area' };
-    const ov = cfg.coverageOverrides && cfg.coverageOverrides[city.key] && cfg.coverageOverrides[city.key][action];
+    // Explicit per-cell force clicks are the admin's direct order — they apply
+    // regardless of the master switch. The master gates only the AUTO engine.
+    const ov = overrideFor(cfg, city, action);
     if (ov === 'on') return { allowed: true, reason: 'forced_on', city: city.key };
     if (ov === 'off') return { allowed: false, reason: 'forced_off', city: city.key };
+    if (!cfg.coverageGate) return { allowed: true, reason: 'gate_off' };
     const target = targetFor(cfg, city.key, action);
     const warmth = ((city.counts[action] || 0) / target) * 100;
     const cutoff = Number(cfg.coverageCutoffPct) || 90;
@@ -270,11 +282,11 @@ async function adminView() {
             const count = c.counts[a] || 0;
             const target = targetFor(cfg, c.key, a);
             const warmth = Math.round((count / target) * 100);
-            const ov = (cfg.coverageOverrides && cfg.coverageOverrides[c.key] && cfg.coverageOverrides[c.key][a]) || 'auto';
+            const ov = overrideFor(cfg, c, a) || 'auto';
             const effective = a === 'jinni_events' ? 'info'   // never gated — web-search pipe
-                : !cfg.coverageGate ? 'gate_off'
                 : ov === 'on' ? 'forced_on'
                 : ov === 'off' ? 'forced_off'
+                : !cfg.coverageGate ? 'gate_off'
                 : warmth >= cutoff ? 'auto_off' : 'auto_on';
             cats[a] = { count, target, warmth, override: ov, effective };
         }
