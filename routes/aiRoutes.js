@@ -7048,7 +7048,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                      * dates, no eventSchedule — so they are never captured as events by
                      * the validator queue and never expire. A real venue is never a
                      * wrong answer; an invented date always is. */
-                    if (action === 'events' && effectiveLocation && recommendations.length < requestedCount) {
+                    if (action === 'events' && effectiveLocation && recommendations.length < requestedCount
+                        // Coverage gate: this fallback runs its own Text Search + details
+                        // calls, so a city with Google forced off must skip it too — it
+                        // was the one Google path the events gate didn't cover.
+                        && await coverageService.googleAllowed('events', effectiveLocation)) {
                         try {
                             const haveV = new Set(recommendations.map(r => (r.name || '').toLowerCase().trim()));
                             const exclV = new Set((excludeNames || []).map(n => (n || '').toLowerCase().trim()));
@@ -7088,6 +7092,13 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                                 vAdded++;
                             }
                             if (vAdded > 0) console.log(`[quick-action] venue backfill: added ${vAdded} real event venue(s), no dates invented (now ${recommendations.length}/${requestedCount})`);
+                            // Tag served venues as 'events' inventory so the coverage
+                            // table's Event venues column counts them (fire-and-forget).
+                            if (vAdded > 0) {
+                                const ids = recommendations.map(r => r.place_id).filter(Boolean);
+                                PlaceCache.updateMany({ placeId: { $in: ids }, actionsCurated: { $ne: true } }, { $addToSet: { actions: 'events' } })
+                                    .catch(err => console.warn('[quick-action] venue tag failed:', err.message));
+                            }
                         } catch (venueErr) { console.warn('[quick-action] venue backfill failed:', venueErr.message) }
                     }
                     // console.log(`\nFinal recommendations: ${recommendations.length} places`);
