@@ -285,9 +285,16 @@ router.patch('/explore-places/:placeId/status', requirePermission('moderateExplo
         const filter = scope.$or
             ? { $and: [{ placeId: req.params.placeId }, scope] }
             : { placeId: req.params.placeId };
+        // Hiding removes the place from every surface (Explore, chat, quick
+        // actions, itinerary — serving queries all exclude 'hidden'), so its
+        // stored images are dead weight: purge them to reclaim DB space. If
+        // the place is later unhidden and served again, images re-fetch on
+        // demand (one Photos call each, cached again for everyone).
+        const set = { 'explore.status': status, 'explore.reviewedBy': req.user._id || req.user.id || null, 'explore.reviewedAt': new Date() };
+        if (status === 'hidden') { set.photos = []; set.imagesStored = false; }
         const doc = await PlaceCache.findOneAndUpdate(
             filter,
-            { $set: { 'explore.status': status, 'explore.reviewedBy': req.user._id || req.user.id || null, 'explore.reviewedAt': new Date() } },
+            { $set: set },
             { new: true }
         ).select('placeId name explore').lean();
         if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });

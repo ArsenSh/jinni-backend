@@ -1375,9 +1375,13 @@ router.patch('/places/:placeId/explore-status', async (req, res) => {
         if (!['visible', 'hidden', 'verified'].includes(status)) {
             return res.status(400).json({ success: false, error: 'status must be visible | hidden | verified' });
         }
+        // Hidden = removed from every surface, so stored images are purged to
+        // reclaim space (re-fetched on demand if ever unhidden and served).
+        const statusSet = { 'explore.status': status, 'explore.reviewedBy': req.user?.id || null, 'explore.reviewedAt': new Date() };
+        if (status === 'hidden') { statusSet.photos = []; statusSet.imagesStored = false; }
         const doc = await PlaceCache.findOneAndUpdate(
             { placeId: req.params.placeId },
-            { $set: { 'explore.status': status, 'explore.reviewedBy': req.user?.id || null, 'explore.reviewedAt': new Date() } },
+            { $set: statusSet },
             { new: true }
         ).select('placeId name explore').lean();
         if (!doc) return res.status(404).json({ success: false, error: 'Place not found in cache' });
