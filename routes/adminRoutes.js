@@ -2597,6 +2597,8 @@ router.get('/ai-provider', async (req, res) => {
                 aiProviderChat:         cfg.aiProviderChat,
                 aiProviderQuickAction:  cfg.aiProviderQuickAction,
                 aiEventsUseClaude:      cfg.aiEventsUseClaude,
+                claudeChatCategories:        cfg.claudeChatCategories || [],
+                claudeQuickActionCategories: cfg.claudeQuickActionCategories || [],
                 claudeModel:            cfg.claudeModel,
                 claudeWebSearch:        cfg.claudeWebSearch,
                 claudeWebSearchMaxUses: cfg.claudeWebSearchMaxUses,
@@ -2621,7 +2623,7 @@ router.get('/ai-provider', async (req, res) => {
 router.patch('/ai-provider', async (req, res) => {
     try {
         const {
-            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
+            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeChatCategories, claudeQuickActionCategories, claudeModel,
             claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions, claudeWebSearchActionsChat,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         } = req.body;
@@ -2643,7 +2645,7 @@ router.patch('/ai-provider', async (req, res) => {
         }
  
         const cfg = await AppConfig.updateConfig({
-            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeModel,
+            aiProviderChat, aiProviderQuickAction, aiEventsUseClaude, claudeChatCategories, claudeQuickActionCategories, claudeModel,
             claudeWebSearch, claudeWebSearchMaxUses, claudeWebSearchActions, claudeWebSearchActionsChat,
             googlePrefetch, googlePrefetchActions, googlePrefetchCount, googlePrefetchTtlMin, googlePrefetchLayers, googlePrefetchMode,
         }, req.user?.id || null);

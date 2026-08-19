@@ -27,6 +27,12 @@ const appConfigSchema = new mongoose.Schema({
      * everything else stays on the cheap provider. Web-search rules
      * (claudeWebSearch master switch + claudeWebSearchActions) still apply. */
     aiEventsUseClaude:     { type: Boolean, default: false },
+    /* Per-category provider routing: when a surface runs DeepSeek, categories
+     * listed here still go to Claude (e.g. chat: events + hidden_gems on
+     * Claude, everything else DeepSeek). Ignored when the surface is already
+     * set to Claude. Generalizes aiEventsUseClaude, which stays supported. */
+    claudeChatCategories:        { type: [String], default: [] },
+    claudeQuickActionCategories: { type: [String], default: [] },
 
     // ── Claude options (ignored entirely when provider is 'deepseek') ──────
     claudeModel:            { type: String,  default: 'claude-haiku-4-5-20251001' },
@@ -190,7 +196,7 @@ appConfigSchema.statics.getConfig = async function () {
 // Patch config from the admin page and refresh the cache immediately.
 appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null) {
     const allowed = [
-        'aiProviderChat', 'aiProviderQuickAction', 'aiEventsUseClaude', 'claudeModel',
+        'aiProviderChat', 'aiProviderQuickAction', 'aiEventsUseClaude', 'claudeChatCategories', 'claudeQuickActionCategories', 'claudeModel',
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions', 'claudeWebSearchActionsChat',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',

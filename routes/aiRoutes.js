@@ -1538,6 +1538,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
             // Events override: an event-intent chat turn goes to Claude even when
             // chat runs DeepSeek — events need web search, which DeepSeek lacks.
             const useClaudeChat = cfg.aiProviderChat === 'claude'
+                || (Array.isArray(cfg.claudeChatCategories) && cfg.claudeChatCategories.includes(detectedActionType))
                 || (cfg.aiEventsUseClaude && detectedActionType === 'events');
             if (location) { req.body.location = { lat: parseFloat(location.lat), lng: parseFloat(location.lng), source: location.source || 'unknown' } }
 
@@ -5582,6 +5583,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // Events override: the events action goes to Claude even when
                     // quick-actions run DeepSeek (events need web search).
                     const qaUseClaude = cfg.aiProviderQuickAction === 'claude'
+                        || (Array.isArray(cfg.claudeQuickActionCategories) && cfg.claudeQuickActionCategories.includes(action))
                         || (cfg.aiEventsUseClaude && action === 'events');
                     if (qaUseClaude) {
                         /* ── Events may search on refills; nothing else may ───────────────
