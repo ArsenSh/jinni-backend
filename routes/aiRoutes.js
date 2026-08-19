@@ -10,6 +10,7 @@ const googleService = require('../services/googleService');
 const proximityService = require('../services/proximityService');
 const { priceTier, tierFit, tierMismatch, isPriceAction } = require('../services/priceTier');
 const googlePrefetch = require('../services/googlePrefetchService');
+const coverageService = require('../services/coverageService');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const { premiumTermEnd } = require('../utils/premium');
@@ -1336,6 +1337,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                 if (cached && Array.isArray(cached.candidates)) {
                                     found = cached.candidates;
                                     console.log(`[chat grounding] cache HIT for "${gq}" ($0)`);
+                                } else if (!await coverageService.googleAllowed(detectedActionType, locationToUse)) {
+                                    found = [];   // coverage gate: warm city ⇒ ground from cache/DB only
                                 } else {
                                     found = await googleService.findPlaces(gq, { lat: locationToUse.lat, lng: locationToUse.lng }, requestId, { maxResultCount: 15 });
                                     const candidates = (found || []).map(f => ({ placeId: f.place_id, name: f.name, lat: f.geometry?.location?.lat ?? null, lng: f.geometry?.location?.lng ?? null, types: f.types || [], primaryType: f.primaryType || null }));
@@ -2290,7 +2293,7 @@ function cachedHitAcceptable(query, cachedName, cachedTypes, cachedPrimaryType, 
     return !isEstablishment;
 }
 
-async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, requestId = null, userLocation = null, knownPlaceId = null, includedType = null) {
+async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, requestId = null, userLocation = null, knownPlaceId = null, includedType = null, googleOk = true) {
     try {
         // console.log(`\n🔍 getCachedPlaceDetails called for: ${placeIdOrName}`);
         const CACHE_VALIDITY_DAYS = 30;
@@ -2391,6 +2394,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
         if (detailedInfo && cached && cached.imagesStored && !cached.hasDetailedInfo) {
             // console.log(`⚠️ Cache has images but missing detailed info - fetching ONLY details`);
             placeId = cached.placeId;
+            if (!googleOk) { console.log(`[coverage] detail refresh skipped (warm): ${placeIdOrName}`); return null; }
             const details = await googleService.getPlaceDetails(placeId, true, requestId);
             if (!details) {
                 console.log(`❌ Failed to fetch detailed info for ${placeId}`);
@@ -2442,6 +2446,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
             // 'bar' / 'bakery', returning 0 results for real cafés and bistros.
             // We resolve broadly and let placeMatchesActionType() (which allows the
             // full food family) gate the result after the fact.
+            if (!googleOk) { console.log(`[coverage] name resolution skipped (warm): ${placeIdOrName}`); return null; }
             const places = await googleService.findPlaces(placeIdOrName, userLocation, requestId);
             if (!places || places.length === 0) {
                 console.log(`⚠️ No places found for: ${placeIdOrName}`);
@@ -2498,6 +2503,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
             }
         }
         // Step 4: Get place details (geometry + photos)
+        if (!googleOk) { console.log(`[coverage] details fetch skipped (warm): ${placeIdOrName}`); return null; }
         const details = await googleService.getPlaceDetails(placeId, detailedInfo, requestId);
         if (!details || !details.geometry?.location?.lat) {
             console.log(`❌ Invalid details received for ${placeId}`);
@@ -3047,7 +3053,11 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                     // 🔥 STEP 2: Only call getCachedPlaceDetail if not found in pre-fetched data
                     if (!entityDetails) {
                         // console.log(`⚠️ Not in pre-fetched data, using getCachedPlaceDetails for: ${nameObj.name}`);
-                        let cachedDetails = await withEnrichTimeout(getCachedPlaceDetails(nameObj.name, false, requestId, effectiveLocation), 8000, null);
+                        // Coverage gate: in a warm city, cache hits still serve; misses
+                        // are dropped instead of resolved via Google (cards must stay
+                        // real — never AI-named places without verification).
+                        const covOk = await coverageService.googleAllowed(detectedActionType, effectiveLocation);
+                        let cachedDetails = await withEnrichTimeout(getCachedPlaceDetails(nameObj.name, false, requestId, effectiveLocation, null, null, covOk), 8000, null);
                         // ── Identity check ──────────────────────────────────────
                         // Google text search returns SOMETHING for almost any
                         // string. Only accept the result if its name plausibly
@@ -5380,7 +5390,8 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 const currentLayer = (viewMoreCount || 0) + 1;
                 const layerOn = !pcfg.googlePrefetchLayers?.length || pcfg.googlePrefetchLayers.includes(currentLayer);
                 const prefetchOn = pcfg.googlePrefetch && layerOn &&
-                    (!pcfg.googlePrefetchActions?.length || pcfg.googlePrefetchActions.includes(action));
+                    (!pcfg.googlePrefetchActions?.length || pcfg.googlePrefetchActions.includes(action)) &&
+                    await coverageService.googleAllowed(action, effectiveLocation);   // coverage gate: warm city ⇒ no Text Search
                 if (prefetchOn && effectiveLocation) {
                     prefetchMode = pcfg.googlePrefetchMode === 'resolve' ? 'resolve' : 'suggest';
                     googleCandidates = await googlePrefetch.getCandidates({
@@ -5873,6 +5884,9 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // console.log(`Combined candidates: ${uniqueCandidates.length} unique places for enrichment`);
                     // console.log(`\n\n`);
                     const locationDetails = {};
+                    // Coverage gate, computed ONCE for the request: warm city ⇒ cache
+                    // hits serve, misses drop (no findPlaces / getPlaceDetails).
+                    const covOk = await coverageService.googleAllowed(action, effectiveLocation);
                     const enrichmentLimit = Math.min(uniqueCandidates.length, 15);
                     const candidatesForEnrichment = uniqueCandidates.slice(0, enrichmentLimit);
                     const locationPromises = candidatesForEnrichment.map(async (candidate) => {
@@ -5900,7 +5914,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             }
                             // Fetch from Cache the AI results, if not there fetch from GOOGLE
                             // console.log(`→ Looking up ${cleanName} (cache-first)`);
-                            const details = await getCachedPlaceDetails(cleanName, false, requestId, effectiveLocation, candidate.placeId || null, googleService.actionIncludedType(action, subType));
+                            const details = await getCachedPlaceDetails(cleanName, false, requestId, effectiveLocation, candidate.placeId || null, googleService.actionIncludedType(action, subType), covOk);
                             if (!details) {
                                 console.log(`⚠️ Failed to get details for ${cleanName} with getCachedPlaceDetails - using FALLBACK`);
                                 const fallbackKey = `fallback_${Date.now()}_${Math.random()}`;

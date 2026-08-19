@@ -85,6 +85,15 @@ const appConfigSchema = new mongoose.Schema({
         historical:  { type: Number, default: 500 },
         hidden_gems: { type: Number, default: 900 },
     },
+    /* Coverage gate (admin Coverage tab): per-city cache-warmth Google gating.
+     * See services/coverageService.js. Master OFF by default — deploying this
+     * changes nothing until the admin enables it. Targets/overrides are Mixed
+     * maps keyed "City|Country" → { category: value }. */
+    coverageGate:        { type: Boolean, default: false },
+    coverageCutoffPct:   { type: Number, default: 90 },
+    coverageTargets:     { type: mongoose.Schema.Types.Mixed, default: {} },
+    coverageCityTargets: { type: mongoose.Schema.Types.Mixed, default: {} },
+    coverageOverrides:   { type: mongoose.Schema.Types.Mixed, default: {} },
     /* Discover each country's event sources automatically (one small AI call
      * per country per week, verified before use). A manual
      * claudeWebSearchAllowedDomains always wins where it is set; this only
@@ -183,6 +192,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',
+        'coverageGate', 'coverageCutoffPct', 'coverageTargets', 'coverageCityTargets', 'coverageOverrides',
     ];
     const set = {};
     for (const k of allowed) if (patch[k] !== undefined) set[k] = patch[k];

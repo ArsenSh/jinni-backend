@@ -2,6 +2,7 @@ const express = require('express');
 const { parseAddressRegion } = require('../utils/addressRegion');
 const router = express.Router();
 const mongoose = require('mongoose');
+const coverageService = require('../services/coverageService');
 const User = require('../models/User');
 const UserAILimit = require('../models/UserAILimit');
 const Business = require('../models/Business');
@@ -2641,6 +2642,42 @@ router.patch('/ai-provider', async (req, res) => {
     } catch (error) {
         console.error('Update ai-provider error:', error);
         res.status(500).json({ success: false, error: 'Failed to update AI provider config' });
+    }
+});
+
+// ── Coverage (cache-warmth Google gate) ──────────────────────────────────────
+// GET: per-city × per-category cache counts, warmth % and effective gate state.
+router.get('/coverage', async (req, res) => {
+    try {
+        res.json({ success: true, data: await coverageService.adminView() });
+    } catch (error) {
+        console.error('Get coverage error:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch coverage' });
+    }
+});
+
+// POST: save gate config (master switch, cutoff %, targets, per-cell overrides).
+router.post('/coverage', async (req, res) => {
+    try {
+        const { coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides } = req.body;
+        if (coverageCutoffPct !== undefined && (!Number.isFinite(Number(coverageCutoffPct)) || coverageCutoffPct < 10 || coverageCutoffPct > 200)) {
+            return res.status(400).json({ success: false, error: 'coverageCutoffPct must be 10–200' });
+        }
+        const checkTargets = (obj) => obj === undefined || (obj && typeof obj === 'object' && Object.values(obj).every(v =>
+            typeof v === 'object' ? Object.values(v).every(n => Number.isFinite(Number(n)) && n >= 0) : Number.isFinite(Number(v)) && v >= 0));
+        if (!checkTargets(coverageTargets) || !checkTargets(coverageCityTargets)) {
+            return res.status(400).json({ success: false, error: 'targets must be non-negative numbers' });
+        }
+        if (coverageOverrides !== undefined && !(coverageOverrides && typeof coverageOverrides === 'object' && Object.values(coverageOverrides).every(c =>
+            c && typeof c === 'object' && Object.values(c).every(v => ['auto', 'on', 'off'].includes(v))))) {
+            return res.status(400).json({ success: false, error: 'overrides must be auto/on/off' });
+        }
+        await AppConfig.updateConfig({ coverageGate, coverageCutoffPct, coverageTargets, coverageCityTargets, coverageOverrides }, req.user?.id || null);
+        coverageService.invalidate();
+        res.json({ success: true, data: await coverageService.adminView() });
+    } catch (error) {
+        console.error('Save coverage error:', error);
+        res.status(500).json({ success: false, error: 'Failed to save coverage' });
     }
 });
 
