@@ -1728,7 +1728,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 // ================= CLAUDE PROVIDER (web search optional) =========
                 const claudeWebSearch = cfg.claudeWebSearch &&
                     (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(detectedActionType)) &&
-                    (await coverageService.marketInfo(effectiveLocation)).mode === 'open';   // contained market: no web search
+                    (await coverageService.marketInfo(effectiveLocation)).mode === 'open' &&   // contained market: no web search
+                    (detectedActionType !== 'events' || await coverageService.webSearchAllowed(effectiveLocation));   // regional event-search switch
                 const controller = new AbortController();
                 try {
                     for await (const ev of claudeService.streamChat({
@@ -5635,7 +5636,8 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         if (qaSearchDomains.length) console.log(`[search] ${action}: restricted to ${qaSearchDomains.length} domain(s): ${qaSearchDomains.join(', ')}`);
                         const claudeWebSearch = (isFirstTap || (action === 'events' && !feedCanRefill)) && cfg.claudeWebSearch &&
                             (Array.isArray(cfg.claudeWebSearchActions) && cfg.claudeWebSearchActions.includes(action)) &&
-                            (await coverageService.marketInfo(effectiveLocation)).mode === 'open';   // contained market: no web search
+                            (await coverageService.marketInfo(effectiveLocation)).mode === 'open' &&   // contained market: no web search
+                            (action !== 'events' || await coverageService.webSearchAllowed(effectiveLocation));   // regional event-search switch
                         if (action === 'events' && !isFirstTap) {
                             console.log(`[quick-action] events refill: web search ${claudeWebSearch ? 'ON' : `OFF — ${feedForRefill.length} feed event(s) can refill instead (saves ~1 search + ~18k tokens)`}`);
                         }

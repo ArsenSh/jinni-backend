@@ -251,6 +251,26 @@ function closedMessage(lang, eta) {
     return fn(eta);
 }
 
+// Regional event web-search switch: the Coverage table's "Jinni events" cell
+// can be forced OFF per city (stored as override key 'jinni_events'). When off,
+// event requests near that city run WITHOUT Claude web search — events come
+// only from already-stored AiFoundEvents and the ticketing feeds ($0). Like
+// forced cells, this applies regardless of the master gate. Fail-open.
+async function webSearchAllowed(loc) {
+    try {
+        const cfg = await AppConfig.getConfig();
+        const lat = Number(loc && loc.lat), lng = Number(loc && loc.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return true;
+        const city = nearestCity(await getTable(), lat, lng);
+        if (!city) return true;
+        if (overrideFor(cfg, city, 'jinni_events') === 'off') {
+            console.log(`[coverage] event web search OFF @ ${city.key} (forced)`);
+            return false;
+        }
+        return true;
+    } catch (e) { return true; }
+}
+
 // The one call the request paths use. Never throws.
 async function googleAllowed(action, loc) {
     try {
@@ -319,4 +339,4 @@ async function adminView() {
 
 function invalidate() { _table = null; _tableAt = 0; }
 
-module.exports = { CATEGORIES, DEFAULT_TARGETS, googleAllowed, decide, adminView, invalidate, marketInfo, closedMessage };
+module.exports = { CATEGORIES, DEFAULT_TARGETS, googleAllowed, decide, adminView, invalidate, marketInfo, closedMessage, webSearchAllowed };
