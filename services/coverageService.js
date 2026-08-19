@@ -26,12 +26,17 @@
 // touched by this gate.
 
 const PlaceCache = require('../models/PlaceCache');
+const AiFoundEvent = require('../models/AiFoundEvent');
 const Destination = require('../models/Destination');
 const Business = require('../models/Business');
 const AppConfig = require('../models/AppConfig');
 
 const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
-const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30 };
+const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30, jinni_events: 20 };
+// The admin table also shows Jinni-found events (AiFoundEvent, non-hidden) as
+// an informational column. It is NOT in CATEGORIES: the Google gate never
+// consults it — event listings come from Claude web search, not Google.
+const TABLE_CATEGORIES = [...CATEGORIES, 'jinni_events'];
 
 const TABLE_TTL_MS = 10 * 60 * 1000;
 const CITY_MATCH_KM = 40;   // request further than this from every known city = cold area
@@ -57,7 +62,7 @@ async function getTable() {
     // is covered almost entirely by curated Destinations. All three share the
     // same category vocabulary. PlaceCache rows with city:null stay invisible
     // until POST /api/admin/places/backfill-regions re-parses them.
-    const [cacheRows, destRows, bizRows] = await Promise.all([
+    const [cacheRows, destRows, bizRows, evRows] = await Promise.all([
         PlaceCache.aggregate([
             // Only what can actually be SERVED counts as warmth: places a staff
             // member or admin hid (explore.status 'hidden') and AI-blocked ones
@@ -97,8 +102,18 @@ async function getTable() {
                 geoN: { $sum: { $cond: [{ $isNumber: '$location.coordinates.lat' }, 1, 0] } },
             } },
         ]),
+        AiFoundEvent.aggregate([
+            { $match: { status: { $ne: 'hidden' }, city: { $nin: [null, ''] } } },
+            { $group: {
+                _id: { country: '$country', city: '$city', action: { $literal: 'jinni_events' } },
+                count: { $sum: 1 },
+                latSum: { $sum: { $ifNull: ['$lat', 0] } },
+                lngSum: { $sum: { $ifNull: ['$lng', 0] } },
+                geoN: { $sum: { $cond: [{ $isNumber: '$lat' }, 1, 0] } },
+            } },
+        ]),
     ]);
-    const rows = [...cacheRows, ...destRows, ...bizRows];
+    const rows = [...cacheRows, ...destRows, ...bizRows, ...evRows];
     const cities = new Map();
     for (const r of rows) {
         const key = `${r._id.city}|${r._id.country || ''}`;
@@ -136,11 +151,11 @@ async function getTable() {
             host.geoN += c.geoN;
         }
         if (!isAscii(host.city) && isAscii(c.city)) {
-            host.aliases.push(host.city);
+            if (!host.aliases.includes(host.city)) host.aliases.push(host.city);
             host.city = c.city;
             if (isAscii(c.country)) host.country = c.country;
             host.key = c.key;
-        } else if (c.city !== host.city) {
+        } else if (c.city !== host.city && !host.aliases.includes(c.city)) {
             host.aliases.push(c.city);
         }
     }
@@ -203,12 +218,13 @@ async function adminView() {
     const cutoff = Number(cfg.coverageCutoffPct) || 90;
     const rows = table.map(c => {
         const cats = {};
-        for (const a of CATEGORIES) {
+        for (const a of TABLE_CATEGORIES) {
             const count = c.counts[a] || 0;
             const target = targetFor(cfg, c.key, a);
             const warmth = Math.round((count / target) * 100);
             const ov = (cfg.coverageOverrides && cfg.coverageOverrides[c.key] && cfg.coverageOverrides[c.key][a]) || 'auto';
-            const effective = !cfg.coverageGate ? 'gate_off'
+            const effective = a === 'jinni_events' ? 'info'   // never gated — web-search pipe
+                : !cfg.coverageGate ? 'gate_off'
                 : ov === 'on' ? 'forced_on'
                 : ov === 'off' ? 'forced_off'
                 : warmth >= cutoff ? 'auto_off' : 'auto_on';
@@ -227,7 +243,7 @@ async function adminView() {
     ]);
     return {
         meta: { placeCacheTotal, withCity, tagged },
-        categories: CATEGORIES,
+        categories: TABLE_CATEGORIES,
         defaultTargets: { ...DEFAULT_TARGETS, ...(cfg.coverageTargets || {}) },
         config: {
             coverageGate: !!cfg.coverageGate,
