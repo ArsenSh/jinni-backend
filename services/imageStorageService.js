@@ -63,6 +63,14 @@ class ImageStorageService {
                 })
             );
             const successfulDownloads = storedPhotos.filter(p => p.imageData !== null).length;
+            // Hidden places must stay image-free (hide purges their photos to
+            // reclaim space) — a saved-card image request could otherwise
+            // re-store them. Serve the downloads to THIS requester, skip the DB.
+            const hiddenCheck = await PlaceCache.findOne({ placeId }).select('explore.status').lean();
+            if (hiddenCheck?.explore?.status === 'hidden') {
+                console.log(`[images] ${placeId} is hidden — downloaded photos NOT stored`);
+                return storedPhotos;
+            }
             await PlaceCache.findOneAndUpdate({ placeId }, { $set: { photos: storedPhotos, imagesStored: successfulDownloads > 0 } }, { upsert: true });
             console.log(`✅ Stored ${successfulDownloads}/${photosToDownload.length} images for ${placeId}`);
             return storedPhotos;
