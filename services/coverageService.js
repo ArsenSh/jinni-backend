@@ -33,6 +33,7 @@ const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_g
 
 const TABLE_TTL_MS = 10 * 60 * 1000;
 const CITY_MATCH_KM = 40;   // request further than this from every known city = cold area
+const CITY_MERGE_KM = 15;   // rows whose centroids sit this close are ONE city (name language varies)
 
 let _table = null;
 let _tableAt = 0;
@@ -72,12 +73,43 @@ async function getTable() {
     for (const c of cities.values()) {
         c.lat = c.geoN > 0 ? c.latSum / c.geoN : null;
         c.lng = c.geoN > 0 ? c.lngSum / c.geoN : null;
-        delete c.latSum; delete c.lngSum; delete c.geoN;
+        delete c.latSum; delete c.lngSum;
         list.push(c);
     }
-    _table = list;
+    // ── Language merge ──────────────────────────────────────────────────────
+    // Google addresses are requested in English, but legacy cache rows (and the
+    // occasional local-script response) can name the same city as "Yerevan",
+    // "Երևան" or "Ереван" — splitting one city into rows that each undercount
+    // warmth. Names lie; coordinates don't: rows whose centroids sit within
+    // CITY_MERGE_KM are folded into one city. Display name prefers the
+    // Latin-script variant of the LARGEST member; the others become aliases.
+    const isAscii = (v) => /^[\x00-\x7F]*$/.test(v || '');
+    const totalOf = (c) => Object.values(c.counts).reduce((sum, n) => sum + n, 0);
+    list.sort((a, b) => totalOf(b) - totalOf(a));
+    const merged = [];
+    for (const c of list) {
+        c.aliases = c.aliases || [];
+        const host = merged.find(m => Number.isFinite(m.lat) && Number.isFinite(c.lat) && haversineKm(m.lat, m.lng, c.lat, c.lng) <= CITY_MERGE_KM);
+        if (!host) { merged.push(c); continue; }
+        for (const [a, n] of Object.entries(c.counts)) host.counts[a] = (host.counts[a] || 0) + n;
+        if (host.geoN + c.geoN > 0) {
+            host.lat = (host.lat * host.geoN + c.lat * c.geoN) / (host.geoN + c.geoN);
+            host.lng = (host.lng * host.geoN + c.lng * c.geoN) / (host.geoN + c.geoN);
+            host.geoN += c.geoN;
+        }
+        if (!isAscii(host.city) && isAscii(c.city)) {
+            host.aliases.push(host.city);
+            host.city = c.city;
+            if (isAscii(c.country)) host.country = c.country;
+            host.key = c.key;
+        } else if (c.city !== host.city) {
+            host.aliases.push(c.city);
+        }
+    }
+    for (const c of merged) delete c.geoN;
+    _table = merged;
     _tableAt = Date.now();
-    return list;
+    return merged;
 }
 
 function nearestCity(table, lat, lng) {
@@ -145,7 +177,7 @@ async function adminView() {
             cats[a] = { count, target, warmth, override: ov, effective };
         }
         const total = Object.values(c.counts).reduce((s, n) => s + n, 0);
-        return { key: c.key, city: c.city, country: c.country, total, categories: cats };
+        return { key: c.key, city: c.city, country: c.country, aliases: c.aliases || [], total, categories: cats };
     }).sort((a, b) => b.total - a.total);
     return {
         categories: CATEGORIES,
