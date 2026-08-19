@@ -2294,6 +2294,98 @@ router.post('/limits', async (req, res) => {
     }
 });
 
+// ── AI balances & runway (prepaid model — unlike Google there are no monthly
+// free caps: the question is "how much money is left inside each provider and
+// how much to add for next month"). DeepSeek balance is fetched live from its
+// API; Claude has no balance endpoint, so the admin enters the credit and the
+// system counts DOWN from it using the tracked daily spend. ─────────────────
+const AI_RATES = { deepseek: { token: 0.50 / 1e6, search: 0 }, claude: { token: 2.00 / 1e6, search: 0.01 } };
+async function aiSpendSince(provider, sinceDate) {
+    if (!sinceDate) return 0;
+    const rows = await AiProviderDailyStats.find({ provider, date: { $gte: new Date(sinceDate).toISOString().slice(0, 10) } }).lean();
+    const r = AI_RATES[provider];
+    return rows.reduce((a, x) => a + (x.tokens || 0) * r.token + (x.searches || 0) * r.search, 0);
+}
+async function aiBurnPerDay(provider) {
+    const start = new Date(); start.setDate(start.getDate() - 6);
+    const rows = await AiProviderDailyStats.find({ provider, date: { $gte: start.toISOString().slice(0, 10) } }).lean();
+    const r = AI_RATES[provider];
+    return rows.reduce((a, x) => a + (x.tokens || 0) * r.token + (x.searches || 0) * r.search, 0) / 7;
+}
+router.get('/ai-balance', async (req, res) => {
+    try {
+        const cfg = await AppConfig.getConfig();
+        // DeepSeek: live balance (its API supports it); manual entry as fallback.
+        let dsBalance = null, dsSource = 'unavailable';
+        if (process.env.OPENAI_API_KEY) {
+            try {
+                const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 4000);
+                const r = await fetch('https://api.deepseek.com/user/balance', {
+                    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, signal: ctrl.signal
+                });
+                clearTimeout(t);
+                if (r.ok) {
+                    const b = await r.json();
+                    const usd = (b.balance_infos || []).find(x => x.currency === 'USD') || (b.balance_infos || [])[0];
+                    if (usd) { dsBalance = parseFloat(usd.total_balance); dsSource = 'live'; }
+                }
+            } catch (_) { /* fall through to manual */ }
+        }
+        if (dsBalance === null && cfg.deepseekCreditUsd > 0) {
+            dsBalance = Math.max(0, cfg.deepseekCreditUsd - await aiSpendSince('deepseek', cfg.deepseekCreditSetAt));
+            dsSource = 'manual';
+        }
+        // Claude: manual entry minus tracked spend since entry.
+        let clBalance = null, clSource = 'unset';
+        if (cfg.claudeCreditUsd > 0) {
+            clBalance = Math.max(0, cfg.claudeCreditUsd - await aiSpendSince('claude', cfg.claudeCreditSetAt));
+            clSource = 'manual';
+        }
+        const [dsBurn, clBurn] = await Promise.all([aiBurnPerDay('deepseek'), aiBurnPerDay('claude')]);
+        const pack = (balance, source, burn, entered, setAt) => {
+            const nextMonth = burn * 30;
+            return {
+                balance: balance === null ? null : parseFloat(balance.toFixed(2)),
+                source,
+                enteredUsd: entered || 0, enteredAt: setAt || null,
+                burnPerDay: parseFloat(burn.toFixed(3)),
+                runwayDays: balance !== null && burn > 0 ? Math.floor(balance / burn) : null,
+                nextMonthCost: parseFloat(nextMonth.toFixed(2)),
+                topUpNeeded: balance !== null ? parseFloat(Math.max(0, nextMonth - balance).toFixed(2)) : null
+            };
+        };
+        res.json({ success: true, data: {
+            deepseek: pack(dsBalance, dsSource, dsBurn, cfg.deepseekCreditUsd, cfg.deepseekCreditSetAt),
+            claude: pack(clBalance, clSource, clBurn, cfg.claudeCreditUsd, cfg.claudeCreditSetAt)
+        }});
+    } catch (error) {
+        console.error('AI balance error:', error);
+        res.status(500).json({ success: false, error: 'Failed to read AI balances' });
+    }
+});
+router.post('/ai-balance', async (req, res) => {
+    try {
+        const patch = {};
+        const now = new Date();
+        if (req.body.claudeCreditUsd !== undefined) {
+            const v = parseFloat(req.body.claudeCreditUsd);
+            if (!Number.isFinite(v) || v < 0) return res.status(400).json({ success: false, error: 'claudeCreditUsd must be ≥ 0' });
+            patch.claudeCreditUsd = v; patch.claudeCreditSetAt = now;
+        }
+        if (req.body.deepseekCreditUsd !== undefined) {
+            const v = parseFloat(req.body.deepseekCreditUsd);
+            if (!Number.isFinite(v) || v < 0) return res.status(400).json({ success: false, error: 'deepseekCreditUsd must be ≥ 0' });
+            patch.deepseekCreditUsd = v; patch.deepseekCreditSetAt = now;
+        }
+        if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'Nothing to update' });
+        await AppConfig.updateConfig(patch, req.user?.id || null);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('AI balance save error:', error);
+        res.status(500).json({ success: false, error: 'Failed to save AI balance' });
+    }
+});
+
 // ── Monthly AI cost forecast (DeepSeek + Claude) ─────────────────────────────
 // Sibling of /google-usage/monthly, computed from AiProviderDailyStats. AI has
 // no free-tier caps (DeepSeek = prepaid balance, Claude = tier TPD), so the

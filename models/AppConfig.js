@@ -63,6 +63,14 @@ const appConfigSchema = new mongoose.Schema({
      * ZONE_RADIUS_M table in models/Business.js. The zone GRID step is
      * deliberately NOT configurable: it keys auction slots, and changing it
      * would re-shuffle existing Signature zones. */
+    /* AI provider balances. DeepSeek is fetched live from its balance API;
+     * these manual fields are the Claude balance (Anthropic has no balance
+     * endpoint) and the DeepSeek fallback. Remaining = entered − estimated
+     * spend since SetAt. */
+    claudeCreditUsd:     { type: Number, default: 0 },
+    claudeCreditSetAt:   { type: Date, default: null },
+    deepseekCreditUsd:   { type: Number, default: 0 },
+    deepseekCreditSetAt: { type: Date, default: null },
     zoneRadiusM: {
         restaurants: { type: Number, default: 300 },
         hotels:      { type: Number, default: 900 },
@@ -164,6 +172,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
         'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces', 'zoneRadiusM',
+        'claudeCreditUsd', 'claudeCreditSetAt', 'deepseekCreditUsd', 'deepseekCreditSetAt',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',
         'quickActionMaxDistanceKm',
