@@ -59,7 +59,10 @@ async function getTable() {
     // until POST /api/admin/places/backfill-regions re-parses them.
     const [cacheRows, destRows, bizRows] = await Promise.all([
         PlaceCache.aggregate([
-            { $match: { city: { $nin: [null, ''] } } },
+            // Only what can actually be SERVED counts as warmth: places a staff
+            // member or admin hid (explore.status 'hidden') and AI-blocked ones
+            // are excluded. Legacy docs without the fields count as visible.
+            { $match: { city: { $nin: [null, ''] }, 'explore.status': { $ne: 'hidden' }, aiBlocked: { $ne: true } } },
             { $unwind: '$actions' },
             { $match: { actions: { $in: CATEGORIES } } },
             { $group: {

@@ -1331,6 +1331,7 @@ router.post('/places/backfill-regions', async (req, res) => {
             if (country || city) ops.push({ updateOne: { filter: { _id: d._id }, update: { $set: { country, city } } } });
         }
         if (ops.length) await PlaceCache.bulkWrite(ops, { ordered: false });
+        coverageService.invalidate();   // else the coverage table serves its 10-min cache of the OLD rows
         res.json({ success: true, scanned: docs.length, updated: ops.length, unparsed: docs.length - ops.length });
     } catch (error) {
         console.error('Backfill regions error:', error);
