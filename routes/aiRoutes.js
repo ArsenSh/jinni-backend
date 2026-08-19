@@ -1302,6 +1302,22 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 // console.log(`📝 MESSAGE WORDS ADDED:`, messageWords);
                 // console.log(`🚫 EXCLUDED PLACE NAMES:`, excludedPlaceNames);
                 const locationToUse = placeCoordinates ? { lat: placeCoordinates.lat, lng: placeCoordinates.lng } : effectiveLocation;
+                // ── Market gate, retrieval checkpoint ─────────────────────────
+                // The early gate checks the user's own location, but a
+                // destination named in the TEXT ("in aya napa") can override the
+                // search center via placeCoordinates — which bypassed the early
+                // check entirely. Gate the center retrieval will actually use.
+                // Headers are already sent here, so stream the message directly.
+                if (locationToUse) {
+                    const mkt = await coverageService.marketInfo(locationToUse);
+                    if (mkt.mode === 'closed') {
+                        const closedMsg = coverageService.closedMessage(user?.settings?.language || req.body?.language, mkt.eta);
+                        res.write(`data: ${JSON.stringify({ type: 'token', content: closedMsg })}\n\n`);
+                        res.write(`data: ${JSON.stringify({ type: 'complete', contentParts: [{ type: 'text', content: closedMsg, index: 0 }], recommendations: [], metadata: { marketClosed: true, country: mkt.country } })}\n\n`);
+                        console.log(`[market] chat blocked at retrieval checkpoint — ${mkt.country} is closed`);
+                        return res.end();
+                    }
+                }
                 if (locationToUse) {
                     // console.log(`\n📍 Using extracted location: [${locationToUse.lng}, ${locationToUse.lat}]\n`);
                     // console.log(`   Source: ${locationToUse.source || 'extracted'}`);
@@ -8111,6 +8127,22 @@ function getAllMessages(userLanguage = 'en') {
     };
     return translations[userLanguage] || translations['en'];
 }
+
+// ── Market status check (onboarding page / map selector) ─────────────────────
+// Has Jinni "arrived" at these coordinates? Closed markets return the same
+// localized message chat streams, so the notice matches everywhere.
+router.get('/market-status', auth, async (req, res) => {
+    try {
+        const { lat, lng, lang } = req.query;
+        const market = await coverageService.marketInfo({ lat, lng });
+        res.json({
+            success: true, mode: market.mode, country: market.country || null, eta: market.eta || null,
+            message: market.mode === 'closed' ? coverageService.closedMessage(lang || req.user?.settings?.language, market.eta) : null,
+        });
+    } catch (e) {
+        res.json({ success: true, mode: 'open', country: null, eta: null, message: null });   // fail-open
+    }
+});
 
 router.get('/cached-place/:placeId', auth, async (req, res) => {
     try {
