@@ -305,7 +305,7 @@ router.get('/ai-usage', async (req, res) => {
     try {
         const { page = 1, limit = 20 } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
-        const [usageData, total, topUsersAgg, cooldownUsers, vol30Agg, users30] = await Promise.all([
+        const [usageData, total, topUsersAgg, cooldownUsers, vol30Agg, users30, vol7Agg, users7, totalTravelers] = await Promise.all([
             UserAILimit.find({}).populate('userId', 'name email isPremium').select('userId statistics dailyUsage onCooldown cooldownUntil cooldownReason isPremium updatedAt').sort({ 'statistics.totalTokensUsed': -1 }).skip(skip).limit(parseInt(limit)).lean(),
             UserAILimit.countDocuments({}),
             UserAILimit.aggregate([
@@ -330,15 +330,25 @@ router.get('/ai-usage', async (req, res) => {
                 { $group: { _id: null, tokens: { $sum: '$tokens' }, queries: { $sum: '$queries' } } },
             ]),
             UserActivity.distinct('userId', { day: { $gte: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10) } }),
+            AiProviderDailyStats.aggregate([
+                { $match: { date: { $gte: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10) } } },
+                { $group: { _id: null, tokens: { $sum: '$tokens' }, queries: { $sum: '$queries' } } },
+            ]),
+            UserActivity.distinct('userId', { day: { $gte: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10) } }),
+            // Whole traveler base — the denominator for "cost spread over ALL
+            // users", not just the active ones (most of a growing base is quiet).
+            User.countDocuments({ role: { $nin: ['staff', 'admin'] } }),
         ]);
-        const vol30 = vol30Agg[0] || { tokens: 0, queries: 0 };
-        const activeUsers30 = users30.length;
-        const last30 = {
-            tokens: vol30.tokens, queries: vol30.queries, activeUsers: activeUsers30,
-            tokensPerUser: activeUsers30 ? Math.round(vol30.tokens / activeUsers30) : 0,
-            queriesPerUser: activeUsers30 ? Math.round((vol30.queries / activeUsers30) * 10) / 10 : 0,
+        const windowOf = (agg, users) => {
+            const v = agg[0] || { tokens: 0, queries: 0 };
+            const n = users.length;
+            return { tokens: v.tokens, queries: v.queries, activeUsers: n,
+                tokensPerUser: n ? Math.round(v.tokens / n) : 0,
+                queriesPerUser: n ? Math.round((v.queries / n) * 10) / 10 : 0 };
         };
-        res.json({ success: true, data: {users: usageData, total, page: parseInt(page), totalPages: Math.ceil(total / parseInt(limit)), summary: { ...topUsersAgg[0], usersOnCooldown: cooldownUsers, last30 }} });
+        const last30 = windowOf(vol30Agg, users30);
+        const last7 = windowOf(vol7Agg, users7);
+        res.json({ success: true, data: {users: usageData, total, page: parseInt(page), totalPages: Math.ceil(total / parseInt(limit)), summary: { ...topUsersAgg[0], usersOnCooldown: cooldownUsers, last30, last7, totalTravelers }} });
     } catch (error) {
         console.error('AI usage error:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch AI usage' });
