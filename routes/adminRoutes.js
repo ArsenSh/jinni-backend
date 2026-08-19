@@ -2697,7 +2697,7 @@ router.get('/google-usage/per-user', async (req, res) => {
         if (country) userMatch['settings.location.countryName'] = new RegExp(`^${country.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
         const [ids, countries] = await Promise.all([
             User.find(userMatch).distinct('_id'),
-            User.distinct('settings.location.countryName', { role: { $nin: ['staff', 'admin'] }, 'settings.location.countryName': { $nin: [null, ''] } }),
+            User.distinct('settings.location.countryName', { role: { $nin: ['staff', 'admin'] }, 'settings.location.countryName': { $nin: [null, '', 'Select a country'] } }),
         ]);
         const agg = await UserGoogleUsage.aggregate([
             { $match: { month, userId: { $in: ids } } },
