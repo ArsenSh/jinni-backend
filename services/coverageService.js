@@ -16,15 +16,20 @@
 // gate sits behind a master switch (coverageGate, default OFF) so deploying
 // this changes nothing until the admin enables it.
 //
-// Fail-open by design: any error, unknown city, missing location, or exempt
-// category (events — uncacheable by nature) → Google stays allowed. The gate
-// may only ever SAVE money, never break a cold-area request.
+// Fail-open by design: any error, unknown city, missing location, or unknown
+// category → Google stays allowed. The gate may only ever SAVE money, never
+// break a cold-area request.
+//
+// 'events' here means cached event VENUES (halls, theaters — places where
+// events happen), i.e. the Google place lookups behind event cards. The Claude
+// web search that finds fresh event LISTINGS is a different pipe and is never
+// touched by this gate.
 
 const PlaceCache = require('../models/PlaceCache');
 const AppConfig = require('../models/AppConfig');
 
-const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping'];
-const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80 };
+const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
+const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30 };
 
 const TABLE_TTL_MS = 10 * 60 * 1000;
 const CITY_MATCH_KM = 40;   // request further than this from every known city = cold area
