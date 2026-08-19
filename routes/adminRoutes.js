@@ -1315,8 +1315,16 @@ router.delete('/places/stale/:days', async (req, res) => {
 // only touches docs where `country` is missing/null. Returns scan stats.
 router.post('/places/backfill-regions', async (req, res) => {
     try {
-        const docs = await PlaceCache.find({ $or: [{ country: null }, { country: { $exists: false } }] })
-            .select('details.formatted_address').lean();
+        // Re-parse rows that were never parsed AND rows whose earlier parse
+        // produced garbage — dash-separated addresses (UAE) used to land the
+        // whole address string in `country`, so those are matched by the
+        // embedded " - " or implausible length and re-parsed with the fixed
+        // splitter.
+        const docs = await PlaceCache.find({ $or: [
+            { country: null }, { country: { $exists: false } },
+            { country: /\s-\s/ }, { city: /\s-\s/ },
+            { $expr: { $gt: [{ $strLenCP: { $ifNull: ['$country', ''] } }, 32] } },
+        ] }).select('details.formatted_address').lean();
         const ops = [];
         for (const d of docs) {
             const { country, city } = parseAddressRegion(d.details?.formatted_address);

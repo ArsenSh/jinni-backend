@@ -26,6 +26,8 @@
 // touched by this gate.
 
 const PlaceCache = require('../models/PlaceCache');
+const Destination = require('../models/Destination');
+const Business = require('../models/Business');
 const AppConfig = require('../models/AppConfig');
 
 const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
@@ -49,18 +51,51 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 // on "the city just became warm" costs at most a few extra Google calls.
 async function getTable() {
     if (_table && (Date.now() - _tableAt) < TABLE_TTL_MS) return _table;
-    const rows = await PlaceCache.aggregate([
-        { $match: { city: { $nin: [null, ''] } } },
-        { $unwind: '$actions' },
-        { $match: { actions: { $in: CATEGORIES } } },
-        { $group: {
-            _id: { country: '$country', city: '$city', action: '$actions' },
-            count: { $sum: 1 },
-            latSum: { $sum: { $ifNull: ['$details.geometry.location.lat', 0] } },
-            lngSum: { $sum: { $ifNull: ['$details.geometry.location.lng', 0] } },
-            geoN: { $sum: { $cond: [{ $isNumber: '$details.geometry.location.lat' }, 1, 0] } },
-        } },
+    // Warmth counts everything retrieval can actually serve, from all three
+    // sources: the Google place cache, validator-curated Destinations, and
+    // active Businesses. Counting only PlaceCache hid whole cities — Dilijan
+    // is covered almost entirely by curated Destinations. All three share the
+    // same category vocabulary. PlaceCache rows with city:null stay invisible
+    // until POST /api/admin/places/backfill-regions re-parses them.
+    const [cacheRows, destRows, bizRows] = await Promise.all([
+        PlaceCache.aggregate([
+            { $match: { city: { $nin: [null, ''] } } },
+            { $unwind: '$actions' },
+            { $match: { actions: { $in: CATEGORIES } } },
+            { $group: {
+                _id: { country: '$country', city: '$city', action: '$actions' },
+                count: { $sum: 1 },
+                latSum: { $sum: { $ifNull: ['$details.geometry.location.lat', 0] } },
+                lngSum: { $sum: { $ifNull: ['$details.geometry.location.lng', 0] } },
+                geoN: { $sum: { $cond: [{ $isNumber: '$details.geometry.location.lat' }, 1, 0] } },
+            } },
+        ]),
+        Destination.aggregate([
+            { $match: { isActive: { $ne: false }, 'location.city': { $nin: [null, ''] } } },
+            { $unwind: '$type' },
+            { $match: { type: { $in: CATEGORIES } } },
+            { $group: {
+                _id: { country: '$location.country', city: '$location.city', action: '$type' },
+                count: { $sum: 1 },
+                latSum: { $sum: { $ifNull: ['$location.coordinates.lat', 0] } },
+                lngSum: { $sum: { $ifNull: ['$location.coordinates.lng', 0] } },
+                geoN: { $sum: { $cond: [{ $isNumber: '$location.coordinates.lat' }, 1, 0] } },
+            } },
+        ]),
+        Business.aggregate([
+            { $match: { status: 'active', 'location.city': { $nin: [null, ''] } } },
+            { $unwind: '$type' },
+            { $match: { type: { $in: CATEGORIES } } },
+            { $group: {
+                _id: { country: '$location.country', city: '$location.city', action: '$type' },
+                count: { $sum: 1 },
+                latSum: { $sum: { $ifNull: ['$location.coordinates.lat', 0] } },
+                lngSum: { $sum: { $ifNull: ['$location.coordinates.lng', 0] } },
+                geoN: { $sum: { $cond: [{ $isNumber: '$location.coordinates.lat' }, 1, 0] } },
+            } },
+        ]),
     ]);
+    const rows = [...cacheRows, ...destRows, ...bizRows];
     const cities = new Map();
     for (const r of rows) {
         const key = `${r._id.city}|${r._id.country || ''}`;
@@ -179,7 +214,16 @@ async function adminView() {
         const total = Object.values(c.counts).reduce((s, n) => s + n, 0);
         return { key: c.key, city: c.city, country: c.country, aliases: c.aliases || [], total, categories: cats };
     }).sort((a, b) => b.total - a.total);
+    // Diagnostics for the admin card: how much of the cache the table can
+    // actually attribute (city parsed + category-tagged) — the gap is what a
+    // region re-parse can recover.
+    const [placeCacheTotal, withCity, tagged] = await Promise.all([
+        PlaceCache.countDocuments({}),
+        PlaceCache.countDocuments({ city: { $nin: [null, ''] } }),
+        PlaceCache.countDocuments({ city: { $nin: [null, ''] }, actions: { $in: CATEGORIES } }),
+    ]);
     return {
+        meta: { placeCacheTotal, withCity, tagged },
         categories: CATEGORIES,
         defaultTargets: { ...DEFAULT_TARGETS, ...(cfg.coverageTargets || {}) },
         config: {
