@@ -254,7 +254,7 @@ businessSchema.index({ 'auction.isBidding': 1, 'auction.targetZoneKey': 1 });
 businessSchema.index({ 'auction.mustDefend': 1, 'auction.defendDeadline': 1 });
 
 businessSchema.methods.getMainCategory = function () {
-    const cats = ['restaurants', 'historical', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'market', 'jewelry', 'food'];
+    const cats = ['restaurants', 'historical', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food'];
     return this.type.find(t => cats.includes(t)) || null;
 };
 
@@ -363,7 +363,6 @@ const ZONE_RADIUS_M = {
     // Shop sub-categories: street-level zones like restaurants.
     souvenirs:   300,
     clothing:    300,
-    market:      300,
     jewelry:     300,
     food:        300,
 };
@@ -376,7 +375,6 @@ const ZONE_GRID_STEP = {
     hidden_gems: 0.009,
     souvenirs:   0.003,
     clothing:    0.003,
-    market:      0.003,
     jewelry:     0.003,
     food:        0.003,
 };
