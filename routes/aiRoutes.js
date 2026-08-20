@@ -2019,6 +2019,10 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
         .lean();
 
     const excludeLower = new Set((excludeNames || []).map(n => (n || '').toLowerCase().trim()));
+    // The six shopping sub-type tags (same vocabulary as the quick-action
+    // chips / staffRoutes EXPLORE_MOD_CATEGORIES) — used by the sub-type gate
+    // in the loop below to read a row's own declared shop kind.
+    const SHOP_SUBTYPE_TAGS = ['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
     const HIT_CAP = 25;                                // cap popularity so a few places can't ossify the list
     // Community hard-hide thresholds live at module level (COMMUNITY_HIDE_*) and are
     // applied below via isCommunityRejected() — the SAME gate the model-name dislike
@@ -2069,14 +2073,25 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
         // Sub-type kind gate: the cache used to record only the ACTION a place
         // was shown under ('shopping'), never the chip's sub-type — so a
         // Jewelry refill backfilled malls, streets and food stores ("Pnduk
-        // dried fruits" labeled Jewelry, 2026-08-20 prod screenshot). A row
-        // passes when (a) its actions carry the sub-type tag — written by the
-        // serve-time tagger or hand-set by a validator (their word OVERRIDES
-        // Google's types: Vernissage genuinely sells jewelry even though
-        // Google calls it a market) — or (b) its own Google types match, via
-        // the SAME comparator the live filter uses (lenient on unknown types).
-        const subTagged = subType && Array.isArray(d.actions) && d.actions.includes(subType);
-        if (subType && !subTagged && !googleService.placeMatchesActionType(action, subType, d.types, d.primaryType)) continue;
+        // dried fruits" labeled Jewelry, 2026-08-20 prod screenshot).
+        // The row's own sub-type tags (serve-time tagger or validator-set) are
+        // AUTHORITATIVE — in BOTH directions. Pass when tagged with the
+        // requested sub-type (a validator's word overrides Google's types:
+        // Vernissage can be hand-tagged 'jewelry' though Google says market).
+        // Drop when tagged only with OTHER sub-types — a place curated
+        // 'jewelry' must never backfill Malls just because its cached Google
+        // types happen to be missing ("Chance Jewelry Store" served under
+        // Malls, 2026-08-20 prod). Only rows with NO sub-type tags at all
+        // (legacy cache) fall back to the Google-types comparator, which stays
+        // lenient when those are unknown too.
+        if (subType) {
+            const rowSubTags = Array.isArray(d.actions) ? d.actions.filter(a => SHOP_SUBTYPE_TAGS.includes(a)) : [];
+            if (rowSubTags.length) {
+                if (!rowSubTags.includes(subType)) continue;
+            } else if (!googleService.placeMatchesActionType(action, subType, d.types, d.primaryType)) {
+                continue;
+            }
+        }
         // Price-tier gate (Step 3): for the price-relevant actions, drop a cached
         // place whose KNOWN tier is the clear opposite of the user's style (luxury
         // user vs a budget hostel, etc.). Unknown tier → kept (tierMismatch false).
@@ -6970,7 +6985,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                             // Pull a wider nearby pool than the original fetch so we have spares.
                             // userRegion is passed through, so this adds no Google API calls
                             // (region detection is skipped and distances are computed locally).
-                            const backfillPool = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount * 3, userRegion, requestId);
+                            // subType included — without it this pool queried the
+                            // bare 'shopping' tag (matches nothing by design) and
+                            // logged a confusing sub-typeless proximity line.
+                            const backfillPool = await proximityService.findSmartProximityPlaces(effectiveLocation, preferences, action, userRadius, requestedCount * 3, userRegion, requestId, subType);
                             // Destinations are validator-curated, so their category is
                             // taken at face value here too — no schedule filter (see the
                             // note at the primary destination pull).
