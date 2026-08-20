@@ -161,7 +161,12 @@ function buildPlaceScopeFilter(user) {
 // Post-moderation queue over PlaceCache: everything is 'visible' by default;
 // staff bury garbage ('hidden') or endorse good places ('verified').
 // ─────────────────────────────────────────────────────────────────────────────
-const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping'];
+const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping',
+    // Shopping sub-types — curatable so validators can mark WHICH kind of shop
+    // a cached place is (drives the sub-typed quick-action/chat backfill).
+    // A sub-typed place should also keep the umbrella 'shopping' tag: Explore
+    // rails and coverage counts group by 'shopping', not by sub-type.
+    'souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
 const EXPLORE_INTEREST_TAGS = ['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink', 'luxury', 'budget'];
 
 // GET /api/staff/explore-places

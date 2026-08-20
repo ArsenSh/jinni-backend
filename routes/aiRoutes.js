@@ -2014,7 +2014,7 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
     if (excludePlaceIds.length) query.placeId = { $nin: excludePlaceIds };
 
     const docs = await PlaceCache.find(query)
-        .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos explore interests')
+        .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos explore interests actions')
         .limit(200)                                    // hard ceiling so a big cache never blows up the scan
         .lean();
 
@@ -2066,13 +2066,17 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
         // the cache doc/photos stay; it is backfill-only and self-healing — if
         // sentiment recovers and any condition stops holding, the place returns.
         if (isCommunityRejected(d.likes, d.dislikes)) continue;
-        // Sub-type kind gate: the cache records only the ACTION a place was
-        // shown under ('shopping'), not the chip's sub-type — so a Jewelry
-        // refill used to backfill malls, streets and food stores ("Pnduk dried
-        // fruits" labeled Jewelry, 2026-08-20 prod screenshot). Gate on the
-        // place's own Google types via the SAME comparator the live filter
-        // uses; lenient when types are unknown (keeps thin markets full).
-        if (subType && !googleService.placeMatchesActionType(action, subType, d.types, d.primaryType)) continue;
+        // Sub-type kind gate: the cache used to record only the ACTION a place
+        // was shown under ('shopping'), never the chip's sub-type — so a
+        // Jewelry refill backfilled malls, streets and food stores ("Pnduk
+        // dried fruits" labeled Jewelry, 2026-08-20 prod screenshot). A row
+        // passes when (a) its actions carry the sub-type tag — written by the
+        // serve-time tagger or hand-set by a validator (their word OVERRIDES
+        // Google's types: Vernissage genuinely sells jewelry even though
+        // Google calls it a market) — or (b) its own Google types match, via
+        // the SAME comparator the live filter uses (lenient on unknown types).
+        const subTagged = subType && Array.isArray(d.actions) && d.actions.includes(subType);
+        if (subType && !subTagged && !googleService.placeMatchesActionType(action, subType, d.types, d.primaryType)) continue;
         // Price-tier gate (Step 3): for the price-relevant actions, drop a cached
         // place whose KNOWN tier is the clear opposite of the user's style (luxury
         // user vs a budget hostel, etc.). Unknown tier → kept (tierMismatch false).
@@ -3696,7 +3700,7 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 .catch(err => console.warn('[chat] PlaceCache useCount update failed:', err.message));
             // …but category tagging skips validator-curated docs (curation lock).
             if (detectedActionType && CHAT_TAGGABLE_ACTIONS.has(detectedActionType)) {
-                PlaceCache.updateMany({ placeId: { $in: chatShownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: detectedActionType } })
+                PlaceCache.updateMany({ placeId: { $in: chatShownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: (detectedActionType === 'shopping' && detectedSubType) ? { $each: [detectedActionType, detectedSubType] } : detectedActionType } })
                     .catch(err => console.warn('[chat] PlaceCache tag update failed:', err.message));
             }
         }
@@ -7387,7 +7391,10 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                      * places cannot hold one, so events are simply never cached.
                      */
                     if (action !== 'events') {
-                        PlaceCache.updateMany({ placeId: { $in: shownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: action } })
+                        // Shopping serves record the chip's sub-type alongside the
+                        // umbrella tag, so the cache knows a jewelry store IS one —
+                        // validators previously could never see/set this either.
+                        PlaceCache.updateMany({ placeId: { $in: shownPlaceIds }, actionsCurated: { $ne: true } }, { $addToSet: { actions: (action === 'shopping' && subType) ? { $each: [action, subType] } : action } })
                             .catch(err => console.warn('[quick-action] action-tag update failed:', err.message));
                     }
                 }
