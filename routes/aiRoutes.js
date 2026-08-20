@@ -2161,6 +2161,16 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
                 continue;
             }
         }
+        // Same comparator for NON-subtyped actions. The serve-time tagger
+        // stamps EVERY served place with the action it appeared under, so one
+        // restaurant ever served under Photo Spots backfilled there forever
+        // (user report 2026-08-20: photo_spots grid mostly restaurants).
+        // Landmark actions (photo_spots/historical/hidden_gems) get the
+        // exclusion gate — dining/lodging/retail-primary rows drop; restaurants
+        // and hotels get their inclusion gates; unknown types stay lenient.
+        else if (!googleService.placeMatchesActionType(action, null, d.types, d.primaryType)) {
+            continue;
+        }
         // Price-tier gate (Step 3): for the price-relevant actions, drop a cached
         // place whose KNOWN tier is the clear opposite of the user's style (luxury
         // user vs a budget hostel, etc.). Unknown tier → kept (tierMismatch false).
