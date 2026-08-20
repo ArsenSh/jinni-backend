@@ -1412,6 +1412,31 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                     cands = cands.filter(c => googleService.placeMatchesActionType(detectedActionType, detectedSubType, c.types || [], c.primaryType || null));
                                     if (cands.length !== beforeK) console.log(`[chat grounding] kind filter (${detectedActionType}${detectedSubType ? '/' + detectedSubType : ''}): dropped ${beforeK - cands.length} off-type place(s)`);
                                 }
+                                // PRICE gate — grounded places were never budget-checked
+                                // (prod 2026-08-20: $20–40 Vitrage/Persona carded against an
+                                // explicit $5–10 budget; only DB rows respect the budget).
+                                // Two strengths, both keyed off Google's own priceLevel:
+                                //  • travelStyle alone → the app-wide CONSERVATIVE rule
+                                //    (tierMismatch: budget drops only $$$$, luxury only $ —
+                                //    same rule the cache backfill applies);
+                                //  • an explicit NUMERIC budget tightens it: max ≤ $15/person
+                                //    also drops $$$ (tier 3), min ≥ $60 also drops $ (tier 1).
+                                // Unknown price → ALWAYS kept (never punish missing data).
+                                if (isPriceAction(detectedActionType)) {
+                                    const gStyle = String(temporaryPreferences.travelStyle || '').toLowerCase();
+                                    const gBudget = temporaryPreferences.budget;
+                                    const gNb = (gBudget?.min && gBudget?.max) ? currencyService.normalizeBudgetToUSD(gBudget) : null;
+                                    const beforeP = cands.length;
+                                    cands = cands.filter(c => {
+                                        const tier = priceTier(c.types || [], c.primaryType || null, c.price_level ?? null).tier;
+                                        if (!tier) return true;
+                                        if (tierMismatch(tier, gStyle)) return false;
+                                        if (gNb && gNb.max <= 15 && tier >= 3) return false;
+                                        if (gNb && gNb.min >= 60 && tier === 1) return false;
+                                        return true;
+                                    });
+                                    if (cands.length !== beforeP) console.log(`[chat grounding] price filter (style=${gStyle || 'none'}${gNb ? ` budget=$${Math.round(gNb.min)}-$${Math.round(gNb.max)}` : ''}): dropped ${beforeP - cands.length} off-budget place(s)`);
+                                }
                                 if (targetRegion) {
                                     const before = cands.length;
                                     cands = cands.filter(c => {
@@ -1725,7 +1750,15 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                 actualTokensUsed = inputTokens;
                 if (actualTokensUsed > 0 && req.userLimit) {
                     const correction = actualTokensUsed - estimatedTokens;
-                    if (correction > 0) { await req.userLimit.checkAndUpdateUsage(correction, 0, 0) }
+                    if (correction > 0) {
+                        // The reply has ALREADY streamed — checkAndUpdateUsage throws
+                        // when the correction crosses the user's daily cap, and here
+                        // that surfaced as an UNHANDLED REJECTION (prod 2026-08-20,
+                        // "Daily token limit reached" ×2). Record what we can; the
+                        // limit properly gates the NEXT request, not this bookkeeping.
+                        try { await req.userLimit.checkAndUpdateUsage(correction, 0, 0) }
+                        catch (e) { console.warn(`[limits] post-stream token correction skipped: ${e.message}`) }
+                    }
                 }
             };
 
