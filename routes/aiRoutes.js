@@ -1085,7 +1085,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // phone numbers and live photos) and makes the product look inconsistent.
         // Pin the framing here, next to the grounding injection it complements.
         if (contextMessages[0] && typeof contextMessages[0].content === 'string') {
-            contextMessages[0].content += `\n\nIMPORTANT — about your own capabilities: you are part of a travel app that verifies places through live Google data. NEVER describe your own architecture, training data, or knowledge cutoff, and NEVER tell the user you "cannot browse the internet", "have a fixed dataset", or "cannot access real-time information". If a specific detail (phone, hours, price) was provided to you as VERIFIED PLACE DATA, use it exactly. If a detail was NOT provided, briefly say that specific detail isn't in your verified data yet — and, when a place card is shown, tell the user they can tap "More" on it for the website, phone, opening hours, and directions. NEVER tell the user to look a place up on Google Maps or an external website; the app itself surfaces those details on the card. Do NOT pad replies with "check their website/Google for hours and the menu" — reserve any suggestion for a genuinely useful tip (a dish worth trying, the best time to visit), never for sending the user elsewhere.`;
+            contextMessages[0].content += `\n\nIMPORTANT — about your own capabilities: you are part of a travel app that verifies places through live Google data. NEVER describe your own architecture, training data, or knowledge cutoff, and NEVER tell the user you "cannot browse the internet", "have a fixed dataset", or "cannot access real-time information". If a specific detail (phone, hours, price) was provided to you as VERIFIED PLACE DATA, use it exactly. If a detail was NOT provided, briefly say that specific detail isn't in your verified data yet — and, when a place card is shown, tell the user they can tap "More" on it for the website, phone, opening hours, and directions. NEVER tell the user to look a place up on Google Maps or an external website; the app itself surfaces those details on the card. Do NOT pad replies with "check their website/Google for hours and the menu" — reserve any suggestion for a genuinely useful tip (a dish worth trying, the best time to visit), never for sending the user elsewhere. PRICES: unless a price was provided to you as VERIFIED PLACE DATA, you do NOT know what a specific place charges. You may offer a rough idea clearly framed as an unverified typical range for that kind of place in that city ("a dinner like this typically runs …, though I don't have this place's actual prices"), but NEVER state invented per-place prices or ranges as fact.`;
         }
         // MATCH HONESTY — the general fix for "relabel a place to fit the request"
         // (e.g. presenting an Armenian restaurant as "Uzbek"). Applies to EVERY
@@ -1358,11 +1358,21 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                             // Prefer the intent LLM's clean query ("armenian restaurant
                             // Dubai") — it resolves follow-ups and drops conversational
                             // junk. Only fall back to stripping the raw message.
+                            // When the LLM tier AFFIRMATIVELY returned an empty
+                            // place_search_query, the message isn't asking to FIND
+                            // places (e.g. "how much is each of these?" about cards
+                            // already shown) — skip grounding instead of Googling the
+                            // raw question verbatim (prod 2026-08-20: findPlaces
+                            // query="how much is approximate budget of…?" → 0 results,
+                            // one wasted paid call). The regex fallback tier carries no
+                            // searchQuery, so it keeps the raw-message path.
+                            const llmSaysNoSearch = intent && intent.source === 'llm' && !intent.searchQuery;
                             let gq = (intent && intent.searchQuery) ? intent.searchQuery : String(processedMessage || '')
                                 .replace(/\b(suggest|recommend|please|can you|could you|show me|find me|give me|tell me|i want|i'?m looking for|looking for|some|a few|the best|nearby|near me|good|nice|no|simply|just|there)\b/gi, ' ')
                                 .replace(/\s+/g, ' ').trim();
                             if (city && !new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(gq)) gq += ` ${city}`;
-                            if (gq.length >= 3) {
+                            if (llmSaysNoSearch) { console.log('[chat grounding] skipped — intent says the message is not a place search'); }
+                            else if (gq.length >= 3) {
                                 // Cache the search results (shared, 30 min) so a repeated
                                 // "armenian restaurants Dubai" costs one Places call, not one
                                 // per user per ask. Key: query + rounded area.
@@ -9312,7 +9322,7 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             actions: { $in: EXPLORE_CATEGORIES },
             'details.geometry.location.lat': { $gte: centerLat - dLat, $lte: centerLat + dLat },
             'details.geometry.location.lng': { $gte: centerLng - dLng, $lte: centerLng + dLng },
-        }).select('placeId name rating actions primaryType types photos likes dislikes explore details.geometry.location details.formatted_address details.vicinity').lean();
+        }).select('placeId name rating actions primaryType types photos likes dislikes explore interests priceLevel details.geometry.location details.formatted_address details.vicinity').lean();
 
         // Partner-tier glow: match active partner businesses to cached places by
         // normalized name (a partner's cache entry was created from the same
@@ -9321,12 +9331,26 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
         const normBizName = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
         const bizTiers = new Map();
         try {
-            const bizRows = await Business.find({ status: 'active' }).select('name partnership.tier').lean();
+            const bizRows = await Business.find({ status: 'active' }).select('name partnership.tier type pricing').lean();
             for (const b of bizRows) {
                 const k = normBizName(b.name);
-                if (k) bizTiers.set(k, b.partnership?.tier || 'verified');
+                // Not only the tier glow anymore: the business's OWN tags and
+                // owner-entered pricing feed the preference filter below —
+                // richer and more authoritative than the cache row's Google data.
+                if (k) bizTiers.set(k, { tier: b.partnership?.tier || 'verified', types: b.type || [], pricing: b.pricing || null });
             }
         } catch (e) { /* decorative only */ }
+
+        // ── Preference inputs for per-place filtering & ranking (see row loop) ──
+        const prefStyle = String(user?.preferences?.travelStyle || '').toLowerCase();
+        const prefBudgetRaw = user?.preferences?.budget;
+        const prefNb = (prefBudgetRaw?.min && prefBudgetRaw?.max) ? currencyService.normalizeBudgetToUSD(prefBudgetRaw) : null;
+        // Onboarding stores 'food_drink'; place tags use 'food&drink'.
+        const userInterestTags = new Set((user?.preferences?.interests || [])
+            .map(i => String(i).toLowerCase() === 'food_drink' ? 'food&drink' : String(i).toLowerCase()));
+        // Which tags COUNT as interests (style/category tags like luxury or
+        // 'restaurants' must not trigger the interest gate).
+        const INTEREST_TAG_VOCAB = new Set(['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink']);
 
         const HARD_HIDE = (r) => (r.dislikes || 0) >= 3 && (r.dislikes || 0) > (r.likes || 0) * 2;   // community-buried
         // Auto-quality gate: weak rating or net-negative feedback keeps a place off
@@ -9357,10 +9381,58 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
                 distanceKm: Math.round(distKm * 10) / 10,
                 likes: r.likes || 0,
                 verified: modStatus === 'verified',
-                tier: bizTiers.get(normBizName(r.name)) || null,
+                tier: (bizTiers.get(normBizName(r.name)) || {}).tier || null,
             };
+            // ── Preference gates & fit (Arsen 2026-08-20: Explore must respect
+            // interests, style AND budget — reading the cache row AND, for
+            // partners, the business's own tags/pricing) ──────────────────────
+            const biz = bizTiers.get(normBizName(r.name)) || null;
+            // Price tier: Google's priceLevel first; else the business's own
+            // luxury/budget tag (owner-entered).
+            let rowTier = priceTier(r.types, r.primaryType, r.priceLevel).tier;
+            if (!rowTier && biz) {
+                if ((biz.types || []).includes('luxury')) rowTier = 4;
+                else if ((biz.types || []).includes('budget')) rowTier = 1;
+            }
+            // Owner-entered price, normalized to USD for the numeric band check.
+            let bizUsd = null;
+            if (biz?.pricing) {
+                const p = proximityService.effectivePrice(biz.pricing);
+                if (p != null && p > 0) {
+                    try { bizUsd = currencyService.normalizeBudgetToUSD({ min: p, max: p, currency: biz.pricing.currency || 'USD' }).min } catch (_) { /* keep null */ }
+                }
+            }
+            // Interest tags from BOTH sources vs the user's selection.
+            const placeInterestTags = [...(r.interests || []), ...((biz && biz.types) || [])]
+                .map(t => String(t).toLowerCase()).filter(t => INTEREST_TAG_VOCAB.has(t));
+            const interestMatches = placeInterestTags.filter(t => userInterestTags.has(t)).length;
+            const interestFit = interestMatches ? Math.min(interestMatches, 2) / 2 : 0;
+            // HARD interest gate (founder's rule: a selected interest must be
+            // respected): a place whose interest tags are KNOWN and share
+            // nothing with the user's selection is dropped. Untagged places
+            // stay — unknown is never punished — but rank below matches.
+            if (userInterestTags.size > 0 && placeInterestTags.length > 0 && interestMatches === 0) continue;
+
             // A place can belong to several categories; list it under each it claims.
-            for (const c of r.actions || []) if (categories[c]) categories[c].push(card);
+            for (const c of r.actions || []) {
+                if (!categories[c]) continue;
+                // HARD price gates (price-relevant categories, KNOWN data only —
+                // same rules as chat grounding): style drops the opposite
+                // extreme; a numeric budget tightens it; an owner-entered price
+                // outside the band drops (free bypasses, like budgetMatchClause).
+                if (isPriceAction(c)) {
+                    if (rowTier) {
+                        if (tierMismatch(rowTier, prefStyle)) continue;
+                        if (prefNb && prefNb.max <= 15 && rowTier >= 3) continue;
+                        if (prefNb && prefNb.min >= 60 && rowTier === 1) continue;
+                    }
+                    if (prefNb && bizUsd != null && bizUsd !== 0 && (bizUsd < prefNb.min || bizUsd > prefNb.max)) continue;
+                }
+                // SOFT ranking bonus: interest overlap always; tier fit on
+                // price categories. Consumed by the sort below, then stripped.
+                const fit = 0.6 * interestFit + (isPriceAction(c) ? 0.6 * tierFit(rowTier, prefStyle) : 0);
+                categories[c].push(fit ? { ...card, _fit: fit } : card);
+            }
         }
 
         /* ── Events: merged from their own sources, not the place cache ──────
@@ -9450,11 +9522,15 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
             for (const [re, cat] of INTEREST_TO_CATEGORY) if (re.test(key)) interestScore[cat] = (interestScore[cat] || 0) + 1;
         }
 
-        // Rank each category: human-verified first, then rating, then community likes.
+        // Rank each category: human-verified first, then rating PLUS the
+        // preference fit (interest overlap + price-tier fit), then likes.
+        // `_fit` is internal — stripped after the cut.
         let total = 0;
         for (const c of EXPLORE_CATEGORIES) {
-            categories[c].sort((a, b) => (b.verified - a.verified) || (b.rating || 0) - (a.rating || 0) || (b.likes || 0) - (a.likes || 0));
-            categories[c] = categories[c].slice(0, 40);
+            categories[c].sort((a, b) => (b.verified - a.verified)
+                || (((b.rating || 0) + (b._fit || 0)) - ((a.rating || 0) + (a._fit || 0)))
+                || (b.likes || 0) - (a.likes || 0));
+            categories[c] = categories[c].slice(0, 40).map(({ _fit, ...rest }) => rest);
             total += categories[c].length;
         }
 
