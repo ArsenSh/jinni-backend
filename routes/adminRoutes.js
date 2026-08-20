@@ -2292,7 +2292,7 @@ router.get('/limits', async (req, res) => {
                 limitFreeDailyPlaces: cfg.limitFreeDailyPlaces || 100,
                 limitPremiumDailyTokens: cfg.limitPremiumDailyTokens || 50000,
                 limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200,
-                zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, historical: 500, hidden_gems: 900 }
+                zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, historical: 500, hidden_gems: 900, souvenirs: 300, clothing: 300, market: 300, jewelry: 300, food: 300 }
             },
             free: tier(false),
             premium: tier(true)
@@ -2315,7 +2315,7 @@ router.post('/limits', async (req, res) => {
         // Business limits: per-category visibility radius (50–5000 m)
         if (req.body.zoneRadiusM && typeof req.body.zoneRadiusM === 'object') {
             const zr = {};
-            for (const k of ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems']) {
+            for (const k of ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems', 'souvenirs', 'clothing', 'market', 'jewelry', 'food']) {
                 const v = parseInt(req.body.zoneRadiusM[k], 10);
                 if (!Number.isFinite(v) || v < 50 || v > 5000) {
                     return res.status(400).json({ success: false, error: `zoneRadiusM.${k} must be 50–5000 meters` });

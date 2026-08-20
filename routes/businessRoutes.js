@@ -322,7 +322,7 @@ function resolveZoneEntry(businesses, incomingTier) {
     return {canEnter: false, displaces: false, waitlisted: false, blocked: true, mustUpgradeTo: 'spotlight', message: 'This zone is full. A free Verified listing cannot enter — please apply as Spotlight or Signature.'}
 }
 // ── Multi-source business verification ───────────────────────────────────────
-const GOOGLE_VERIFIABLE = ['restaurants', 'hotels', 'historical', 'hidden_gems']
+const GOOGLE_VERIFIABLE = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'souvenirs', 'clothing', 'market', 'jewelry', 'food']
 
 function nameSimilarity(a, b) {
     if (!a || !b) return 0
@@ -1155,7 +1155,10 @@ router.post('/apply', applyLimiter, conditionalUpload, async (req, res) => {
         } = bodyData
         // ── 1. Basic validation ──────────────────────────────────
         if (!name || !type?.length || !location?.city || !location?.address) {return res.status(400).json({ error: 'Missing required fields' })}
-        const mainCategories = ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems']
+        // 'historical' stays accepted server-side for existing rows/back-compat,
+        // but the onboarding UI no longer offers it. Shop sub-types are primary
+        // categories here (no 'shopping' umbrella, no self-serve 'mall').
+        const mainCategories = ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems', 'souvenirs', 'clothing', 'market', 'jewelry', 'food']
         const mainCategory = type.find(t => mainCategories.includes(t))
         if (!mainCategory) {return res.status(400).json({ error: 'A main business category is required' })}
         // ── Server-side tier enforcement ────────────────────────────────────

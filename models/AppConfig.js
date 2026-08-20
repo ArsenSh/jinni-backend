@@ -90,6 +90,11 @@ const appConfigSchema = new mongoose.Schema({
         events:      { type: Number, default: 300 },
         historical:  { type: Number, default: 500 },
         hidden_gems: { type: Number, default: 900 },
+        souvenirs:   { type: Number, default: 300 },
+        clothing:    { type: Number, default: 300 },
+        market:      { type: Number, default: 300 },
+        jewelry:     { type: Number, default: 300 },
+        food:        { type: Number, default: 300 },
     },
     /* Coverage gate (admin Coverage tab): per-city cache-warmth Google gating.
      * See services/coverageService.js. Master OFF by default — deploying this
