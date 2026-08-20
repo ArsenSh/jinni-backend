@@ -7766,6 +7766,7 @@ function generateTargetedPrompt(action, searchContext, preferences, requestedCou
             ? `\n        Tailor the selection to this traveler's interests — favor: ${criteria.join('; ')}.`
             : '';
         return `As a local photography guide for ${searchContext}, recommend EXACTLY ${requestedCount} of the most photogenic places — scenic viewpoints, panoramic overlooks, iconic landmarks, striking architecture, picturesque old streets, colorful or unusual spots, and beautiful natural settings that visitors can actually reach and photograph.${interestText}
+        CRITICAL — stay LOCAL: every place must be within roughly 45 km of ${searchContext}. Do NOT suggest famous sights in other regions or countries (they will be discarded unseen, wasting a slot).
         Prioritize places genuinely known for how they look, not generic listings.${candidateText}
         RESPONSE FORMAT:
         [Place 1], [Place 2], ... [Place ${requestedCount}]
