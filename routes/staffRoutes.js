@@ -164,8 +164,8 @@ function buildPlaceScopeFilter(user) {
 const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping',
     // Shopping sub-types — curatable so validators can mark WHICH kind of shop
     // a cached place is (drives the sub-typed quick-action/chat backfill).
-    // A sub-typed place should also keep the umbrella 'shopping' tag: Explore
-    // rails and coverage counts group by 'shopping', not by sub-type.
+    // The umbrella 'shopping' tag is AUTO-derived in the PATCH below whenever a
+    // sub-type is set — validators never click it themselves.
     'souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
 const EXPLORE_INTEREST_TAGS = ['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink', 'luxury', 'budget'];
 
@@ -255,6 +255,17 @@ router.patch('/explore-places/:placeId/actions', requirePermission('moderateExpl
             // actionsCurated locks the array against runtime re-tagging — see
             // the PlaceCache schema comment.
             set.actions = body.actions.filter(a => EXPLORE_MOD_CATEGORIES.includes(a));
+            // Umbrella auto-derive: a validator clicks ONLY the concrete shop
+            // sub-type; 'shopping' is added for them because cache-land readers
+            // group by it (Explore's Shops rail, the backfill candidate query,
+            // the curated wrong-category gate, coverage counts). Business/
+            // Destination have no 'shopping' tag by design — PlaceCache needs
+            // it, so it's derived here, never a second manual click. Removing
+            // every sub-type AND the shopping chip still fully un-shops a place.
+            const SHOP_SUBTYPES = ['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
+            if (set.actions.some(a => SHOP_SUBTYPES.includes(a)) && !set.actions.includes('shopping')) {
+                set.actions.push('shopping');
+            }
             set.actionsCurated = true;
         }
         if (Array.isArray(body.interests)) set.interests = body.interests.filter(t => EXPLORE_INTEREST_TAGS.includes(t));
