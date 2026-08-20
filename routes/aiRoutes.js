@@ -2066,6 +2066,13 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
         // the cache doc/photos stay; it is backfill-only and self-healing — if
         // sentiment recovers and any condition stops holding, the place returns.
         if (isCommunityRejected(d.likes, d.dislikes)) continue;
+        // Sub-type kind gate: the cache records only the ACTION a place was
+        // shown under ('shopping'), not the chip's sub-type — so a Jewelry
+        // refill used to backfill malls, streets and food stores ("Pnduk dried
+        // fruits" labeled Jewelry, 2026-08-20 prod screenshot). Gate on the
+        // place's own Google types via the SAME comparator the live filter
+        // uses; lenient when types are unknown (keeps thin markets full).
+        if (subType && !googleService.placeMatchesActionType(action, subType, d.types, d.primaryType)) continue;
         // Price-tier gate (Step 3): for the price-relevant actions, drop a cached
         // place whose KNOWN tier is the clear opposite of the user's style (luxury
         // user vs a budget hostel, etc.). Unknown tier → kept (tierMismatch false).
