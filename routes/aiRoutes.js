@@ -5604,6 +5604,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                         excludePlaceIds,   // View More: skip already-shown places in the shortlist
                         ttlMin: pcfg.googlePrefetchTtlMin || 1440,
                         requestId,
+                        interests: preferences?.interests || [],   // photo_spots: picks sweep lenses
                     });
                     console.log(`[quick-action] google prefetch (layer ${currentLayer}, mode=${prefetchMode}): ${googleCandidates.length} candidate(s) for action=${action}`);
                 }
