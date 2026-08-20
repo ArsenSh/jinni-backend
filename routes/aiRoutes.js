@@ -916,7 +916,15 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // fetched a forecast). Fallback tier still uses the old regex.
         const isWeatherQuery = !!intent.needsWeather;
         let weatherData = null;
-        if (isWeatherQuery && effectiveLocation && !effectiveLocation.error) {weatherData = await getCurrentWeather(effectiveLocation.lat, effectiveLocation.lng)}
+        if (isWeatherQuery) {
+            // Weather follows the place the user NAMED — even in nearby mode,
+            // where effectiveLocation deliberately stays on GPS. "What about
+            // Dubai?" asked from Yerevan must fetch DUBAI's forecast (prod
+            // 2026-08-20: the model improvised generic climate prose instead).
+            // Falls back to the user's effective (GPS/settings) location.
+            const wLoc = placeCoordinates || ((effectiveLocation && !effectiveLocation.error) ? effectiveLocation : null);
+            if (wLoc) { weatherData = await getCurrentWeather(wLoc.lat, wLoc.lng) }
+        }
 
         let lastProcessedLength = 0;
         let currentRecommendations = [];
@@ -3525,6 +3533,7 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 : Math.max(10, Math.round(userRadiusKm * 1.5));
             const repeatIdx = new Set();
             const tooFarIdx = new Set();
+            const _kmByIdx = new Map();   // idx → km from center, for the far-cluster rule below
             const dislikedIdx = new Set();
             // Places a validator curated OUT of this turn's category (see the
             // curated-gate comment block above findCachedBackfill). Kept as its own
@@ -3547,7 +3556,7 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 if (r.placeId && shown.has(r.placeId)) repeatIdx.add(idx);
                 if (hasCenter && Number.isFinite(r.latitude) && Number.isFinite(r.longitude)) {
                     const km = _haversineKm(centerLat, centerLng, r.latitude, r.longitude);
-                    if (km > MAX_KM) { tooFarIdx.add(idx); console.log(`[chat] dropped out-of-area rec "${r.name}" (${Math.round(km)}km from search center)`); }
+                    if (km > MAX_KM) { tooFarIdx.add(idx); _kmByIdx.set(idx, km); console.log(`[chat] out-of-area rec "${r.name}" (${Math.round(km)}km from search center)`); }
                 }
                 // Disliked by THIS user (latest vote per place, /my-votes semantics).
                 // Votes were stored under the verified _id for DB places, else the
@@ -3576,9 +3585,37 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                 }
             });
             const hasText = textParts.some(p => p.type === 'text' && (p.content || '').trim());
-            // Too-far: keep all if EVERY rec is too far (usually a wrong search center,
-            // not genuinely bad places); otherwise drop the far ones.
-            const dropFar = tooFarIdx.size > 0 && tooFarIdx.size < recommendations.length;
+            // Too-far: when only SOME recs are far, drop those. When EVERY rec is
+            // far, the search CENTER (not the places) is usually wrong — e.g. an
+            // "in dubai" follow-up whose destination didn't re-center the session.
+            // The old rule kept ALL of them, which also shipped genuinely wrong
+            // places: a NEW YORK Louis Vuitton carded beside the Dubai one (prod
+            // 2026-08-20). Refined: trust only the far recs that CLUSTER with the
+            // one closest to the center — mutually-close results are one coherent
+            // faraway answer (the same city); lone outliers thousands of km from
+            // that cluster still drop.
+            let dropFar = tooFarIdx.size > 0 && tooFarIdx.size < recommendations.length;
+            if (tooFarIdx.size > 0 && tooFarIdx.size === recommendations.length) {
+                let anchorIdx = null;
+                for (const idx of tooFarIdx) {
+                    if (anchorIdx === null || (_kmByIdx.get(idx) ?? Infinity) < (_kmByIdx.get(anchorIdx) ?? Infinity)) anchorIdx = idx;
+                }
+                const anchor = anchorIdx !== null ? recommendations[anchorIdx] : null;
+                if (anchor && Number.isFinite(anchor.latitude) && Number.isFinite(anchor.longitude)) {
+                    const FAR_CLUSTER_KM = 150;
+                    for (const idx of [...tooFarIdx]) {
+                        if (idx === anchorIdx) { tooFarIdx.delete(idx); continue; }
+                        const r = recommendations[idx];
+                        if (r && Number.isFinite(r.latitude) && Number.isFinite(r.longitude)
+                            && _haversineKm(anchor.latitude, anchor.longitude, r.latitude, r.longitude) <= FAR_CLUSTER_KM) {
+                            tooFarIdx.delete(idx);
+                        } else {
+                            console.log(`[chat] far-cluster outlier "${r?.name}" dropped (not near the coherent far cluster)`);
+                        }
+                    }
+                    dropFar = tooFarIdx.size > 0;
+                }
+            }
             // Repeats: drop even when ALL are repeats, as long as the reply still has
             // prose — a follow-up like "how many stars are these?" should answer in
             // text, not re-render cards the user already sees above. Only when dropping
