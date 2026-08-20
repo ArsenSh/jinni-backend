@@ -324,19 +324,39 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // date passes they must stop surfacing — same rule as event businesses.
         // Unlike Business there is no status to lazily flip, so this clause is
         // the sole enforcement point (see eventFreshnessClause's comment).
+        // 'general' = a travel turn with no specific category ("best places to
+        // visit"). It used to fall through to REGION-ONLY here, which dumped a
+        // city's ENTIRE destination pool into the model's context — restaurant
+        // listings included (2026-08-20 prod log: 56 destinations on a general
+        // turn; $20 cafés carded against a $5–10 budget). General means
+        // sightseeing: gate to visit-worthy tags. Dining/lodging destinations
+        // still surface on their own action turns.
+        const GENERAL_DEST_TAGS = [...PHOTO_DEST_TAGS, 'events'];
         const destinationQuery = { isActive: true, $and: [eventFreshnessClause()] };
         if (actionType === 'photo_spots') {
             // Only visually-relevant destinations — excludes e.g. a destination
             // tagged solely 'restaurants', includes parks/viewpoints/heritage/art.
             destinationQuery.type = { $in: PHOTO_DEST_TAGS };
+        } else if (actionType === 'general') {
+            destinationQuery.type = { $in: GENERAL_DEST_TAGS };
         } else if (destinationActionFirstClass.includes(actionType)) {
             // First-class action types are real destination tags → match strictly.
             // For shopping this is the chosen sub-type (effectiveTag), e.g. a
             // covered bazaar tagged 'market' surfaces under the Markets chip.
             destinationQuery.type = { $all: [effectiveTag] };
         }
-        // else (restaurants/hotels): no type gate — region/distance bound the set
+        // else: no type gate — region/distance bound the set
         // and calculatePreferenceScore ranks by the user's interests.
+        // ── Budget gates destinations too ─────────────────────────────────────
+        // Destination.pricing mirrors Business.pricing (validator-entered entry
+        // fees / average meal prices), yet the budget clause only ever applied
+        // to businesses — a $20/person café entered as a Destination sailed
+        // through a $5–10 budget (2026-08-20 prod report). Same rule as
+        // businesses: KNOWN price must fit the band; unknown/free stays (never
+        // punish missing data — parks and viewpoints carry no price).
+        if (shouldFilterBudget && normalizedBudget) {
+            destinationQuery.$and.push(budgetMatchClause(normalizedBudget));
+        }
         // Same region/coordinate filter as businesses, so we don't pull
         // destinations from across the world when the user is in a specific city.
         if (userRegion?.country) {
@@ -353,8 +373,10 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         ]);
         const destFilterMode = actionType === 'photo_spots'
             ? 'photogenic-$in'
-            : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only');
-        console.log(`Proximity DB query: action=${actionType}${effectiveTag !== actionType ? ' subType='+effectiveTag : ''}, style=${userStyle || 'none'} → ${candidateBusinesses.length} businesses, ${candidateDestinations.length} destinations (destination filter: ${destFilterMode})`);
+            : (actionType === 'general'
+                ? 'general-visitworthy-$in'
+                : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only'));
+        console.log(`Proximity DB query: action=${actionType}${effectiveTag !== actionType ? ' subType='+effectiveTag : ''}, style=${userStyle || 'none'}${shouldFilterBudget ? ' budget=on(dest too)' : ''} → ${candidateBusinesses.length} businesses, ${candidateDestinations.length} destinations (destination filter: ${destFilterMode})`);
 
         function hasValidCoords(place) { return place.location?.coordinates?.lat && place.location?.coordinates?.lng; }
         const validBusinesses = candidateBusinesses.filter(hasValidCoords);
