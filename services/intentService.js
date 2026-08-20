@@ -50,7 +50,13 @@ try { AiProviderDailyStats = require('../models/AiProviderDailyStats'); } catch 
 // typical calls return in 1–3s, especially with the "" -translation shortcut
 // below that keeps output tiny for English messages.
 const INTENT_TIMEOUT_MS = parseInt(process.env.INTENT_TIMEOUT_MS, 10) || 8000;
-const ACTION_TYPES = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'general']);
+const ACTION_TYPES = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots', 'general']);
+// Same six sub-types the Shopping quick-action's chips send (proximityService
+// SHOPPING_SUBTYPES / googleService._SHOPPING_BASE). Chat has no chips, so the
+// classifier picks the sub-type from the message itself — without it a
+// "jewelry shop" query had NO correct bucket and fell into hidden_gems or
+// general (which un-gates the destination query → the mall/restaurant leaks).
+const SHOPPING_SUBTYPES = new Set(['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food']);
 
 // ── Tier 0: fast path ────────────────────────────────────────────────────────
 
@@ -113,6 +119,7 @@ function fastPath(message, userLanguage) {
         translated: String(message || ''),
         isTravel: false,
         actionType: 'general',
+        subType: null,
         placeNames: [],
         searchQuery: '',
         needsWeather: false
@@ -141,7 +148,8 @@ Return ONLY this JSON object:
 {"language":"<ISO 639-1 code of the language the CURRENT message is WRITTEN in — judge only its own words, NOT the conversation's language; 'compare these two' in an otherwise-Russian chat is en>",
 "translated":"<the current message translated to English — or an empty string "" if the message is already in English>",
 "is_travel":<true or false>,
-"action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, general>",
+"action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, shopping, photo_spots, general>",
+"shopping_subtype":"<ONLY when action_type is shopping, one of: souvenirs, clothing, market, mall, jewelry, food — otherwise an empty string "">",
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
 "place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
 "needs_weather":<true or false>}
@@ -150,6 +158,8 @@ Rules:
 - is_travel is true when the current message asks about places, food, dining, lodging, attractions, sights, events, activities, shopping, nightlife, directions, or trip planning — OR when it clearly continues such a topic from the conversation (e.g. "any cheaper ones?" right after hotels were shown, "what about near the old town").
 - is_travel is false for greetings, thanks, small talk, meta questions about the assistant, and topics unrelated to travel or local places (programming, health, gifts, homework, etc.) — even if words like "best", "suggest" or "recommend" appear.
 - action_type describes what the CURRENT message asks for (use the conversation to resolve follow-ups). Use "general" when none clearly fits.
+- action_type is "shopping" for any shop, store, boutique, mall, market or bazaar request. shopping_subtype maps: souvenirs & gifts -> souvenirs; clothing, boutiques, fashion, shoes -> clothing; markets & bazaars -> market; malls & department stores -> mall; jewelry, watches, gold (a Rolex store, a jeweler) -> jewelry; gourmet/food/grocery/wine/sweets shops -> food. Use "" only when no sub-type clearly fits.
+- action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
 - needs_weather is true only if answering requires current weather or forecast data (weather, temperature, rain, what to pack, what to wear).`;
 }
@@ -184,6 +194,13 @@ function validateIntent(raw, message) {
         ? raw.action_type.trim().toLowerCase()
         : 'general';
 
+    // Shopping sub-type — only meaningful (and only trusted) on a shopping turn.
+    const subType = (actionType === 'shopping'
+        && typeof raw.shopping_subtype === 'string'
+        && SHOPPING_SUBTYPES.has(raw.shopping_subtype.trim().toLowerCase()))
+        ? raw.shopping_subtype.trim().toLowerCase()
+        : null;
+
     let placeNames = [];
     if (Array.isArray(raw.place_names)) {
         const seen = new Set();
@@ -206,6 +223,7 @@ function validateIntent(raw, message) {
         translated,
         isTravel: raw.is_travel,
         actionType,
+        subType,
         placeNames,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
@@ -270,10 +288,29 @@ async function fallbackClassify(message, userLanguage) {
 
     let actionType = 'general';
     if (/\b(hotel|hotels|accommodation|stay|lodging|inn|resort|guesthouse|hostel)\b/i.test(lower)) { actionType = 'hotels'; }
-    else if (/\b(restaurant|restaurants|dining|food|eat|eatery|diner|cafe|bistro|pub|bar)\b/i.test(lower)) { actionType = 'restaurants'; }
+    else if (/\b(restaurant|restaurants|dining|eat|eatery|diner|cafe|bistro|pub|bar)\b/i.test(lower)) { actionType = 'restaurants'; }
+    // Shopping BEFORE the food/historical/hidden-gems catch-alls so "jewelry
+    // store", "shopping mall", "souvenir shop" land in shopping, not in
+    // hidden_gems/general (the old un-gated fall-through). 'food' moved OUT of
+    // the restaurants regex above for the same reason: "food market" is a
+    // shopping ask, "where to eat" is the restaurants signal.
+    else if (/\b(shop|shops|shopping|store|stores|mall|malls|market|markets|bazaar|bazar|boutique|boutiques|souvenir|souvenirs|jewelry|jewellery|jeweler|jewelery)\b/i.test(lower)) { actionType = 'shopping'; }
+    else if (/\b(food|street food|gourmet)\b/i.test(lower)) { actionType = 'restaurants'; }
     else if (/\b(historical|history|ancient|monument|heritage|archaeological|ruins|fortress|castle)\b/i.test(lower)) { actionType = 'historical'; }
     else if (/\b(hidden|secret|local|gems|off the beaten path|lesser known|underrated)\b/i.test(lower)) { actionType = 'hidden_gems'; }
-    else if (/\b(event|events|activity|activities|festival|celebration|concert|show|performance|exhibition)\b/i.test(lower)) { actionType = 'events'; }
+    else if (/\b(event|events|activity|activities|festival|festivals|celebration|concert|concerts|show|shows|performance|exhibition)\b/i.test(lower)) { actionType = 'events'; }
+    else if (/\b(photo spot|photo spots|viewpoint|viewpoints|panorama|panoramic|scenic|instagram|instagrammable|photogenic|take photos|take pictures)\b/i.test(lower)) { actionType = 'photo_spots'; }
+
+    // Sub-type guess for shopping (mirrors the quick-action chips).
+    let subType = null;
+    if (actionType === 'shopping') {
+        if (/\b(jewelry|jewellery|jewelery|jeweler|watch|watches|gold|diamond|rolex)\b/i.test(lower)) subType = 'jewelry';
+        else if (/\b(mall|malls|department store)\b/i.test(lower)) subType = 'mall';
+        else if (/\b(market|markets|bazaar|bazar)\b/i.test(lower)) subType = 'market';
+        else if (/\b(cloth|clothing|clothes|boutique|boutiques|fashion|shoe|shoes|dress)\b/i.test(lower)) subType = 'clothing';
+        else if (/\b(souvenir|souvenirs|gift|gifts)\b/i.test(lower)) subType = 'souvenirs';
+        else if (/\b(grocery|gourmet|deli|candy|chocolate|sweets|wine|liquor|cheese)\b/i.test(lower)) subType = 'food';
+    }
 
     return {
         source: 'fallback',
@@ -281,6 +318,7 @@ async function fallbackClassify(message, userLanguage) {
         translated: processed,
         isTravel: translationService.isTravelQuery(processed),
         actionType,
+        subType,
         placeNames: translationService.extractPlaceNames(processed),
         searchQuery: '',   // fallback tier has no clean query; grounding derives one
         needsWeather: /\b(weather|temperature|rain|snow|hot|cold|climate|forecast|season|sunny|humid|warm|freezing|pack|wear|umbrella|week|daily|tomorrow|days)\b/i.test(processed)
@@ -322,6 +360,7 @@ async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg
 
     console.log(
         `[intent] source=${result.source} travel=${result.isTravel} action=${result.actionType}` +
+        (result.subType ? `/${result.subType}` : '') +
         ` places=${JSON.stringify(result.placeNames)} lang=${result.language} weather=${result.needsWeather}` +
         ` ms=${Date.now() - started} msg="${String(message).replace(/\s+/g, ' ').slice(0, 60)}"`
     );

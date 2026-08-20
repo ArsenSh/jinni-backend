@@ -674,6 +674,9 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         }
         const userId = req.user.id;
         let detectedActionType = 'general';
+        // Shopping sub-type from the intent pre-pass (jewelry/mall/market/…).
+        // Chat's equivalent of the quick-action chips — see intentService.
+        let detectedSubType = null;
         let estimatedTokens = 0;
         let actualTokensUsed = 0;
         // Load the user + their language BEFORE the usage gate. Previously `messages`
@@ -931,6 +934,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         // ones?" after a hotel list resolves to 'hotels'). Replaces the regex
         // chain that lived inside the business-data block below.
         if (intent.actionType && intent.actionType !== 'general') { detectedActionType = intent.actionType; }
+        if (intent.subType) { detectedSubType = intent.subType; }   // shopping only; null otherwise
         if (isTravelQuery && !placeCoordinates && (!effectiveLocation || effectiveLocation.error === 'location_required')) {
             console.log('❌ LOCATION REQUIRED: Travel query without destination mentioned');
             return res.status(400).json({
@@ -1331,7 +1335,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     const userRadius = effectiveLocation ? (nearbyMode ? effectiveLocation.nearbyRadius : effectiveLocation.discoveryRadius) : (nearbyMode ? 5 : 50);
                     const searchOptions = {radius: userRadius, maxResults: nearbyMode ? 6 : 10};
                     // console.log(`📏 Using radius: ${userRadius}km (${nearbyMode ? 'nearby' : 'discovery'} mode)`);
-                    const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId, null, await buildSeenPenalty(userId) );
+                    const smartProximityResults = await proximityService.findSmartProximityPlaces( locationToUse, temporaryPreferences, detectedActionType, searchOptions.radius, searchOptions.maxResults, null, requestId, detectedSubType, await buildSeenPenalty(userId) );
                     businesses = smartProximityResults.businesses;
                     destinations = smartProximityResults.destinations;
                     /* ── Proactive Google grounding (deterministic retrieval) ────────
@@ -1405,8 +1409,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                 // restaurant for a historical one. Lenient on untyped places.
                                 {
                                     const beforeK = cands.length;
-                                    cands = cands.filter(c => googleService.placeMatchesActionType(detectedActionType, null, c.types || [], c.primaryType || null));
-                                    if (cands.length !== beforeK) console.log(`[chat grounding] kind filter (${detectedActionType}): dropped ${beforeK - cands.length} off-type place(s)`);
+                                    cands = cands.filter(c => googleService.placeMatchesActionType(detectedActionType, detectedSubType, c.types || [], c.primaryType || null));
+                                    if (cands.length !== beforeK) console.log(`[chat grounding] kind filter (${detectedActionType}${detectedSubType ? '/' + detectedSubType : ''}): dropped ${beforeK - cands.length} off-type place(s)`);
                                 }
                                 if (targetRegion) {
                                     const before = cands.length;
@@ -1713,7 +1717,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     res.write(`data: ${JSON.stringify({ type: 'token', content: potentialNameBuffer })}\n\n`);
                     potentialNameBuffer = '';
                 }
-                if (!isClientDisconnected()) { processStreamCompletion(fullResponse, businesses, destinations, message, userId, res, null, effectiveLocation, userPreferences, [], new Set(), requestId, detectedActionType, nearbyMode, healthCheck, inputTokens, useClaudeChat ? 'claude' : 'deepseek', chatSearchCount, alreadyShownPlaceIds, userDislikedIds, chatRealTokens) }
+                if (!isClientDisconnected()) { processStreamCompletion(fullResponse, businesses, destinations, message, userId, res, null, effectiveLocation, userPreferences, [], new Set(), requestId, detectedActionType, nearbyMode, healthCheck, inputTokens, useClaudeChat ? 'claude' : 'deepseek', chatSearchCount, alreadyShownPlaceIds, userDislikedIds, chatRealTokens, detectedSubType) }
             };
 
             // Token-usage correction (runs once the model finishes).
@@ -2979,7 +2983,7 @@ const withEnrichTimeout = (promise, ms = 8000, fallback = null) => Promise.race(
     }),
 ]);
 
-async function processStreamCompletion(aiResponse, businesses, destinations, message, userId, res, req = null, effectiveLocation = null, userPreferences = {}, currentRecommendations = [], emittedRecommendations = new Set(), requestId = null, detectedActionType = 'general', nearbyMode = false, healthCheck = null, inputTokens = 0, provider = 'deepseek', searchCount = 0, alreadyShownPlaceIds = [], userDislikedIds = new Set(), realTokens = null) {
+async function processStreamCompletion(aiResponse, businesses, destinations, message, userId, res, req = null, effectiveLocation = null, userPreferences = {}, currentRecommendations = [], emittedRecommendations = new Set(), requestId = null, detectedActionType = 'general', nearbyMode = false, healthCheck = null, inputTokens = 0, provider = 'deepseek', searchCount = 0, alreadyShownPlaceIds = [], userDislikedIds = new Set(), realTokens = null, detectedSubType = null) {
     try {
         currentRecommendations = currentRecommendations || [];
         emittedRecommendations = emittedRecommendations || new Set();
@@ -3093,7 +3097,12 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                         // are dropped instead of resolved via Google (cards must stay
                         // real — never AI-named places without verification).
                         const covOk = await coverageService.googleAllowed(detectedActionType, effectiveLocation);
-                        let cachedDetails = await withEnrichTimeout(getCachedPlaceDetails(nameObj.name, false, requestId, effectiveLocation, null, null, covOk), 8000, null);
+                        // Shopping turns pass the sub-type's Google included-type
+                        // (e.g. jewelry_store) so a re-resolve can't land on an
+                        // off-kind business. Other actions keep today's behavior.
+                        const expectedType = detectedActionType === 'shopping'
+                            ? googleService.actionIncludedType('shopping', detectedSubType) : null;
+                        let cachedDetails = await withEnrichTimeout(getCachedPlaceDetails(nameObj.name, false, requestId, effectiveLocation, null, expectedType, covOk), 8000, null);
                         // ── Identity check ──────────────────────────────────────
                         // Google text search returns SOMETHING for almost any
                         // string. Only accept the result if its name plausibly
@@ -3157,7 +3166,7 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                     } 
                     else if (entityDetails.types && Array.isArray(entityDetails.types)) { category = getDisplayTypeFromEnum(entityDetails.types) }
                     else {
-                        category = getCategoryFromActionType(detectedActionType);
+                        category = getCategoryFromActionType(detectedActionType, 'en', detectedSubType);
                         const nameLower = nameObj.name.toLowerCase();
                         if (nameLower.includes('hotel') || nameLower.includes('inn') || nameLower.includes('resort')) { category = 'Hotel' } 
                         else if (nameLower.includes('restaurant') || nameLower.includes('cafe') || nameLower.includes('bistro')) { category = 'Restaurant' } 
@@ -3251,8 +3260,8 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
                         const fallbackRec = {
                             id: `chat-rec-${Date.now()}-${i}`,
                             name: nameObj.name,
-                            category: getCategoryFromActionType(detectedActionType),
-                            type: getCategoryFromActionType(detectedActionType).toLowerCase().replace(' ', '_'),
+                            category: getCategoryFromActionType(detectedActionType, 'en', detectedSubType),
+                            type: getCategoryFromActionType(detectedActionType, 'en', detectedSubType).toLowerCase().replace(' ', '_'),
                             description: aiDescription,
                             region: 'Unknown',
                             location: 'Location not specified',
@@ -9147,6 +9156,26 @@ const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'ph
 // Map a user's free-text interests (from onboarding) onto explore categories,
 // so someone who chose "food" and "history" sees those sections first. Keyword
 // match — an interest can boost more than one category.
+// Canonical onboarding interest keys → weighted Explore categories.
+// OnboardingPage saves the KEY of onboarding.interests (family, romantic,
+// nature, adventure, cultural, history, art, food_drink, nightlife,
+// relaxation) — NOT the display label. The regex list below only ever
+// matched 6 of those 10 (family / romantic / adventure / relaxation hit
+// nothing), so for those users Explore silently ignored preferences.
+// Exact-key mapping first (primary category weight 2, secondary 1); the
+// regexes remain as a fallback for legacy free-text interest values.
+const INTEREST_KEY_TO_CATEGORIES = {
+    family:     { events: 2, photo_spots: 1 },
+    romantic:   { restaurants: 2, photo_spots: 1, hidden_gems: 1 },
+    nature:     { photo_spots: 2, hidden_gems: 1 },
+    adventure:  { hidden_gems: 2, photo_spots: 1 },
+    cultural:   { historical: 2, events: 1 },
+    history:    { historical: 2 },
+    art:        { historical: 2, events: 1 },
+    food_drink: { restaurants: 2 },
+    nightlife:  { events: 2, restaurants: 1 },
+    relaxation: { hidden_gems: 2, hotels: 1 },
+};
 const INTEREST_TO_CATEGORY = [
     [/food|restaurant|dining|cuisine|culinary|gastro|eat/i, 'restaurants'],
     [/history|histor|heritage|monument|castle|ruin|ancient|architecture/i, 'historical'],
@@ -9324,7 +9353,14 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
         const interestScore = {};
         for (const c of EXPLORE_CATEGORIES) interestScore[c] = 0;
         for (const it of interests) {
-            for (const [re, cat] of INTEREST_TO_CATEGORY) if (re.test(String(it || ''))) interestScore[cat] = (interestScore[cat] || 0) + 1;
+            const key = String(it || '').toLowerCase().trim();
+            const mapped = INTEREST_KEY_TO_CATEGORIES[key];
+            if (mapped) {
+                for (const [cat, w] of Object.entries(mapped)) interestScore[cat] = (interestScore[cat] || 0) + w;
+                continue;
+            }
+            // Legacy/free-text interest value — fall back to the regex list.
+            for (const [re, cat] of INTEREST_TO_CATEGORY) if (re.test(key)) interestScore[cat] = (interestScore[cat] || 0) + 1;
         }
 
         // Rank each category: human-verified first, then rating, then community likes.
