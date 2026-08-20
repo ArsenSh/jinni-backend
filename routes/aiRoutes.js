@@ -1352,7 +1352,15 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                      * 30 min (repeats are free). Fails safe: any error leaves reply as-is.
                      * Trust > ads: a genuine match may outrank an off-topic partner here,
                      * which is intended (CLAUDE.md: recommendation trust first). */
-                    if (detectedActionType && detectedActionType !== 'general') {
+                    // 'general' used to skip grounding entirely — so place queries
+                    // with no category home ("clubs near me", spas, coworking)
+                    // never reached Google, and the model carded whatever
+                    // destinations were injected (prod 2026-08-20: three
+                    // RESTAURANTS for a nightclub ask). When the intent LLM
+                    // supplied a real place_search_query, ground it: the kind
+                    // filter has no gate for 'general' (lenient) and price gates
+                    // only cover price actions. An empty searchQuery still skips.
+                    if (detectedActionType && (detectedActionType !== 'general' || (intent && intent.source === 'llm' && intent.searchQuery))) {
                         try {
                             const city = locationToUse.city || effectiveLocation?.city || placeCoordinates?.placeName || '';
                             // Prefer the intent LLM's clean query ("armenian restaurant
