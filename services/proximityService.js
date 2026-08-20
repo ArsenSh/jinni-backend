@@ -317,7 +317,14 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // then mislabeled "Hotel" by getCategoryFromAction. If you want nearby
         // destinations as complementary context again, do it as a separate,
         // clearly-labeled section rather than mixing them into the typed results.
-        const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping'];
+        // photo_spots is now FIRST-CLASS too (Arsen, 2026-08-20): the old
+        // guess-by-interest-tags $in heuristic surfaced paragliding, arenas and
+        // even a restaurant as "Photo Spot" — any destination carrying a broad
+        // tag like 'nature' or 'cultural' qualified. The validator's explicit
+        // 'photo_spots' tag is the only DB source now, same trust rule as every
+        // other category; scenic non-tagged places still arrive via the
+        // model+Google path with the landmark kind filter.
+        const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots'];
         const PHOTO_DEST_TAGS = ['photo_spots', 'nature', 'art', 'cultural', 'history', 'historical', 'hidden_gems'];
         // Event freshness applies here too. Destinations tagged 'events' are
         // validator-curated concerts/festivals with a real date, and once that
@@ -333,11 +340,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // still surface on their own action turns.
         const GENERAL_DEST_TAGS = [...PHOTO_DEST_TAGS, 'events'];
         const destinationQuery = { isActive: true, $and: [eventFreshnessClause()] };
-        if (actionType === 'photo_spots') {
-            // Only visually-relevant destinations — excludes e.g. a destination
-            // tagged solely 'restaurants', includes parks/viewpoints/heritage/art.
-            destinationQuery.type = { $in: PHOTO_DEST_TAGS };
-        } else if (actionType === 'general') {
+        if (actionType === 'general') {
             destinationQuery.type = { $in: GENERAL_DEST_TAGS };
         } else if (destinationActionFirstClass.includes(actionType)) {
             // First-class action types are real destination tags → match strictly.
@@ -371,11 +374,9 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             Business.find(baseQuery).lean().exec(),
             Destination.find(destinationQuery).lean().exec()
         ]);
-        const destFilterMode = actionType === 'photo_spots'
-            ? 'photogenic-$in'
-            : (actionType === 'general'
-                ? 'general-visitworthy-$in'
-                : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only'));
+        const destFilterMode = actionType === 'general'
+            ? 'general-visitworthy-$in'
+            : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only');
         console.log(`Proximity DB query: action=${actionType}${effectiveTag !== actionType ? ' subType='+effectiveTag : ''}, style=${userStyle || 'none'}${shouldFilterBudget ? ' budget=on(dest too)' : ''} → ${candidateBusinesses.length} businesses, ${candidateDestinations.length} destinations (destination filter: ${destFilterMode})`);
 
         function hasValidCoords(place) { return place.location?.coordinates?.lat && place.location?.coordinates?.lng; }
