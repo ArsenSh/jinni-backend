@@ -1901,7 +1901,17 @@ function getDisplayTypeFromEnum(typeArray) {
     if (has('art_gallery')) return 'Gallery';
     if (has('church', 'mosque', 'hindu_temple', 'synagogue', 'place_of_worship')) return 'Landmark';
     if (has('amusement_park', 'theme_park', 'zoo', 'aquarium', 'water_park')) return 'Attraction';
-    if (has('shopping_mall', 'department_store', 'store', 'market')) return 'Shopping';
+    // Specific shop kinds BEFORE the generic bucket — Google tags a jewelry
+    // store as ["jewelry_store","store",…], so the old single line labeled
+    // every shop "Shopping" (user report 2026-08-20: jewelry cards in chat
+    // said "Shopping"). Internal sub-type tags (jewelry/mall/…) included so
+    // sub-typed DB records label the same way.
+    if (has('jewelry_store', 'jewelry')) return 'Jewelry Shop';
+    if (has('clothing_store', 'shoe_store', 'boutique', 'clothing')) return 'Clothing Store';
+    if (has('gift_shop', 'souvenir_store', 'souvenirs')) return 'Souvenir Shop';
+    if (has('shopping_mall', 'department_store', 'mall')) return 'Mall';
+    if (has('market', 'supermarket', 'grocery_store', 'food_store')) return 'Market';
+    if (has('store', 'shopping')) return 'Shopping';
     if (has('night_club', 'casino')) return 'Nightlife';
     if (has('historical', 'historical_landmark', 'historical_place')) return 'Historical Site';
     if (has('hidden_gems')) return 'Hidden Gem';
@@ -2228,6 +2238,18 @@ const CURATED_GATE_ACTIONS = new Set(['restaurants', 'hotels', 'historical', 'ev
  * unknown actions and on any failure — the gate can only ever REMOVE places it
  * is certain about.
  */
+// A curated row is IN the 'shopping' category when it carries the umbrella tag
+// OR any shop sub-type tag. Without this, a validator who tagged only
+// 'jewelry' (edits made before the server auto-derived the umbrella tag)
+// accidentally curated the shop out of EVERY shopping serve — "Gold Market"
+// suppressed as wrong-category on a jewelry chat turn, prod 2026-08-20.
+const CURATED_SHOP_SUB_TAGS = ['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
+function curatedInAction(actions, action) {
+    const a = actions || [];
+    if (a.includes(action)) return true;
+    return action === 'shopping' && a.some(t => CURATED_SHOP_SUB_TAGS.includes(t));
+}
+
 async function loadCuratedRejects(placeIds, action) {
     if (!CURATED_GATE_ACTIONS.has(action)) return new Set();
     const ids = [...new Set((placeIds || []).filter(Boolean))];
@@ -2235,7 +2257,7 @@ async function loadCuratedRejects(placeIds, action) {
     try {
         const rows = await PlaceCache.find({ placeId: { $in: ids }, actionsCurated: true })
             .select('placeId actions').lean();
-        return new Set(rows.filter(r => !(r.actions || []).includes(action)).map(r => r.placeId));
+        return new Set(rows.filter(r => !curatedInAction(r.actions, action)).map(r => r.placeId));
     } catch (err) {
         // Fail OPEN — a lookup failure must never empty a reply. Worst case this
         // one request behaves exactly as it did before the gate existed.
@@ -2259,7 +2281,7 @@ async function placeBlockedForAction(placeId, action) {
         if (!doc) return null;
         if (doc.aiBlocked === true) return 'ai_blocked';
         if (doc.explore?.status === 'hidden') return 'hidden';
-        if (CURATED_GATE_ACTIONS.has(action) && doc.actionsCurated === true && !(doc.actions || []).includes(action)) {
+        if (CURATED_GATE_ACTIONS.has(action) && doc.actionsCurated === true && !curatedInAction(doc.actions, action)) {
             return 'wrong_category';
         }
         return null;
