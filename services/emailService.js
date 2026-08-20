@@ -446,9 +446,29 @@ ${L.rights}
             throw new Error('Failed to send account deleted email');
         }
     }
+    /**
+     * Tier badge for HTML emails — mirrors the onboarding/landing page badges
+     * (.verified/.spotlight/.signature-badge-display). Email clients strip
+     * <svg>, so the app's icons become unicode glyphs; colors are identical.
+     * Solid rgba backgrounds (the gradients' first stop) — gradient support
+     * in email clients is unreliable.
+     */
+    tierBadge(tier) {
+        const t = {
+            verified:  { label: 'Jinni Verified',  glyph: '✓', bg: 'rgba(46, 204, 113, 0.15)', color: '#27ae60' },
+            spotlight: { label: 'Jinni Spotlight', glyph: '☀', bg: 'rgba(74, 144, 226, 0.15)', color: '#3b9edd' },
+            signature: { label: 'Jinni Signature', glyph: '✦', bg: 'rgba(212, 175, 55, 0.15)', color: '#FF8C00' },
+        }[tier] || { label: 'Jinni Verified', glyph: '✓', bg: 'rgba(46, 204, 113, 0.15)', color: '#27ae60' }
+        return {
+            ...t,
+            html: `<div style="display:inline-block;background:${t.bg};color:${t.color};border-radius:20px;padding:6px 16px;font-size:14px;font-weight:600;margin:16px 0">${t.glyph} ${t.label}</div>`
+        }
+    }
+
     async sendBusinessApprovedEmail(email, businessName, tier) {
         try {
-            const tierLabel = tier === 'signature' ? 'Jinni Signature' : tier === 'spotlight' ? 'Jinni Spotlight' : 'Jinni Verified'
+            const badge = this.tierBadge(tier)
+            const tierLabel = badge.label
             const mailOptions = {
                 from: `"Jinni Business" <${process.env.EMAIL_USER}>`,
                 to: email,
@@ -461,7 +481,6 @@ ${L.rights}
                         .header { background: linear-gradient(45deg, #D4AF37, #FF8C00); padding: 30px; text-align: center; color: white; }
                         .header h1 { margin: 0; font-size: 28px; }
                         .content { padding: 40px 30px; }
-                        .badge { display: inline-block; background: linear-gradient(45deg, rgba(212,175,55,0.15), rgba(255,140,0,0.15)); color: #c09930; border: none; border-radius: 20px; padding: 6px 16px; font-size: 14px; font-weight: 600; margin: 16px 0; }
                         .cta { display: inline-block; background: linear-gradient(45deg, #D4AF37, #FF8C00); color: white; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 16px; margin: 24px 0; }
                         .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
                     </style></head><body>
@@ -470,7 +489,7 @@ ${L.rights}
                         <div class="content">
                             <h2>Congratulations!</h2>
                             <p><strong>${businessName}</strong> has been verified and is now visible to travelers on Jinni.</p>
-                            <div class="badge">✦ ${tierLabel}</div>
+                            ${badge.html}
                             <p>Travelers can now discover your business, save it to their lists, and get directions to your location.</p>
                             <p>Log in to your business dashboard to view your listing and track performance.</p>
                             <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/auth" class="cta">Go to Dashboard</a>
@@ -569,6 +588,7 @@ ${L.rights}
                         <div class="content">
                             <h2>Good news — your application passed review!</h2>
                             <p><strong>${businessName}</strong> has been verified and approved. However, your zone currently has no available slots.</p>
+                            ${this.tierBadge(tier).html}
                             <div class="info-box">
                                 <p><strong>What happens next:</strong></p>
                                 <p>• Your listing is queued and ready to go live</p>
