@@ -1155,10 +1155,13 @@ router.post('/apply', applyLimiter, conditionalUpload, async (req, res) => {
         } = bodyData
         // ── 1. Basic validation ──────────────────────────────────
         if (!name || !type?.length || !location?.city || !location?.address) {return res.status(400).json({ error: 'Missing required fields' })}
-        // 'historical' stays accepted server-side for existing rows/back-compat,
-        // but the onboarding UI no longer offers it. Shop sub-types are primary
-        // categories here (no 'shopping' umbrella, no self-serve 'mall').
-        const mainCategories = ['restaurants', 'hotels', 'events', 'historical', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food']
+        // Categories a NEW business may register as. 'historical', 'market' and
+        // 'mall' are deliberately absent (founder 2026-08-20): businesses aren't
+        // historical sites, and market/mall venues don't self-onboard. Existing
+        // rows with those types keep working — every preserve/display set
+        // (PRIMARY_CATS in PATCH, getMainCategory, zone maps, labels) still
+        // includes them; only new applications are gated here.
+        const mainCategories = ['restaurants', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food']
         const mainCategory = type.find(t => mainCategories.includes(t))
         if (!mainCategory) {return res.status(400).json({ error: 'A main business category is required' })}
         // ── Server-side tier enforcement ────────────────────────────────────
