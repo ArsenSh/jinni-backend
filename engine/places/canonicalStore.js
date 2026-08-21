@@ -102,6 +102,9 @@ function cacheDocToCandidate(d, center) {
         distanceKm,
         city: d.city || null,
         country: d.country || null,
+        // imagesStored:true is part of the cache query, so the stored-image
+        // endpoint is always valid for these rows.
+        image: d.placeId ? `/api/ai/place-image/${d.placeId}/0` : null,
         likes: d.likes || 0,
         dislikes: d.dislikes || 0,
         vector: Array.isArray(d.embedding) ? d.embedding : undefined,
@@ -134,6 +137,13 @@ function dbDocToCandidate(d, source, center) {
         distanceKm,
         city: d.location?.city || null,
         country: d.location?.country || null,
+        // Validator/partner rows carry their own images (string URL or {url}).
+        image: (() => {
+            const first = Array.isArray(d.images) ? d.images[0] : null;
+            if (typeof first === 'string') return first;
+            if (first && typeof first.url === 'string') return first.url;
+            return null;
+        })(),
         tier: d.subscription?.tier || null,
         text: [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, d.description]
             .filter(Boolean).join(' ').slice(0, 300),

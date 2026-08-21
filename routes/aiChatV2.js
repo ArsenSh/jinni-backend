@@ -17,6 +17,7 @@ const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+const { toRecommendation, buildContentParts } = require('../engine/narrator/cards');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
@@ -45,7 +46,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
 
     let reply;
-    const meta = { engine: 'v2', build: 'narrator-v0', timestamp: new Date() };
+    let recommendations = [];
+    const meta = { engine: 'v2', build: 'narrator-v0+cards', timestamp: new Date() };
     const t0 = Date.now();
     try {
         // Intent pre-pass — same classifier v1 trusts; failure degrades to
@@ -107,7 +109,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                              + `${result.provenance.cacheHit ? ' · cache HIT' : ''} · ${Date.now() - t0}ms`;
                 send(res, { type: 'token', content: footer });
                 reply = out.text + footer;
-                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} → ${result.places.length}/${result.provenance.candidateCount} narrated in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
+                // ── Cards, real by construction: every one started as a
+                //    retrieval candidate. v1's exact payload shape → the
+                //    frontend renders them unchanged (photos, map, votes). ──
+                recommendations = result.places.map((p, i) =>
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode }));
+                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} → ${result.places.length}/${result.provenance.candidateCount} narrated + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
         }
     } catch (err) {
@@ -118,8 +125,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
 
     send(res, {
         type: 'complete',
-        contentParts: [{ type: 'text', content: reply || '' }],
-        recommendations: [],
+        contentParts: buildContentParts(reply || '', recommendations.length),
+        recommendations,
         metadata: meta,
     });
     send(res, { type: 'stream_end' });
