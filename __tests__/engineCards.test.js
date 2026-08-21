@@ -82,4 +82,24 @@ describe('buildContentParts (v1 complete-event shape)', () => {
         ]);
         expect(buildContentParts('Just prose', 0)).toEqual([{ type: 'text', content: 'Just prose' }]);
     });
+    test('optional trailing text part (the follow-up question, after the cards)', () => {
+        const parts = buildContentParts('Intro', 1, 'Prefer quiet or lively?');
+        expect(parts[parts.length - 1]).toEqual({ type: 'text', content: 'Prefer quiet or lively?' });
+        expect(parts).toHaveLength(3);
+    });
+});
+
+describe('narrator blurbs + address on cards', () => {
+    test('description override wins; fact line is the fallback', () => {
+        const withBlurb = toRecommendation(CAND, 0, { action: 'hotels', description: 'Cozy rooms with an Ararat view.' });
+        expect(withBlurb.description).toBe('Cozy rooms with an Ararat view.');
+        expect(withBlurb.metadata.originalDescription).toBe('Cozy rooms with an Ararat view.');
+        expect(toRecommendation(CAND, 0, { action: 'hotels', description: null }).description)
+            .toBe('Hotel · 5.8 km away · rated 4.6 · open now');
+    });
+    test('full street address wins over city/country', () => {
+        const rec = toRecommendation({ ...CAND, address: '2 Marshal Baghramyan Ave, Yerevan' }, 0, { action: 'hotels' });
+        expect(rec.location).toBe('2 Marshal Baghramyan Ave, Yerevan');
+        expect(toRecommendation(CAND, 0, { action: 'hotels' }).location).toBe('Yerevan, Armenia');
+    });
 });

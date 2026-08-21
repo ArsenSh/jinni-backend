@@ -16,7 +16,7 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson } = require('../engine/narrator/prompts/grounded');
 const { toRecommendation, buildContentParts } = require('../engine/narrator/cards');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -81,10 +81,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const intentService = require('../services/intentService');
             const AppConfig = require('../models/AppConfig');
             const appCfg = await AppConfig.getConfig().catch(() => ({}));
-            const user = await require('../models/User').findById(req.user.id).select('settings').lean().catch(() => null);
+            const user = await require('../models/User').findById(req.user.id).select('settings preferences').lean().catch(() => null);
             const userLanguage = user?.settings?.language || 'en';
             intent = await intentService.classify({ message, recentTurns, userLanguage, appCfg });
             intent._userLanguage = userLanguage;
+            intent._preferences = user?.preferences || {};
         } catch (err) {
             console.warn('[v2] intent failed, treating as place query:', err.message);
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
@@ -115,6 +116,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 radiusKm: nearbyMode ? 5 : 50,
                 count: 6,
                 timeContext,
+                preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
             meta.provenance = result.provenance;
@@ -125,21 +127,35 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 send(res, { type: 'token', content: reply });
             } else {
                 const timeNote = timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null;
-                const out = await narrator.stream({
-                    messages: buildGroundedMessages({ query: intent.searchQuery || message, places: result.places, langName, timeNote, history: recentTurns }),
-                    onToken: (c) => send(res, { type: 'token', content: c }),
-                    maxTokens: 400,
-                });
+                // ── Structured narration: ONE call → intro + per-card blurbs +
+                //    follow-up question. JSON must not stream to the user, so no
+                //    onToken here; a malformed answer falls back to plain prose. ──
+                const promptArgs = { query: intent.searchQuery || message, places: result.places, langName, timeNote, history: recentTurns };
+                const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
+                const parsed = parseNarrationJson(out.text, result.places.length);
+                let intro, blurbs = [];
+                if (parsed) {
+                    intro = parsed.intro;
+                    blurbs = parsed.blurbs;
+                    meta.followUpQuestion = parsed.question;
+                } else {
+                    console.warn('[v2] narration JSON malformed — falling back to plain grounded prose');
+                    const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400 });
+                    intro = fb.text;
+                }
+                for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
+                    send(res, { type: 'token', content: chunk });
+                }
                 const footer = `\n\n🧪 v2 · ${result.places.length}/${result.provenance.candidateCount} candidates`
                              + `${result.provenance.cacheHit ? ' · cache HIT' : ''} · ${Date.now() - t0}ms`;
                 send(res, { type: 'token', content: footer });
-                reply = out.text + footer;
+                reply = intro + footer;
                 // ── Cards, real by construction: every one started as a
                 //    retrieval candidate. v1's exact payload shape → the
                 //    frontend renders them unchanged (photos, map, votes). ──
                 recommendations = result.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode }));
-                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} → ${result.places.length}/${result.provenance.candidateCount} narrated + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode, description: blurbs[i] || null }));
+                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${parsed ? 'structured' : 'fallback'}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
         }
     } catch (err) {
@@ -150,7 +166,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
 
     send(res, {
         type: 'complete',
-        contentParts: buildContentParts(reply || '', recommendations.length),
+        contentParts: buildContentParts(reply || '', recommendations.length, meta.followUpQuestion || null),
         recommendations,
         metadata: meta,
     });

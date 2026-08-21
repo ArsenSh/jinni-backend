@@ -1,7 +1,7 @@
 // Tests for the V2 narrator v0: grounded prompt builders (pure) and the
 // stream contract with an injected fake provider — no API keys, no network.
 
-const { buildGroundedMessages, buildChitchatMessages, placeFactLine } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, placeFactLine } = require('../engine/narrator/prompts/grounded');
 const narrator = require('../engine/narrator');
 
 describe('placeFactLine', () => {
@@ -46,6 +46,37 @@ describe('buildChitchatMessages', () => {
         const msgs = buildChitchatMessages({ message: 'Hi', langName: 'English' });
         expect(msgs[0].content).toContain('Do NOT recommend or name any specific real place');
         expect(msgs[1].content).toBe('Hi');
+    });
+});
+
+describe('buildNarrationJson / parseNarrationJson (structured narration)', () => {
+    test('prompt demands JSON-only, indexes the facts, forbids invented hard facts', () => {
+        const msgs = buildNarrationJson({ query: 'romantic dinner',
+            places: [{ name: 'Nairi', rating: 4.9 }, { name: 'Persona' }], langName: 'English' });
+        expect(msgs[0].content).toContain('ONLY with JSON');
+        expect(msgs[0].content).toContain('Never state prices');
+        expect(msgs[1].content).toContain('0. Nairi');
+        expect(msgs[1].content).toContain('1. Persona');
+    });
+    test('parses a valid reply into intro + indexed blurbs + question', () => {
+        const parsed = parseNarrationJson(
+            '{"intro":"Nairi is lovely tonight.","cards":[{"i":0,"blurb":"Elegant and calm."},{"i":1,"blurb":"Lively bar vibe."}],"question":"Quiet or lively?"}', 2);
+        expect(parsed.intro).toBe('Nairi is lovely tonight.');
+        expect(parsed.blurbs).toEqual(['Elegant and calm.', 'Lively bar vibe.']);
+        expect(parsed.question).toBe('Quiet or lively?');
+    });
+    test('tolerates fenced/wrapped JSON; out-of-range or junk card entries dropped', () => {
+        const parsed = parseNarrationJson(
+            'Sure! ```json\n{"intro":"Ok.","cards":[{"i":5,"blurb":"x"},{"i":0,"blurb":"Good."},null],"question":null}\n```', 2);
+        expect(parsed.intro).toBe('Ok.');
+        expect(parsed.blurbs).toEqual(['Good.', null]);
+        expect(parsed.question).toBe(null);
+    });
+    test('malformed answers return null (caller falls back to prose)', () => {
+        expect(parseNarrationJson('no json here', 2)).toBe(null);
+        expect(parseNarrationJson('{"cards":[]}', 2)).toBe(null);        // missing intro
+        expect(parseNarrationJson('{broken', 2)).toBe(null);
+        expect(parseNarrationJson(null, 2)).toBe(null);
     });
 });
 

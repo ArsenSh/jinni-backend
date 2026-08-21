@@ -39,18 +39,22 @@ function factDescription(place, category) {
  * @param {number} i      position (stable ids + originalPosition)
  * @param {object} opts   { action, nearbyMode }
  */
-function toRecommendation(place, i, { action = 'general', nearbyMode = false } = {}) {
+function toRecommendation(place, i, { action = 'general', nearbyMode = false, description = null } = {}) {
     const category = categoryFor(place, action);
-    const description = factDescription(place, category);
+    // Narrator blurb when provided (v1's hasAIDescription spirit); factual
+    // one-liner as the fallback so a failed narration never blanks the card.
+    const desc = description || factDescription(place, category);
     const cachedImageUrl = place.placeId ? `/api/ai/place-image/${place.placeId}/0` : null;
     return {
         id: `chat-rec-${Date.now()}-${i}`,
         name: place.name,
         category,
         type: category.toLowerCase().replace(' ', '_'),
-        description,
+        description: desc,
         region: place.city || 'Unknown',
-        location: [place.city, place.country].filter(Boolean).join(', ') || 'Location not specified',
+        // Full street address when the candidate carries one (cache rows do);
+        // city/country only as the fallback.
+        location: place.address || [place.city, place.country].filter(Boolean).join(', ') || 'Location not specified',
         image: place.image || cachedImageUrl,
         cachedImageUrl,
         source: place.source === 'cache' ? 'cache' : 'database',
@@ -77,7 +81,7 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false } =
             hasAIDescription: true,
             sourceDescription: 'v2_grounded',
             originalName: place.name,
-            originalDescription: description,
+            originalDescription: desc,
             hasViewImagesText: true,
             usedPrefetchedData: place.source !== 'cache',
             originalPosition: i,
@@ -86,10 +90,12 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false } =
     };
 }
 
-/** v1's complete-event shape: prose first, then one part per card by index. */
-function buildContentParts(prose, recCount) {
+/** v1's complete-event shape: prose first, one part per card by index, and an
+ *  optional trailing text part (v1's follow-up-question habit). */
+function buildContentParts(prose, recCount, trailingText = null) {
     const parts = [{ type: 'text', content: prose }];
     for (let i = 0; i < recCount; i++) parts.push({ type: 'recommendation', index: i });
+    if (trailingText) parts.push({ type: 'text', content: trailingText });
     return parts;
 }
 

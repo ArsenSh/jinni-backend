@@ -100,6 +100,7 @@ function cacheDocToCandidate(d, center) {
         opening_hours: d.opening_hours || null,        // Google periods shape → context engine
         geometry: (lat != null && lng != null) ? { lat, lng } : null,
         distanceKm,
+        address: d.details?.formatted_address || null,   // full street address for the card
         city: d.city || null,
         country: d.country || null,
         // imagesStored:true is part of the cache query, so the stored-image
@@ -135,6 +136,7 @@ function dbDocToCandidate(d, source, center) {
         opening_hours: null,                           // day-name schedule ≠ Google periods (unknown → kept)
         geometry: (lat != null && lng != null) ? { lat, lng } : null,
         distanceKm,
+        address: d.location?.address || null,
         city: d.location?.city || null,
         country: d.location?.country || null,
         // Validator/partner rows carry their own images (string URL or {url}).
