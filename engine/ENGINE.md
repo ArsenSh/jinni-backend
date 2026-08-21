@@ -38,8 +38,9 @@ engine/
 ## Build state
 
 - [x] Scaffold + contracts (2026-08-21)
-- [ ] Characterization tests for matching/events pure functions (from doc case lists)
-- [ ] places/matching (copy of v1's name-normalization family)
+- [x] Characterization tests for matching/events pure functions — 32 passing,
+      `__tests__/engineMatching.test.js` (2026-08-21)
+- [x] places/matching + events/matching (copied from v1 w/ comments) (2026-08-21)
 - [ ] utils/safeFetch + events/eventService (copy of aiRoutes 4399–5271 + inline stage)
 - [ ] context/contextEngine (open-now/time — also backports as the v1 3 AM fix)
 - [ ] retrieval core v1 (corpus embeddings + hybrid + RRF + semantic cache)
