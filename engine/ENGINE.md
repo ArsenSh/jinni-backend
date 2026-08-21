@@ -70,7 +70,14 @@ engine/
 - [ ] jobs/embedCorpus + PlaceCache `embedding` field (⚠ touches a v1 model
       schema — needs Arsen's sign-off) once an embedder is enabled
       (npm i @xenova/transformers).
-- [ ] narrator providers + toolLoop
+- [x] narrator v0 (2026-08-21): DeepSeek provider (reuses config/openai, lazy),
+      grounded prompts (may name ONLY retrieved places; chit-chat forbids venue
+      names), pseudo-streamed. /chat-stream-v2 now: intent (reused v1 service,
+      fail-open) → retrieval → grounded PROSE. 8 tests; suite at 181.
+- [ ] narrator: Claude + Ollama providers; TRUE token streaming; tool-use loop
+      (the full agentic mode — currently retrieval runs before narration instead)
+- [ ] v2 cards: emit `recommendation` SSE events from retrieval results (needs
+      the exact v1 card payload shape read from processStreamCompletion)
 - [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
       the one sanctioned server.js line is now used). Currently an honest scaffold
       reply in v1's SSE dialect; reached only via the admin-only "Chat engine"

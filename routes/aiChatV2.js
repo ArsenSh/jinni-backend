@@ -15,8 +15,11 @@ const { usageTracker } = require('../middleware/usageTracker');
 const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
+const narrator = require('../engine/narrator');
+const { buildGroundedMessages, buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
 router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     const { message, location = null, userTimezone = null, nearbyMode = false } = req.body || {};
@@ -33,62 +36,89 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         'Connection': 'keep-alive',
     });
 
-    // ── V2 build state: RETRIEVAL CORE LIVE (owned data only — Destination/
-    //    Business via proximityService + PlaceCache via canonicalStore).
-    //    No narrator yet: results stream as an honest text list, not prose;
-    //    no Google fallback tier yet: a thin area reports itself thin. ──
+    // ── V2 build state: RETRIEVAL + NARRATOR v0.
+    //    intent (reused v1 service, fail-open) → retrieval over owned data →
+    //    GROUNDED narration (may name ONLY retrieved places). Chit-chat skips
+    //    retrieval entirely (the "Hi" case). Still honest about limits: no
+    //    Google fallback tier, no cards yet, pseudo-streamed prose. ──
     const center = (location && location.lat != null && location.lng != null)
         ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
 
     let reply;
-    const meta = { engine: 'v2', build: 'retrieval-core', timestamp: new Date() };
-    if (!center) {
-        reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
-    } else {
+    const meta = { engine: 'v2', build: 'narrator-v0', timestamp: new Date() };
+    const t0 = Date.now();
+    try {
+        // Intent pre-pass — same classifier v1 trusts; failure degrades to
+        // "treat it as a place query" rather than failing the turn.
+        let intent = null;
         try {
+            const intentService = require('../services/intentService');
+            const AppConfig = require('../models/AppConfig');
+            const appCfg = await AppConfig.getConfig().catch(() => ({}));
+            const user = await require('../models/User').findById(req.user.id).select('settings').lean().catch(() => null);
+            const userLanguage = user?.settings?.language || 'en';
+            intent = await intentService.classify({ message, recentTurns: [], userLanguage, appCfg });
+            intent._userLanguage = userLanguage;
+        } catch (err) {
+            console.warn('[v2] intent failed, treating as place query:', err.message);
+            intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
+        }
+        const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
+
+        if (!intent.isTravel) {
+            // ── Chit-chat: no retrieval, no place names — just Jinni. ──
+            const out = await narrator.stream({
+                messages: buildChitchatMessages({ message, langName }),
+                onToken: (c) => send(res, { type: 'token', content: c }),
+                maxTokens: 200,
+            });
+            reply = out.text;
+            console.log(`[v2] chit-chat narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)`);
+        } else if (!center) {
+            reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
+            send(res, { type: 'token', content: reply });
+        } else {
             const timeContext = buildTimeContext({ timezone: userTimezone, lng: center.lng });
-            const t0 = Date.now();
+            const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
             const result = await findPlaces({
-                query: message,
-                category: null,                        // free query — no intent classifier yet
+                query: intent.searchQuery || message,
+                category,
+                subType: intent.subType || null,
                 center,
                 mode: nearbyMode ? 'nearby' : 'discovery',
                 radiusKm: nearbyMode ? 5 : 50,
-                count: 8,
+                count: 6,
                 timeContext,
             }, { loadCandidates });
-            const ms = Date.now() - t0;
             meta.provenance = result.provenance;
             if (result.degraded || !result.places.length) {
-                reply = `🧪 V2 retrieval: no owned-data candidates for this area yet (${result.reason || 'empty'}). `
-                      + `V1 would fall back to Google here — v2's Google tier isn't wired yet.`;
+                reply = '🧪 V2: I don\'t have verified places for that here yet — my owned-data corpus is thin '
+                      + 'in this area (V1 would reach for Google; that tier isn\'t wired into V2 yet). '
+                      + 'Try a broader ask, or switch to V1.';
+                send(res, { type: 'token', content: reply });
             } else {
-                const lines = result.places.map((p, i) => {
-                    const bits = [
-                        p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km` : null,
-                        p.rating ? `★${p.rating}` : null,
-                        p._openNow === true ? 'open now' : (p._openNow === false ? 'closed now' : null),
-                        p.source !== 'cache' ? p.source : null,
-                    ].filter(Boolean);
-                    return `${i + 1}. ${p.name}${bits.length ? ' — ' + bits.join(' · ') : ''}`;
+                const timeNote = timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null;
+                const out = await narrator.stream({
+                    messages: buildGroundedMessages({ query: intent.searchQuery || message, places: result.places, langName, timeNote }),
+                    onToken: (c) => send(res, { type: 'token', content: c }),
+                    maxTokens: 400,
                 });
-                reply = `🧪 V2 retrieval core (owned data, hybrid-ranked, no AI narration yet) — `
-                      + `top ${result.places.length} of ${result.provenance.candidateCount} candidates in ${ms}ms`
-                      + `${result.provenance.cacheHit ? ' · semantic cache HIT' : ''}:\n\n${lines.join('\n')}`;
-                console.log(`[v2] q="${String(message).slice(0, 60)}" → ${result.places.length}/${result.provenance.candidateCount} in ${ms}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} cacheHit=${result.provenance.cacheHit}`);
+                const footer = `\n\n🧪 v2 · ${result.places.length}/${result.provenance.candidateCount} candidates`
+                             + `${result.provenance.cacheHit ? ' · cache HIT' : ''} · ${Date.now() - t0}ms`;
+                send(res, { type: 'token', content: footer });
+                reply = out.text + footer;
+                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} → ${result.places.length}/${result.provenance.candidateCount} narrated in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
-        } catch (err) {
-            console.error('[v2] retrieval failed:', err.message);
-            reply = '🧪 V2: retrieval hit an error (logged server-side). Switch to V1 for real answers.';
         }
+    } catch (err) {
+        console.error('[v2] turn failed:', err.message);
+        reply = '🧪 V2: this turn hit an error (logged server-side). Switch to V1 for real answers.';
+        send(res, { type: 'token', content: reply });
     }
 
-    for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
-        send(res, { type: 'token', content: chunk });
-    }
     send(res, {
         type: 'complete',
-        contentParts: [{ type: 'text', content: reply }],
+        contentParts: [{ type: 'text', content: reply || '' }],
         recommendations: [],
         metadata: meta,
     });
