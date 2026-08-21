@@ -50,6 +50,16 @@ engine/
       overnight + week-wrap + 24/7; unknown-never-drops rule; drop-when-closed
       policy table) — 13 tests (2026-08-21). READY to backport under v1's chat
       grounding as the 3 AM fix whenever Arsen wants the v1 patch.
-- [ ] retrieval core v1 (corpus embeddings + hybrid + RRF + semantic cache)
+- [x] retrieval core v1 MACHINERY (plain-Mongo decision 2026-08-21): BM25 lexical,
+      weighted RRF (query evidence 1.0 vs prior 0.5 — plain RRF ties let the prior
+      silently win), in-process cosine vectors, SemanticCache (vector-similarity +
+      text fallback, params-bucket isolation), embedder slot (auto-detects optional
+      @xenova/transformers → else lexical-only, fail-open), findPlaces orchestration
+      with injectable deps — 22 tests (2026-08-21).
+- [ ] places/canonicalStore — the Mongo candidate loader (deps.loadCandidates):
+      read Business/Destination/PlaceCache geo+category-bounded into the candidate
+      shape {placeId, name, text, vector?, opening_hours?, rating}; needs a careful
+      read of v1 models/proximityService first. + corpus embedding job (jobs/embedCorpus)
+      once an embedder is enabled (npm i @xenova/transformers).
 - [ ] narrator providers + toolLoop
 - [ ] routes/aiChatV2.js → `/chat-stream-v2` (test-gated mount)
