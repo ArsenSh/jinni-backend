@@ -22,6 +22,7 @@ const { toRecommendation, buildContentParts } = require('../engine/narrator/card
 const { effectiveRadiusKm, buildRetrievalQuery } = require('../engine/retrieval/tuning');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
 const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../engine/context/session');
@@ -217,14 +218,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    then description_token types the blurb into it. The
                 //    final `complete` replaces everything consistently. ──
                 if (streamedOk && recommendations.length) {
+                    // PACED emission — without the sleeps every event lands in one
+                    // network burst and the browser paints it all in a single
+                    // frame (Arsen's report: "descriptions appeared immediately").
+                    // The card is born, breathes, then its description TYPES in.
                     for (const rec of recommendations) {
                         send(res, { type: 'streaming_recommendation', recommendation: { ...rec, description: '', isStreaming: true }, metadata: { timestamp: new Date(), isPartial: true } });
+                        await sleep(90);
                     }
                     for (const rec of recommendations) {
-                        for (const chunk of rec.description.match(/.{1,24}(\s|$)/gs) || [rec.description]) {
+                        for (const chunk of rec.description.match(/.{1,14}(\s|$)/gs) || [rec.description]) {
                             send(res, { type: 'description_token', recommendationName: rec.name, content: chunk });
+                            await sleep(24);
                         }
                         send(res, { type: 'description_complete', recommendationName: rec.name, timestamp: new Date() });
+                        await sleep(60);
                     }
                 }
                 console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
