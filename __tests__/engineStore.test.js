@@ -66,11 +66,12 @@ describe('candidate mapping', () => {
         const d = dbDocToCandidate({
             _id: 'abc', name: 'Tashir Arena', type: ['events'],
             location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng }, city: 'Yerevan' },
-            subscription: { tier: 'signature' },
+            partnership: { isPartner: true, tier: 'signature' },   // the REAL schema field (subscription.tier never existed)
         }, 'business', CENTER);
         expect(d.source).toBe('business');
         expect(d.verifiedId).toBe('abc');
         expect(d.tier).toBe('signature');
+        expect(d.isPartner).toBe(true);
         expect(d.opening_hours).toBe(null);               // day-name schedule → unknown, kept
         expect(dbDocToCandidate({ type: [] }, 'business', CENTER)).toBe(null);   // no name → skip
     });
