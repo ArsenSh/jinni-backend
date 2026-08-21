@@ -16,6 +16,7 @@ const CATEGORY_LABELS = {
 function categoryFor(place, action) {
     if (action && CATEGORY_LABELS[action]) return CATEGORY_LABELS[action];
     const t = String(place.primaryType || (place.types || [])[0] || '').toLowerCase();
+    if (t.includes('bar') || t.includes('night_club') || t.includes('pub')) return 'Bar';
     if (t.includes('restaurant') || t.includes('cafe') || t.includes('food')) return 'Restaurant';
     if (t.includes('lodging') || t.includes('hotel')) return 'Hotel';
     if (t.includes('museum') || t.includes('gallery')) return 'Museum';

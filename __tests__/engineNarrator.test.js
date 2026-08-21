@@ -42,9 +42,11 @@ describe('buildGroundedMessages', () => {
 });
 
 describe('buildChitchatMessages', () => {
-    test('no place list; explicitly forbids naming venues', () => {
+    test('no venue names, but invites place asks inward and owns its history', () => {
         const msgs = buildChitchatMessages({ message: 'Hi', langName: 'English' });
-        expect(msgs[0].content).toContain('Do NOT recommend or name any specific real place');
+        expect(msgs[0].content).toContain('Do not invent or name any specific real venue');
+        expect(msgs[0].content).toContain('never claim you cannot see or remember it');
+        expect(msgs[0].content).toContain('Never describe yourself as unable to name places');
         expect(msgs[1].content).toBe('Hi');
     });
 });
