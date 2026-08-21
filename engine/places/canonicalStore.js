@@ -16,6 +16,7 @@
 
 const { normalizePlaceName } = require('./matching');
 const { haversineKm } = require('../utils/geo');
+const { scheduleToPeriods } = require('../context/contextEngine');
 const { priceTier, tierFit, tierMismatch, isPriceAction } = require('../../services/priceTier');
 
 const CACHE_VALIDITY_DAYS = 30;
@@ -133,7 +134,10 @@ function dbDocToCandidate(d, source, center) {
         types: Array.isArray(d.type) ? d.type : [],
         primaryType: null,
         priceLevel: null,
-        opening_hours: null,                           // day-name schedule ≠ Google periods (unknown → kept)
+        // Validator/business hours (day-name schedule) converted to Google
+        // periods so the SAME open-now math covers all three sources; null
+        // when no valid schedule (unknown → kept).
+        opening_hours: scheduleToPeriods(d.openingHours),
         geometry: (lat != null && lng != null) ? { lat, lng } : null,
         distanceKm,
         address: d.location?.address || null,

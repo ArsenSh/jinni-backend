@@ -160,10 +160,38 @@ function shouldDropWhenClosed(category) {
     return _DROP_WHEN_CLOSED.has(String(category || '').toLowerCase());
 }
 
+/* Business/Destination hours use a day-name schedule
+ * ({is24Hours, days:[{day:'Monday', closed, open:'HH:MM', close:'HH:MM'}]}) —
+ * this converts it to Google's periods shape so ALL three sources (PlaceCache,
+ * Business, Destination) feed the SAME isOpenAt math. Close ≤ open on a day
+ * means an overnight span → close rolls to the next day. Junk rows are
+ * skipped; nothing valid → null (unknown → kept, per the trust rule). */
+const _DAY_NAME_TO_NUM = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 };
+function scheduleToPeriods(openingHours) {
+    if (!openingHours) return null;
+    if (openingHours.is24Hours) return { periods: [{ open: { day: 0, time: '0000' } }] };
+    const periods = [];
+    for (const row of (Array.isArray(openingHours.days) ? openingHours.days : [])) {
+        if (!row || row.closed) continue;
+        const day = _DAY_NAME_TO_NUM[row.day];
+        const o = /^(\d{2}):(\d{2})$/.exec(row.open || '');
+        const c = /^(\d{2}):(\d{2})$/.exec(row.close || '');
+        if (day === undefined || !o || !c) continue;
+        const openTime = o[1] + o[2], closeTime = c[1] + c[2];
+        const overnight = closeTime <= openTime;
+        periods.push({
+            open: { day, time: openTime },
+            close: { day: overnight ? (day + 1) % 7 : day, time: closeTime },
+        });
+    }
+    return periods.length ? { periods } : null;
+}
+
 module.exports = {
     buildTimeContext,
     isOpenAt,
     annotateOpenNow,
     shouldDropWhenClosed,
+    scheduleToPeriods,
     _daypartOf,
 };

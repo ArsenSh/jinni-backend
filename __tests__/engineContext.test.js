@@ -1,7 +1,7 @@
 // Tests for the V2 engine's Context Engine — the 3 AM fix.
 // Time is always injected; nothing here depends on the machine clock or zone.
 
-const { buildTimeContext, isOpenAt, annotateOpenNow, shouldDropWhenClosed, _daypartOf } = require('../engine/context/contextEngine');
+const { buildTimeContext, isOpenAt, annotateOpenNow, shouldDropWhenClosed, scheduleToPeriods, _daypartOf } = require('../engine/context/contextEngine');
 
 // 2026-08-21 is a FRIDAY. 23:00 UTC that day = 03:00 Saturday in Yerevan (UTC+4).
 const NOW = new Date('2026-08-21T23:00:00Z');
@@ -99,6 +99,27 @@ describe('annotateOpenNow', () => {
         expect(places[0]._openNow).toBe(true);
         expect(places[1]._openNow).toBe(false);
         expect(places[2]._openNow).toBe(null);
+    });
+});
+
+describe('scheduleToPeriods (Business/Destination day-name hours → Google periods)', () => {
+    test('normal day converts and drives isOpenAt', () => {
+        const hours = scheduleToPeriods({ days: [{ day: 'Monday', open: '09:00', close: '17:00' }] });
+        expect(hours.periods[0]).toEqual({ open: { day: 1, time: '0900' }, close: { day: 1, time: '1700' } });
+        expect(isOpenAt(hours, at(1, 12))).toBe(true);
+        expect(isOpenAt(hours, at(1, 18))).toBe(false);
+    });
+    test('overnight close rolls to the next day', () => {
+        const hours = scheduleToPeriods({ days: [{ day: 'Friday', open: '20:00', close: '02:00' }] });
+        expect(hours.periods[0].close).toEqual({ day: 6, time: '0200' });
+        expect(isOpenAt(hours, at(6, 1))).toBe(true);
+    });
+    test('is24Hours → the 24/7 marker; closed days skipped; junk → null (unknown, kept)', () => {
+        expect(isOpenAt(scheduleToPeriods({ is24Hours: true }), at(3, 3))).toBe(true);
+        expect(scheduleToPeriods({ days: [{ day: 'Monday', closed: true }] })).toBe(null);
+        expect(scheduleToPeriods({ days: [{ day: 'Funday', open: '09:00', close: '17:00' }] })).toBe(null);
+        expect(scheduleToPeriods({ days: [{ day: 'Monday', open: '9am', close: '5pm' }] })).toBe(null);
+        expect(scheduleToPeriods(null)).toBe(null);
     });
 });
 
