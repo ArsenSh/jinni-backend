@@ -160,6 +160,23 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
     });
 });
 
+describe('uncoveredQueryTokens (the Uzbek lesson — relevance-thin, not count-thin)', () => {
+    const { uncoveredQueryTokens } = require('../engine/places/canonicalStore');
+    const CANDS = [
+        { text: 'Lavash Restaurant restaurant food Yerevan' },
+        { text: 'Nairi Restaurant restaurant Yerevan' },
+    ];
+    test('demanded term with zero matches is reported; covered terms are not', () => {
+        expect(uncoveredQueryTokens('uzbek restaurant', CANDS)).toEqual(['uzbek']);
+        expect(uncoveredQueryTokens('restaurant yerevan', CANDS)).toEqual([]);
+    });
+    test('short tokens, empty query, empty corpus → no trigger', () => {
+        expect(uncoveredQueryTokens('bbq', CANDS)).toEqual([]);
+        expect(uncoveredQueryTokens('', CANDS)).toEqual([]);
+        expect(uncoveredQueryTokens('uzbek', [])).toEqual([]);
+    });
+});
+
 describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
     const googleRow = (id, name, dLat = 0.01) => ({
         place_id: id, name,

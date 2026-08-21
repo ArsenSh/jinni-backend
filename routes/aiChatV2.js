@@ -146,6 +146,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
             const result = await findPlaces({
                 query: retrievalQuery,
+                // Clean intent query only — drives the fallback's "demanded term
+                // with zero owned matches" check (the Uzbek lesson); enriched
+                // chat tokens must never trigger paid searches.
+                coreQuery: intent.searchQuery || '',
                 category,
                 subType: intent.subType || null,
                 center,

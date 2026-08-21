@@ -264,15 +264,21 @@ async function loadCandidates(params = {}, deps = {}) {
     // bounded: one Text Search + details for at most `count` new places. Every
     // resolved place caches permanently (the standard warming path), so a cold
     // city pays this once and then answers from owned data like Yerevan does.
+    // THIN is two-dimensional (the Uzbek lesson, 2026-08-22): too FEW candidates,
+    // OR zero candidates matching a demanded term — 25 generic restaurants are
+    // "covered" by count while being empty for "uzbek". The demand check runs on
+    // the intent's CLEAN coreQuery only, never the enriched chat tokens
+    // ("girlfriend", "acquainted" must not trigger paid searches).
     const wanted = Math.min(Math.max(Number(params.count) || 8, 1), 20);
-    if (merged.length < wanted && (params.query || category)) {
+    const missing = uncoveredQueryTokens(params.coreQuery, merged);
+    if ((merged.length < wanted || missing.length) && (params.query || category)) {
         try {
             const extra = await googleFallback({
                 query: params.query, category, subType, center, radiusKm,
-                needed: wanted - merged.length, requestId,
+                needed: Math.max(wanted - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (extra.length) {
-                console.log(`[canonicalStore] google fallback: +${extra.length} (owned corpus had ${merged.length})`);
+                console.log(`[canonicalStore] google fallback: +${extra.length} (owned had ${merged.length}${missing.length ? `, uncovered: ${missing.join(',')}` : ''})`);
                 merged = mergeAndDedupe(merged, extra);
             }
         } catch (err) {
@@ -280,6 +286,17 @@ async function loadCandidates(params = {}, deps = {}) {
         }
     }
     return merged;
+}
+
+/** Which clean-query tokens (≥4 chars) match ZERO owned candidates? A non-empty
+ *  answer means the corpus can't truthfully serve this ask — count is
+ *  irrelevant. Pure; exported for tests. */
+function uncoveredQueryTokens(coreQuery, candidates) {
+    const tokens = String(coreQuery || '').toLowerCase().split(/[^a-zЀ-ӿ԰-֏]+/)
+        .filter(t => t.length >= 4);
+    if (!tokens.length || !candidates.length) return [];
+    const blob = candidates.map(c => String(c.text || c.name || '')).join(' ').toLowerCase();
+    return tokens.filter(t => !blob.includes(t));
 }
 
 /** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
@@ -334,6 +351,7 @@ async function googleFallback({ query, category, subType, center, radiusKm, need
 module.exports = {
     loadCandidates,
     googleFallback,
+    uncoveredQueryTokens,
     buildCacheQuery,
     cacheDocToCandidate,
     dbDocToCandidate,
