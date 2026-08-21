@@ -67,9 +67,16 @@ engine/
       Google tier yet) — logs `[v2] q=… → N/M in Xms`.
 - [ ] Business/Destination day-name hours → Google-periods converter (their
       opening hours currently read as UNKNOWN in the context engine).
-- [ ] jobs/embedCorpus + PlaceCache `embedding` field (⚠ touches a v1 model
-      schema — needs Arsen's sign-off) once an embedder is enabled
-      (npm i @xenova/transformers).
+- [x] EMBEDDINGS (2026-08-22, Arsen sign-off): @xenova/transformers installed
+      (all-MiniLM-L6-v2, 384-dim, verified locally); PlaceCache gains
+      embedding/embeddingModel (additive, script-written only);
+      scripts/embedPlaceCache.js backfills incrementally (dry-run default).
+      ⚠ RUN ON THE SERVER after deploy (Atlas IP whitelist blocks local):
+        node scripts/embedPlaceCache.js --apply
+      After that, semantic retrieval + vector semantic-cache go LIVE
+      automatically (embedder auto-detects; candidates already map d.embedding;
+      log shows vec=true). First server run downloads the model (~25 MB).
+      TODO later: embed new cache rows at write time (job or serve-hook).
 - [x] narrator v0 (2026-08-21): DeepSeek provider (reuses config/openai, lazy),
       grounded prompts (may name ONLY retrieved places; chit-chat forbids venue
       names), pseudo-streamed. /chat-stream-v2 now: intent (reused v1 service,

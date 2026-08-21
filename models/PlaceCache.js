@@ -83,6 +83,13 @@ const PlaceCacheSchema = new mongoose.Schema({
     // Validator-curated user-interest tags (nature, family, romantic, art, …).
     // Written only by staff — no runtime process touches these.
     interests: { type: [String], default: [] },
+    // ── Semantic embedding (v2 retrieval; Arsen sign-off 2026-08-22) ──────────
+    // Plain number[] compared in-process (plain-Mongo decision — no Atlas
+    // Vector Search). Written ONLY by scripts/embedPlaceCache.js; no default so
+    // docs without one carry no empty array. embeddingModel names the model so
+    // a future model change knows which rows to re-embed.
+    embedding: { type: [Number], default: undefined },
+    embeddingModel: { type: String, default: null },
     // Staff "Block AI": the AI keeps mis-recommending this place → suppress it
     // from ALL recommendation pipelines (folded into the dislike sets at
     // request time). Independent from explore.status (Explore visibility).
