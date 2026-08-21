@@ -1,7 +1,7 @@
 // Tests for V2 card emission — the payload must match v1's chat-rec shape
 // field-for-field, since JinniChat renders it unchanged.
 
-const { toRecommendation, buildContentParts, categoryFor, factDescription } = require('../engine/narrator/cards');
+const { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription } = require('../engine/narrator/cards');
 
 const CAND = {
     placeId: 'gp123',
@@ -61,6 +61,21 @@ describe('toRecommendation (v1 payload parity)', () => {
     test('description asserts only held facts', () => {
         expect(factDescription(CAND, 'Hotel')).toBe('Hotel · 5.8 km away · rated 4.6 · open now');
         expect(factDescription({ name: 'X' }, 'Attraction')).toBe('Attraction');
+    });
+});
+
+describe('hoistNarrated (prose and deck agree — the DABOO/COBA case)', () => {
+    const PLACES = [{ name: 'Equestrian Center' }, { name: 'COBA' }, { name: 'DABOO Cocktail Bar' }];
+    const BLURBS = ['daytime spot', 'open late', 'best tonight'];
+    test('intro-named places lead the deck, blurbs ride along, others keep order', () => {
+        const { places, blurbs } = hoistNarrated(
+            'Head to DABOO Cocktail Bar or COBA for a social night.', PLACES, BLURBS);
+        expect(places.map(p => p.name)).toEqual(['COBA', 'DABOO Cocktail Bar', 'Equestrian Center']);
+        expect(blurbs).toEqual(['open late', 'best tonight', 'daytime spot']);
+    });
+    test('no mentions or empty intro → untouched', () => {
+        expect(hoistNarrated('Nothing named here.', PLACES, BLURBS).places[0].name).toBe('Equestrian Center');
+        expect(hoistNarrated('', PLACES, BLURBS).places).toHaveLength(3);
     });
 });
 

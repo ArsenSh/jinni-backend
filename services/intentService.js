@@ -152,6 +152,7 @@ Return ONLY this JSON object:
 "shopping_subtype":"<ONLY when action_type is shopping, one of: souvenirs, clothing, market, mall, jewelry, food — otherwise an empty string "">",
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
 "place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
+"when":"<now, planned, or unspecified — 'now' when the user wants something for RIGHT NOW or tonight (going out immediately, 'where can I eat', late-hour context); 'planned' when clearly for another day (tomorrow, next week, a trip); 'unspecified' otherwise>",
 "needs_weather":<true or false>}
 
 Rules:
@@ -217,6 +218,12 @@ function validateIntent(raw, message) {
         }
     }
 
+    // Temporal intent (additive, 2026-08-22): 'now' | 'planned' | 'unspecified'.
+    // v2 uses it to decide whether open-hours filtering applies; v1 ignores it.
+    const when = (typeof raw.when === 'string' && ['now', 'planned'].includes(raw.when.trim().toLowerCase()))
+        ? raw.when.trim().toLowerCase()
+        : 'unspecified';
+
     return {
         source: 'llm',
         language,
@@ -225,6 +232,7 @@ function validateIntent(raw, message) {
         actionType,
         subType,
         placeNames,
+        when,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
         searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),

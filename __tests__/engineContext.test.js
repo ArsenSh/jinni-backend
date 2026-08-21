@@ -123,13 +123,12 @@ describe('scheduleToPeriods (Business/Destination day-name hours → Google peri
     });
 });
 
-describe('shouldDropWhenClosed (policy table)', () => {
-    test('dining/shopping/activities may drop; everything else never does', () => {
-        expect(shouldDropWhenClosed('restaurants')).toBe(true);
-        expect(shouldDropWhenClosed('shopping')).toBe(true);
-        expect(shouldDropWhenClosed('activities')).toBe(true);
-        for (const cat of ['hotels', 'events', 'photo_spots', 'historical', 'hidden_gems', 'general', null]) {
-            expect(shouldDropWhenClosed(cat)).toBe(false);
+describe('shouldDropWhenClosed (policy table, tightened 2026-08-22)', () => {
+    test('everything droppable when KNOWN closed on a right-now ask — except hotels and events', () => {
+        for (const cat of ['restaurants', 'shopping', 'activities', 'photo_spots', 'historical', 'hidden_gems', 'general', null]) {
+            expect(shouldDropWhenClosed(cat)).toBe(true);
         }
+        expect(shouldDropWhenClosed('hotels')).toBe(false);
+        expect(shouldDropWhenClosed('events')).toBe(false);
     });
 });

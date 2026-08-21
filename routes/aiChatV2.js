@@ -18,8 +18,8 @@ const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
-const { toRecommendation, buildContentParts } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery } = require('../engine/retrieval/tuning');
+const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk } = require('../engine/retrieval/tuning');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -153,10 +153,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 radiusKm,
                 count: 6,
                 timeContext,
-                // Drop KNOWN-closed dining/shopping on right-now asks (nearby
-                // mode or late night). Unknown hours always survive — the
-                // filter can only act on affirmative "closed" data.
-                enforceOpenNow: nearbyMode || timeContext.isLateNight,
+                // Arsen's rules: right-now context → check hours; otherwise
+                // pass. And the AI decides — intent.when is the brain ('now' /
+                // 'planned' / 'unspecified'); nearby/late-night/now-words are
+                // the degradation path when it abstains. An explicit 'planned'
+                // ALWAYS skips the filter. Unknown hours survive regardless.
+                enforceOpenNow: intent.when === 'planned' ? false
+                    : (intent.when === 'now' || nearbyMode || timeContext.isLateNight || isRightNowAsk(message)),
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
@@ -213,9 +216,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 reply = intro + footer;
                 // ── Cards, real by construction: every one started as a
                 //    retrieval candidate. v1's exact payload shape → the
-                //    frontend renders them unchanged (photos, map, votes). ──
-                recommendations = result.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode, description: blurbs[i] || null }));
+                //    frontend renders them unchanged (photos, map, votes).
+                //    Prose and deck AGREE: intro-named places lead the cards. ──
+                const hoisted = hoistNarrated(intro, result.places, blurbs);
+                recommendations = hoisted.places.map((p, i) =>
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode, description: hoisted.blurbs[i] || null }));
                 // ── Live card birth + description TYPING (v1's protocol):
                 //    streaming_recommendation creates each card immediately
                 //    (photo + name — better than v1's "Searching…" shells),

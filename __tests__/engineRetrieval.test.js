@@ -7,7 +7,7 @@ const { rankLexical, tokenize } = require('../engine/retrieval/lexical');
 const { cosineSimilarity, rankByVector } = require('../engine/retrieval/vector');
 const { SemanticCache } = require('../engine/retrieval/semanticCache');
 const { findPlaces } = require('../engine/retrieval/index');
-const { effectiveRadiusKm, buildRetrievalQuery, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
 
 describe('fuseRankings (RRF)', () => {
     test('agreement across lists wins; k=60 math', () => {
@@ -125,6 +125,17 @@ describe('tuning: buildRetrievalQuery (keep the distinctive message words)', () 
         expect(long.split(' ').length).toBeLessThanOrEqual(8);
         expect(buildRetrievalQuery('', '')).toBe('');
         expect(buildRetrievalQuery(null, 'хинкали здесь')).toContain('хинкали');
+    });
+});
+
+describe('tuning: isRightNowAsk (open-hours enforcement trigger, fallback tier)', () => {
+    test('now-words in EN/RU/HY match; planning-ahead does not', () => {
+        expect(isRightNowAsk('where can I eat right now')).toBe(true);
+        expect(isRightNowAsk('what to do tonight?')).toBe(true);
+        expect(isRightNowAsk('куда сходить сейчас')).toBe(true);
+        expect(isRightNowAsk('restaurants for next week')).toBe(false);
+        expect(isRightNowAsk('plan my trip for tomorrow')).toBe(false);
+        expect(isRightNowAsk('')).toBe(false);
     });
 });
 

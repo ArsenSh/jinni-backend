@@ -51,4 +51,17 @@ function buildRetrievalQuery(searchQuery, rawMessage, maxTokens = 8) {
     return combined || String(searchQuery || rawMessage || '');
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, LOCAL_DISCOVERY_CAP_KM };
+/* 3. Right-now intent (Arsen's rule, 2026-08-22): "if the context is right now
+ * then it should check [open hours]; if not, let it pass without." Nearby mode
+ * and late night imply it; these words make it explicit at any hour. A
+ * planning-ahead ask ("next week", "tomorrow") never matches. */
+// \b is ASCII-only in JS regex — it never matches beside Cyrillic/Armenian
+// letters, so the non-Latin now-words are tested without boundaries.
+const RIGHT_NOW_LATIN_RE = /\b(right now|now|tonight|currently|open now|at the moment|this evening)\b/i;
+const RIGHT_NOW_NONLATIN_RE = /(сейчас|сегодня вечером|այս պահին|հիմա)/i;
+function isRightNowAsk(message) {
+    const m = String(message || '');
+    return RIGHT_NOW_LATIN_RE.test(m) || RIGHT_NOW_NONLATIN_RE.test(m);
+}
+
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, LOCAL_DISCOVERY_CAP_KM };

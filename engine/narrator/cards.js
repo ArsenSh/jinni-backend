@@ -91,6 +91,26 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
     };
 }
 
+/** The prose and the deck must AGREE: places the intro names by exact-ish name
+ *  get hoisted to the front of the cards (stable order otherwise), blurbs
+ *  riding along. Born from the live test where the narration starred DABOO and
+ *  COBA while the cards led with an equestrian center. */
+const { namesPlausiblyMatch } = require('../places/matching');
+function hoistNarrated(intro, places, blurbs = []) {
+    const text = String(intro || '');
+    if (!text || !places?.length) return { places: places || [], blurbs };
+    const paired = places.map((p, i) => ({ p, b: blurbs[i] ?? null, mentioned: false }));
+    for (const item of paired) {
+        // Cheap contains-check first, similarity guard second (word order,
+        // native-script suffixes like "(Teryan) Պանդոկ Երևան" tolerated).
+        const name = String(item.p.name || '');
+        item.mentioned = !!name && (text.toLowerCase().includes(name.toLowerCase())
+            || text.split(/[.!?\n]/).some(s => s.length > 6 && namesPlausiblyMatch(name, s) && s.toLowerCase().includes(name.split(' ')[0].toLowerCase())));
+    }
+    const ordered = [...paired.filter(x => x.mentioned), ...paired.filter(x => !x.mentioned)];
+    return { places: ordered.map(x => x.p), blurbs: ordered.map(x => x.b) };
+}
+
 /** v1's complete-event shape: prose first, one part per card by index, and an
  *  optional trailing text part (v1's follow-up-question habit). */
 function buildContentParts(prose, recCount, trailingText = null) {
@@ -100,4 +120,4 @@ function buildContentParts(prose, recCount, trailingText = null) {
     return parts;
 }
 
-module.exports = { toRecommendation, buildContentParts, categoryFor, factDescription };
+module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription };

@@ -147,17 +147,17 @@ function annotateOpenNow(places, ctx) {
 }
 
 /* Which categories may be DROPPED when known-closed at the moment of asking?
- * Policy table, read by the pipeline — and only for "right now" intents
- * (nearby mode / a late-night "tonight" ask). A trip planned for next week
- * never applies this. Unknown hours are exempt by construction (null ≠ false).
- *  - dining/shopping/activities: a closed door right now is a useless answer.
- *  - hotels: front desks run 24h; hours data on hotels is noise.
- *  - events: carry their OWN dates — the event pipeline owns their time logic.
- *  - historical/photo_spots/hidden_gems: usually outdoor/always-viewable;
- *    a wrong "closed" from stale hours would hide a perfectly good viewpoint. */
-const _DROP_WHEN_CLOSED = new Set(['restaurants', 'shopping', 'activities']);
+ * Applied only on "right now" intents (nearby mode / late-night asks); a trip
+ * planned for next week never filters. Unknown hours are exempt by
+ * construction (null ≠ false) — outdoor viewpoints and unfilled validator
+ * entries survive because they carry NO hours, not because of a category pass.
+ * Policy (tightened 2026-08-22 after the live test carded a KNOWN-closed
+ * theater on a tonight ask): everything droppable EXCEPT
+ *  - hotels: front desks run 24h; hours data on hotels is noise;
+ *  - events: carry their OWN dates — the event pipeline owns their time logic. */
+const _NEVER_DROP_WHEN_CLOSED = new Set(['hotels', 'events']);
 function shouldDropWhenClosed(category) {
-    return _DROP_WHEN_CLOSED.has(String(category || '').toLowerCase());
+    return !_NEVER_DROP_WHEN_CLOSED.has(String(category || '').toLowerCase());
 }
 
 /* Business/Destination hours use a day-name schedule
