@@ -62,4 +62,8 @@ engine/
       read of v1 models/proximityService first. + corpus embedding job (jobs/embedCorpus)
       once an embedder is enabled (npm i @xenova/transformers).
 - [ ] narrator providers + toolLoop
-- [ ] routes/aiChatV2.js → `/chat-stream-v2` (test-gated mount)
+- [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
+      the one sanctioned server.js line is now used). Currently an honest scaffold
+      reply in v1's SSE dialect; reached only via the admin-only "Chat engine"
+      toggle in JinniChat settings (frontend commit 1da6ef8). Grows into the real
+      pipeline as canonicalStore + narrator land.
