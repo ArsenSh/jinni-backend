@@ -158,7 +158,6 @@ function dbDocToCandidate(d, source, center) {
             if (first && typeof first.url === 'string') return first.url;
             return null;
         })(),
-        tier: d.subscription?.tier || null,
         text: [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, d.description]
             .filter(Boolean).join(' ').slice(0, 300),
     };
