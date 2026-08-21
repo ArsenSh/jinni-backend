@@ -134,7 +134,26 @@ async function findPlaces(params = {}, deps = {}) {
     }
     lists.push({ ids: priorList, weight: relevanceLists ? 0.5 : 1 });
     const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
-    const places = fused.map(id => byId.get(id)).filter(Boolean).slice(0, wanted);
+    let ordered = fused.map(id => byId.get(id)).filter(Boolean);
+
+    // ── Demanded-term guarantee (the sushi lesson, 2026-08-22): when the clean
+    //    query names something RARE in the pool (sushi, uzbek — ≤25% of
+    //    candidates match), the matching candidates must not be crowded out by
+    //    high-prior regulars: the fallback may have just PAID to fetch them,
+    //    and the narrator then honestly says "no sushi here" while sushi sits
+    //    in the pool. Up to 3 guaranteed seats, best-fused-first. ──
+    if (params.coreQuery) {
+        const { uncoveredQueryTokens } = require('../places/canonicalStore');
+        const rare = uncoveredQueryTokens(params.coreQuery, ordered, 0.25);
+        if (rare.length) {
+            const seats = ordered.filter(c => {
+                const t = String(c.text || c.name || '').toLowerCase();
+                return rare.some(d => t.includes(d));
+            }).slice(0, 3);
+            if (seats.length) ordered = [...seats, ...ordered.filter(c => !seats.includes(c))];
+        }
+    }
+    const places = ordered.slice(0, wanted);
 
     const result = { places, degraded: false, provenance };
     if (query) cache.set(cacheParams, { queryVector, queryText: query }, result);

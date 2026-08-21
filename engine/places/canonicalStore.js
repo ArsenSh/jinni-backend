@@ -130,6 +130,10 @@ function dbDocToCandidate(d, source, center) {
         verifiedId: String(d._id || ''),
         name: d.name,
         source,                                        // 'destination' | 'business'
+        // Partner tier drives the card badge + glow color (Verified /
+        // Spotlight / Signature) — v1 reads business.partnership.tier; without
+        // this every partner rendered as "Jinni Verified" (live find 2026-08-22).
+        tier: source === 'business' ? (d.partnership?.tier || 'verified') : null,
         rating: d.rating || d.engagement?.rating || null,
         types: Array.isArray(d.type) ? d.type : [],
         primaryType: null,
@@ -274,7 +278,7 @@ async function loadCandidates(params = {}, deps = {}) {
     if ((merged.length < wanted || missing.length) && (params.query || category)) {
         try {
             const extra = await googleFallback({
-                query: params.query, category, subType, center, radiusKm,
+                query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
                 needed: Math.max(wanted - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (extra.length) {
@@ -290,24 +294,40 @@ async function loadCandidates(params = {}, deps = {}) {
 
 /** Which clean-query tokens (≥4 chars) match ZERO owned candidates? A non-empty
  *  answer means the corpus can't truthfully serve this ask — count is
- *  irrelevant. Pure; exported for tests. */
-function uncoveredQueryTokens(coreQuery, candidates) {
+ *  irrelevant. VIBE words never count as demands (first live day bought Google
+ *  searches for "cozy,quiet" and "talk,evening" — adjectives are the
+ *  embeddings' job; only concrete demands like sushi/uzbek/vegan justify paid
+ *  fetches). maxShare>0 relaxes "zero matches" to "rare" (≤ that share of the
+ *  pool) — findPlaces uses it to guarantee seats for demanded-term matches.
+ *  Pure; exported for tests. */
+const VIBE_TOKENS = new Set([
+    'cozy', 'quiet', 'romantic', 'talk', 'chat', 'evening', 'tonight', 'night',
+    'hours', 'near', 'nearby', 'place', 'places', 'good', 'best', 'nice',
+    'cheap', 'authentic', 'local', 'open', 'beautiful', 'view', 'views',
+    'lively', 'relax', 'relaxing', 'social', 'today', 'meet', 'date',
+]);
+function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
     const tokens = String(coreQuery || '').toLowerCase().split(/[^a-zЀ-ӿ԰-֏]+/)
-        .filter(t => t.length >= 4);
+        .filter(t => t.length >= 4 && !VIBE_TOKENS.has(t));
     if (!tokens.length || !candidates.length) return [];
-    const blob = candidates.map(c => String(c.text || c.name || '')).join(' ').toLowerCase();
-    return tokens.filter(t => !blob.includes(t));
+    const texts = candidates.map(c => String(c.text || c.name || '').toLowerCase());
+    return tokens.filter(t => {
+        const share = texts.filter(x => x.includes(t)).length / texts.length;
+        return share <= maxShare;
+    });
 }
 
 /** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
-async function googleFallback({ query, category, subType, center, radiusKm, needed, requestId }, deps = {}) {
+async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, needed, requestId }, deps = {}) {
     const coverageAllowed = deps.coverage
         || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
     if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) return [];
 
     const findPlaces = deps.findPlaces
         || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));
-    const q = [query, subType, category].filter(Boolean)[0] || 'places to visit';
+    // The CLEAN intent query makes the best paid search — the enriched one
+    // drags raw chat tokens into Google ("...место можно спокоино", live find).
+    const q = [coreQuery, query, subType, category].filter(Boolean)[0] || 'places to visit';
     const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(needed * 2, 10) }) || [];
 
     // Resolve at most `needed` through v1's shared resolver — it caches details

@@ -175,6 +175,16 @@ describe('uncoveredQueryTokens (the Uzbek lesson — relevance-thin, not count-t
         expect(uncoveredQueryTokens('', CANDS)).toEqual([]);
         expect(uncoveredQueryTokens('uzbek', [])).toEqual([]);
     });
+    test('vibe words never count as demands (no paid searches for "cozy quiet")', () => {
+        expect(uncoveredQueryTokens('cozy quiet cafe talk hours', CANDS)).toEqual(['cafe']);
+        expect(uncoveredQueryTokens('quiet place to talk evening', CANDS)).toEqual([]);
+        expect(uncoveredQueryTokens('uzbek restaurant near me', CANDS)).toEqual(['uzbek']);
+    });
+    test('maxShare relaxes zero-match to rare (the demand-seat check)', () => {
+        const pool = [...CANDS, { text: 'Sushi House sushi restaurant Yerevan' }];
+        expect(uncoveredQueryTokens('sushi restaurant', pool)).toEqual([]);        // matched → not uncovered
+        expect(uncoveredQueryTokens('sushi restaurant', pool, 0.5)).toEqual(['sushi']); // but RARE
+    });
 });
 
 describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
