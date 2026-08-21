@@ -91,6 +91,12 @@ engine/
       detail-question branch fires when a travel turn names a session-shown
       place. Round-61 honesty structural in the prompt (inward to More, never
       Google). 9 tests; suite at 228.
+- [x] GOOGLE FALLBACK TIER (2026-08-21): canonicalStore.googleFallback — fires
+      ONLY when the owned corpus is thin, ONLY through coverageService gates,
+      bounded to one Text Search + ≤needed detail resolves via v1's shared
+      resolver (caches + stores images = the standard warming path; a cold city
+      pays once, then answers from owned data). Owned rows always win dedupe.
+      V2 is now viable in cold markets. 5 tests; suite at 233.
 - [ ] narrator: Claude + Ollama providers; search_places as a loop tool
       (full agentic retrieval — today the pipeline still pre-retrieves)
 - [x] v2 cards (2026-08-21): narrator/cards.js maps retrieval candidates to v1's

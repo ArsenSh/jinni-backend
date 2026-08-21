@@ -3,7 +3,7 @@
 // findCachedBackfill; cases below pin them.
 
 const {
-    loadCandidates, buildCacheQuery, cacheDocToCandidate, dbDocToCandidate,
+    loadCandidates, googleFallback, buildCacheQuery, cacheDocToCandidate, dbDocToCandidate,
     scoreCachedDoc, mergeAndDedupe, isCommunityRejected,
 } = require('../engine/places/canonicalStore');
 
@@ -107,6 +107,7 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
         cacheFind: async () => cacheDocs,
         proximity: async () => proximityRes,
         placeMatches: () => true,
+        coverage: async () => false,     // fallback off unless a test enables it
     });
 
     test('no center → []; events → [] (events pipeline owns that category)', async () => {
@@ -130,7 +131,7 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
 
     test('type comparator gate applies when category present; skipped for free query', async () => {
         const docs = [cacheDoc({ name: 'School', types: ['school'] })];
-        const rejecting = { cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => false };
+        const rejecting = { cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => false, coverage: async () => false };
         const withCat = await loadCandidates({ category: 'restaurants', center: CENTER }, rejecting);
         expect(withCat).toEqual([]);
         const freeQuery = await loadCandidates({ category: null, center: CENTER }, rejecting);
@@ -142,6 +143,7 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
             cacheFind: async () => [cacheDoc({ name: 'Solo' })],
             proximity: async () => { throw new Error('service down'); },
             placeMatches: () => true,
+            coverage: async () => false,
         });
         expect(out.map(c => c.name)).toEqual(['Solo']);
     });
@@ -152,7 +154,79 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
             proximity: async () => ({ destinations: [{ _id: 'd', name: 'Cascade', type: ['historical'],
                 location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng } } }], businesses: [] }),
             placeMatches: () => true,
+            coverage: async () => false,
         });
         expect(out.map(c => c.name)).toEqual(['Cascade']);
+    });
+});
+
+describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
+    const googleRow = (id, name, dLat = 0.01) => ({
+        place_id: id, name,
+        geometry: { location: { lat: CENTER.lat + dLat, lng: CENTER.lng } },
+        types: ['restaurant'], primaryType: 'restaurant',
+    });
+
+    test('thin corpus triggers the fallback; resolved places carry image + address', async () => {
+        const out = await loadCandidates({ category: 'restaurants', center: CENTER, count: 4, query: 'khinkali' }, {
+            cacheFind: async () => [cacheDoc({ name: 'OnlyOne' })],
+            proximity: async () => ({}),
+            placeMatches: () => true,
+            coverage: async () => true,
+            findPlaces: async () => [googleRow('g1', 'Khinkali House'), googleRow('g2', 'Dumpling Spot')],
+            resolveDetails: async (id) => ({ name: null, rating: 4.3, formatted_address: `${id} St`, imagesStored: true }),
+        });
+        const google = out.filter(c => c.source === 'google');
+        expect(google.map(c => c.name)).toEqual(['Khinkali House', 'Dumpling Spot']);
+        expect(google[0].image).toBe('/api/ai/place-image/g1/0');
+        expect(google[0].address).toBe('g1 St');
+        expect(out[0].name).toBe('OnlyOne');          // owned data still leads
+    });
+
+    test('coverage OFF → no google calls at all', async () => {
+        let searched = false;
+        const out = await loadCandidates({ category: 'restaurants', center: CENTER, count: 6, query: 'x' }, {
+            cacheFind: async () => [], proximity: async () => ({}), placeMatches: () => true,
+            coverage: async () => false,
+            findPlaces: async () => { searched = true; return [googleRow('g', 'X')]; },
+        });
+        expect(searched).toBe(false);
+        expect(out).toEqual([]);
+    });
+
+    test('sufficient corpus → fallback never fires', async () => {
+        let searched = false;
+        const docs = [cacheDoc({ name: 'A' }), cacheDoc({ name: 'B', placeId: 'p_b' })];
+        await loadCandidates({ category: 'restaurants', center: CENTER, count: 2 }, {
+            cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => true,
+            coverage: async () => true,
+            findPlaces: async () => { searched = true; return []; },
+        });
+        expect(searched).toBe(false);
+    });
+
+    test('googleFallback: out-of-radius dropped; failed details still serve the place (no image)', async () => {
+        const out = await googleFallback({ query: 'q', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
+            coverage: async () => true,
+            findPlaces: async () => [googleRow('near', 'Near Place'), googleRow('far', 'Far Place', 5)],
+            resolveDetails: async () => { throw new Error('details down'); },
+        });
+        expect(out.map(c => c.name)).toEqual(['Near Place']);
+        expect(out[0].image).toBe(null);
+        expect(out[0].source).toBe('google');
+    });
+
+    test('dedupe: a google row matching an owned placeId ships once (owned wins)', async () => {
+        const out = await loadCandidates({ category: 'restaurants', center: CENTER, count: 4, query: 'x' }, {
+            cacheFind: async () => [cacheDoc({ name: 'Lavash' })],   // factory → placeId 'p_Lavash'
+            proximity: async () => ({}),
+            placeMatches: () => true,
+            coverage: async () => true,
+            findPlaces: async () => [googleRow('p_Lavash', 'Lavash Google Copy'), googleRow('g9', 'Fresh Find')],
+            resolveDetails: async () => null,
+        });
+        expect(out.filter(c => c.placeId === 'p_Lavash')).toHaveLength(1);
+        expect(out.find(c => c.placeId === 'p_Lavash').source).toBe('cache');
+        expect(out.map(c => c.name)).toContain('Fresh Find');
     });
 });

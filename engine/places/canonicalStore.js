@@ -253,11 +253,83 @@ async function loadCandidates(params = {}, deps = {}) {
         console.warn(`[canonicalStore] validator tier failed: ${err.message} — continuing with cache only`);
     }
 
-    return mergeAndDedupe(destinations, businesses, cacheCandidates);
+    let merged = mergeAndDedupe(destinations, businesses, cacheCandidates);
+
+    // ── Google fallback tier (bootstrap, not the engine — V3 §8e) ──
+    // Only when the owned corpus is THIN, only through the coverage gates, and
+    // bounded: one Text Search + details for at most `count` new places. Every
+    // resolved place caches permanently (the standard warming path), so a cold
+    // city pays this once and then answers from owned data like Yerevan does.
+    const wanted = Math.min(Math.max(Number(params.count) || 8, 1), 20);
+    if (merged.length < wanted && (params.query || category)) {
+        try {
+            const extra = await googleFallback({
+                query: params.query, category, subType, center, radiusKm,
+                needed: wanted - merged.length, requestId,
+            }, deps);
+            if (extra.length) {
+                console.log(`[canonicalStore] google fallback: +${extra.length} (owned corpus had ${merged.length})`);
+                merged = mergeAndDedupe(merged, extra);
+            }
+        } catch (err) {
+            console.warn(`[canonicalStore] google fallback failed: ${err.message} — serving owned data only`);
+        }
+    }
+    return merged;
+}
+
+/** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
+async function googleFallback({ query, category, subType, center, radiusKm, needed, requestId }, deps = {}) {
+    const coverageAllowed = deps.coverage
+        || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
+    if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) return [];
+
+    const findPlaces = deps.findPlaces
+        || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));
+    const q = [query, subType, category].filter(Boolean)[0] || 'places to visit';
+    const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(needed * 2, 10) }) || [];
+
+    // Resolve at most `needed` through v1's shared resolver — it caches details
+    // AND stores images, so the card's place-image endpoint is valid and the
+    // place is owned data from now on. Failures skip the place, never the turn.
+    const resolveDetails = deps.resolveDetails || (async (placeId) => {
+        const { getCachedPlaceDetails } = require('../../routes/aiRoutes').shared;
+        return getCachedPlaceDetails(placeId, false, requestId, center, placeId, null, true);
+    });
+    const out = [];
+    for (const p of found) {
+        if (out.length >= needed) break;
+        if (!p?.place_id || !p?.name) continue;
+        const lat = p.geometry?.location?.lat, lng = p.geometry?.location?.lng;
+        if (lat == null || lng == null) continue;
+        const distanceKm = haversineKm(center.lat, center.lng, lat, lng);
+        if (distanceKm > radiusKm) continue;
+        let d = null;
+        try { d = await resolveDetails(p.place_id); } catch { /* skip this place */ }
+        out.push({
+            placeId: p.place_id,
+            name: d?.name || p.name,
+            source: 'google',
+            rating: d?.rating || null,
+            types: p.types || [],
+            primaryType: p.primaryType || null,
+            priceLevel: d?.priceLevel || null,
+            opening_hours: d?.opening_hours || null,
+            geometry: { lat, lng },
+            distanceKm,
+            address: d?.formatted_address || null,
+            city: null,
+            country: null,
+            image: (d?.imagesStored || d?.photoUrls?.length) ? `/api/ai/place-image/${p.place_id}/0` : null,
+            text: [p.name, p.primaryType, ...(p.types || []).slice(0, 6)].filter(Boolean).join(' '),
+        });
+    }
+    return out;
 }
 
 module.exports = {
     loadCandidates,
+    googleFallback,
     buildCacheQuery,
     cacheDocToCandidate,
     dbDocToCandidate,
