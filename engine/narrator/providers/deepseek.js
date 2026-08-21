@@ -83,4 +83,35 @@ async function complete({ messages, model = null, maxTokens = 600, temperature =
     };
 }
 
-module.exports = { complete, streamText, _sseDeltas };
+/**
+ * Function-calling round (the tool loop's engine). config/openai (a v1 file)
+ * doesn't forward `tools`, so this uses its OWN axios call on the same env —
+ * v1 stays byte-identical.
+ * @returns {{ message: {content, tool_calls?}, usage }}
+ */
+async function completeWithTools({ messages, tools = undefined, model = null, maxTokens = 500, temperature = 0.4 }) {
+    const axios = require('axios');
+    const body = {
+        model: model || process.env.OPENAI_MODEL || 'deepseek-chat',
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+    };
+    if (tools && tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
+    const res = await axios.post(
+        `${process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1'}/chat/completions`,
+        body,
+        { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
+    );
+    return {
+        message: res.data?.choices?.[0]?.message || {},
+        usage: {
+            in: res.data?.usage?.prompt_tokens || 0,
+            out: res.data?.usage?.completion_tokens || 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+        },
+    };
+}
+
+module.exports = { complete, streamText, completeWithTools, _sseDeltas };

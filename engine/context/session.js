@@ -25,4 +25,19 @@ function shownFromMessages(messages) {
     return { placeIds: [...new Set(placeIds)], names: [...new Set(names)] };
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages };
+/** Name→placeId pairs for every place shown in this session (first win per
+ *  name) — the tool loop uses these so "the phone of Nairi" resolves to the
+ *  EXACT card the traveler saw, never a same-named place elsewhere. */
+function shownPlaces(messages) {
+    const seen = new Map();
+    for (const m of messages || []) {
+        for (const r of m?.recommendations || []) {
+            if (r?.name && !seen.has(r.name)) {
+                seen.set(r.name, { name: r.name, placeId: r.placeId || null });
+            }
+        }
+    }
+    return [...seen.values()];
+}
+
+module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces };

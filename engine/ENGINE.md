@@ -82,8 +82,17 @@ engine/
       usage is chars/4 ESTIMATED (config/openai doesn't forward stream_options —
       a v1 file; note for the billing pass). Parallel AppConfig+User loads.
       11 tests; suite at 219.
-- [ ] narrator: Claude + Ollama providers; tool-use loop
-      (the full agentic mode — currently retrieval runs before narration instead)
+- [x] TOOL LOOP v0 (2026-08-21): runToolLoop (capped 4 iterations; final round
+      tool-less so the model must answer; errors become tool results, never
+      crashes) + get_place_details tool over v1's shared getCachedPlaceDetails
+      (lazy — session-first identity via shownPlaces so "phone of Nairi" hits
+      the exact card shown). deepseek.completeWithTools uses its OWN axios call
+      (config/openai doesn't forward `tools`; v1 stays byte-identical). Route:
+      detail-question branch fires when a travel turn names a session-shown
+      place. Round-61 honesty structural in the prompt (inward to More, never
+      Google). 9 tests; suite at 228.
+- [ ] narrator: Claude + Ollama providers; search_places as a loop tool
+      (full agentic retrieval — today the pipeline still pre-retrieves)
 - [x] v2 cards (2026-08-21): narrator/cards.js maps retrieval candidates to v1's
       EXACT chat-rec payload (field-for-field from processStreamCompletion) and
       v1's contentParts interleaving; canonicalStore candidates now carry image

@@ -172,4 +172,26 @@ function parseCardsTail(tail, count) {
     } catch { return null; }
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, placeFactLine, historyTurns };
+/**
+ * Tool-loop turns (detail questions about a specific known place). The model
+ * decides which tools to call; the honesty rules are v1's round-61 lessons
+ * made structural: null = "not listed", point inward (the card's More button),
+ * never outward to Google.
+ */
+function buildToolAnswerMessages({ message, langName = 'English', history = [] }) {
+    return [
+        {
+            role: 'system',
+            content:
+                'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
+              + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
+              + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
+              + '- Never guess or invent details. 1–3 sentences, natural prose.',
+        },
+        ...historyTurns(history),
+        { role: 'user', content: String(message || '') },
+    ];
+}
+
+module.exports = { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };

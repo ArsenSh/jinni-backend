@@ -24,7 +24,12 @@ const { effectiveRadiusKm, buildRetrievalQuery } = require('../engine/retrieval/
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages } = require('../engine/context/session');
+const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../engine/context/session');
+const { runToolLoop } = require('../engine/narrator/toolLoop');
+const { PLACE_DETAILS_TOOL, makeExecutors } = require('../engine/narrator/tools');
+const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
+const { messageNamesPlace } = require('../engine/places/matching');
+const deepseekProvider = require('../engine/narrator/providers/deepseek');
 
 router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     const { message, location = null, userTimezone = null, nearbyMode = false, sessionId = null } = req.body || {};
@@ -97,7 +102,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         }
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
 
-        if (!intent.isTravel) {
+        // ── Detail-question branch (THE TOOL LOOP): the message names a place
+        //    the traveler already saw in this session → the model drives, with
+        //    get_place_details as its tool. Session-first identity means the
+        //    answer is about the exact card they saw. ──
+        const sessionCards = shownPlaces(sessionPeek?.messages);
+        const msgLower = String(message).toLowerCase();
+        const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
+        if (namedCard) {
+            const loop = await runToolLoop({
+                messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),
+                tools: [PLACE_DETAILS_TOOL],
+                execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
+                maxTokens: 400,
+            }, { provider: deepseekProvider });
+            reply = loop.text || 'I couldn\'t verify that just now — the place\'s card has the details under More.';
+            for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
+                send(res, { type: 'token', content: chunk });
+            }
+            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+            console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
+        } else if (!intent.isTravel) {
             // ── Chit-chat: no retrieval, no place names — just Jinni. ──
             const out = await narrator.stream({
                 messages: buildChitchatMessages({ message, langName, history: recentTurns }),
