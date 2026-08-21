@@ -1,0 +1,158 @@
+// Tests for the V2 Canonical Place Store — pure helpers + loadCandidates with
+// injected fakes (no Mongo, no services). Gate semantics mirror v1's
+// findCachedBackfill; cases below pin them.
+
+const {
+    loadCandidates, buildCacheQuery, cacheDocToCandidate, dbDocToCandidate,
+    scoreCachedDoc, mergeAndDedupe, isCommunityRejected,
+} = require('../engine/places/canonicalStore');
+
+const CENTER = { lat: 40.18, lng: 44.51 };   // Yerevan
+
+const cacheDoc = (over = {}) => ({
+    placeId: 'p_' + (over.name || 'x'),
+    name: 'Lavash',
+    rating: 4.5,
+    likes: 0, dislikes: 0, useCount: 5,
+    types: ['restaurant'], primaryType: 'restaurant', priceLevel: null,
+    photos: [{ url: 'x' }],
+    details: { geometry: { location: { lat: CENTER.lat + 0.01, lng: CENTER.lng + 0.01 } } },
+    opening_hours: { periods: [] },
+    interests: [], actions: ['restaurants'], city: 'Yerevan', country: 'Armenia',
+    ...over,
+});
+
+describe('isCommunityRejected (v1 rules, byte-identical)', () => {
+    test('floor + votes + ratio all required', () => {
+        expect(isCommunityRejected(0, 3)).toBe(true);     // net −3, 3 votes, 100% dislikes
+        expect(isCommunityRejected(1, 3)).toBe(false);    // net −2 → floor not met
+        expect(isCommunityRejected(0, 2)).toBe(false);    // small sample can never hide
+        expect(isCommunityRejected(50, 4)).toBe(false);   // popular place, low share
+        expect(isCommunityRejected()).toBe(false);
+    });
+});
+
+describe('buildCacheQuery', () => {
+    test('category adds the ground-truth actions filter; null omits it', () => {
+        const withCat = buildCacheQuery({ center: CENTER, radiusKm: 50, category: 'restaurants' });
+        expect(withCat.actions).toBe('restaurants');
+        expect(withCat.aiBlocked).toEqual({ $ne: true });
+        expect(withCat['explore.status']).toEqual({ $ne: 'hidden' });
+        const noCat = buildCacheQuery({ center: CENTER, radiusKm: 50 });
+        expect(noCat.actions).toBeUndefined();
+    });
+    test('bbox straddles the center; excludes become $nin', () => {
+        const q = buildCacheQuery({ center: CENTER, radiusKm: 50, excludePlaceIds: ['a'] });
+        expect(q['details.geometry.location.lat'].$gte).toBeLessThan(CENTER.lat);
+        expect(q['details.geometry.location.lat'].$lte).toBeGreaterThan(CENTER.lat);
+        expect(q.placeId).toEqual({ $nin: ['a'] });
+    });
+});
+
+describe('candidate mapping', () => {
+    test('cacheDocToCandidate: fields, distance, BM25 text, embedding→vector', () => {
+        const c = cacheDocToCandidate(cacheDoc({ embedding: [1, 2] }), CENTER);
+        expect(c.source).toBe('cache');
+        expect(c.placeId).toBe('p_x');
+        expect(c.distanceKm).toBeGreaterThan(0);
+        expect(c.distanceKm).toBeLessThan(3);
+        expect(c.text).toContain('Lavash');
+        expect(c.text).toContain('restaurant');
+        expect(c.text).toContain('Yerevan');
+        expect(c.vector).toEqual([1, 2]);
+        expect(c.opening_hours).toEqual({ periods: [] });
+    });
+    test('dbDocToCandidate: business/destination rows map defensively', () => {
+        const d = dbDocToCandidate({
+            _id: 'abc', name: 'Tashir Arena', type: ['events'],
+            location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng }, city: 'Yerevan' },
+            subscription: { tier: 'signature' },
+        }, 'business', CENTER);
+        expect(d.source).toBe('business');
+        expect(d.verifiedId).toBe('abc');
+        expect(d.tier).toBe('signature');
+        expect(d.opening_hours).toBe(null);               // day-name schedule → unknown, kept
+        expect(dbDocToCandidate({ type: [] }, 'business', CENTER)).toBe(null);   // no name → skip
+    });
+});
+
+describe('mergeAndDedupe', () => {
+    test('first list wins — validator word beats a cache duplicate (by name)', () => {
+        const validator = [{ verifiedId: 'v1', name: 'Sherep', source: 'destination' }];
+        const cache = [{ placeId: 'g1', name: 'SHEREP!', source: 'cache' },
+                       { placeId: 'g2', name: 'Uzbechka', source: 'cache' }];
+        const merged = mergeAndDedupe(validator, cache);
+        expect(merged.map(m => m.source)).toEqual(['destination', 'cache']);
+        expect(merged[1].name).toBe('Uzbechka');
+    });
+    test('placeId dedupe too', () => {
+        const merged = mergeAndDedupe([{ placeId: 'x', name: 'A' }], [{ placeId: 'x', name: 'B' }]);
+        expect(merged).toHaveLength(1);
+    });
+});
+
+describe('scoreCachedDoc (v1 backfill prior, same weights)', () => {
+    test('community feedback dominates; negative bites harder', () => {
+        const liked = scoreCachedDoc(cacheDoc({ likes: 2, dislikes: 0 }), 1, 50, null, {});
+        const neutral = scoreCachedDoc(cacheDoc(), 1, 50, null, {});
+        const disliked = scoreCachedDoc(cacheDoc({ likes: 0, dislikes: 2 }), 1, 50, null, {});
+        expect(liked).toBeGreaterThan(neutral);
+        expect(neutral).toBeGreaterThan(disliked);
+        expect(neutral - disliked).toBeGreaterThan(liked - neutral);   // asymmetric
+    });
+});
+
+describe('loadCandidates (injected fakes, gates end to end)', () => {
+    const fakes = (cacheDocs, proximityRes) => ({
+        cacheFind: async () => cacheDocs,
+        proximity: async () => proximityRes,
+        placeMatches: () => true,
+    });
+
+    test('no center → []; events → [] (events pipeline owns that category)', async () => {
+        expect(await loadCandidates({}, fakes([], {}))).toEqual([]);
+        expect(await loadCandidates({ category: 'events', center: CENTER }, fakes([cacheDoc()], {}))).toEqual([]);
+    });
+
+    test('gates: photo-less, out-of-radius and community-rejected docs drop; validator first', async () => {
+        const docs = [
+            cacheDoc({ name: 'Good' }),
+            cacheDoc({ name: 'NoPhoto', photos: [] }),
+            cacheDoc({ name: 'Far', details: { geometry: { location: { lat: CENTER.lat + 5, lng: CENTER.lng } } } }),
+            cacheDoc({ name: 'Hated', likes: 0, dislikes: 5 }),
+        ];
+        const prox = { destinations: [{ _id: 'd1', name: 'Matenadaran', type: ['historical'],
+            location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng }, city: 'Yerevan' } }], businesses: [] };
+        const out = await loadCandidates({ category: 'restaurants', center: CENTER, radiusKm: 50 }, fakes(docs, prox));
+        expect(out[0].source).toBe('destination');
+        expect(out.map(c => c.name)).toEqual(['Matenadaran', 'Good']);
+    });
+
+    test('type comparator gate applies when category present; skipped for free query', async () => {
+        const docs = [cacheDoc({ name: 'School', types: ['school'] })];
+        const rejecting = { cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => false };
+        const withCat = await loadCandidates({ category: 'restaurants', center: CENTER }, rejecting);
+        expect(withCat).toEqual([]);
+        const freeQuery = await loadCandidates({ category: null, center: CENTER }, rejecting);
+        expect(freeQuery.map(c => c.name)).toEqual(['School']);   // comparator not consulted
+    });
+
+    test('validator tier failure is fail-open (cache still answers)', async () => {
+        const out = await loadCandidates({ center: CENTER }, {
+            cacheFind: async () => [cacheDoc({ name: 'Solo' })],
+            proximity: async () => { throw new Error('service down'); },
+            placeMatches: () => true,
+        });
+        expect(out.map(c => c.name)).toEqual(['Solo']);
+    });
+
+    test('cache tier failure is fail-open (validator still answers)', async () => {
+        const out = await loadCandidates({ center: CENTER }, {
+            cacheFind: async () => { throw new Error('db down'); },
+            proximity: async () => ({ destinations: [{ _id: 'd', name: 'Cascade', type: ['historical'],
+                location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng } } }], businesses: [] }),
+            placeMatches: () => true,
+        });
+        expect(out.map(c => c.name)).toEqual(['Cascade']);
+    });
+});

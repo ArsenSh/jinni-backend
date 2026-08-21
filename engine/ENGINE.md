@@ -56,11 +56,20 @@ engine/
       text fallback, params-bucket isolation), embedder slot (auto-detects optional
       @xenova/transformers → else lexical-only, fail-open), findPlaces orchestration
       with injectable deps — 22 tests (2026-08-21).
-- [ ] places/canonicalStore — the Mongo candidate loader (deps.loadCandidates):
-      read Business/Destination/PlaceCache geo+category-bounded into the candidate
-      shape {placeId, name, text, vector?, opening_hours?, rating}; needs a careful
-      read of v1 models/proximityService first. + corpus embedding job (jobs/embedCorpus)
-      once an embedder is enabled (npm i @xenova/transformers).
+- [x] places/canonicalStore — Mongo candidate loader (deps.loadCandidates), 13 tests
+      (2026-08-21). v1's findCachedBackfill HARD GATES copied (actions ground truth,
+      aiBlocked/explore-hidden suppression, freshness, photo, community hard-hide,
+      sub-type + landmark type gates, price-tier mismatch) + v1's prior score; free
+      (category-null) queries skip only the category/type gates. Validator tier via
+      proximityService (fail-open). Cross-source dedupe registers BOTH identities
+      (placeId AND normalized name). /chat-stream-v2 NOW SERVES REAL RETRIEVAL:
+      owned-data candidates, hybrid-ranked, honest text list (no narrator, no
+      Google tier yet) — logs `[v2] q=… → N/M in Xms`.
+- [ ] Business/Destination day-name hours → Google-periods converter (their
+      opening hours currently read as UNKNOWN in the context engine).
+- [ ] jobs/embedCorpus + PlaceCache `embedding` field (⚠ touches a v1 model
+      schema — needs Arsen's sign-off) once an embedder is enabled
+      (npm i @xenova/transformers).
 - [ ] narrator providers + toolLoop
 - [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
       the one sanctioned server.js line is now used). Currently an honest scaffold

@@ -12,11 +12,14 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const { usageTracker } = require('../middleware/usageTracker');
+const { findPlaces } = require('../engine/retrieval');
+const { loadCandidates } = require('../engine/places/canonicalStore');
+const { buildTimeContext } = require('../engine/context/contextEngine');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
 router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
-    const { message } = req.body || {};
+    const { message, location = null, userTimezone = null, nearbyMode = false } = req.body || {};
     if (!message || typeof message !== 'string') {
         return res.status(400).json({ error: 'Message is required and must be a string.' });
     }
@@ -30,14 +33,56 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         'Connection': 'keep-alive',
     });
 
-    // Honest status, streamed as ordinary tokens so the bubble renders normally.
-    const reply =
-        '🧪 V2 engine (beta scaffold).\n\n'
-      + 'Your message reached /chat-stream-v2 — the toggle and streaming plumbing work. '
-      + 'The new engine is being built in parallel: matching, events machinery, the '
-      + 'context engine (open-now / time-of-day) and the retrieval core are done and '
-      + 'tested; the Mongo data wiring and the narrator come next. Until then, switch '
-      + 'back to V1 for real answers.';
+    // ── V2 build state: RETRIEVAL CORE LIVE (owned data only — Destination/
+    //    Business via proximityService + PlaceCache via canonicalStore).
+    //    No narrator yet: results stream as an honest text list, not prose;
+    //    no Google fallback tier yet: a thin area reports itself thin. ──
+    const center = (location && location.lat != null && location.lng != null)
+        ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
+
+    let reply;
+    const meta = { engine: 'v2', build: 'retrieval-core', timestamp: new Date() };
+    if (!center) {
+        reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
+    } else {
+        try {
+            const timeContext = buildTimeContext({ timezone: userTimezone, lng: center.lng });
+            const t0 = Date.now();
+            const result = await findPlaces({
+                query: message,
+                category: null,                        // free query — no intent classifier yet
+                center,
+                mode: nearbyMode ? 'nearby' : 'discovery',
+                radiusKm: nearbyMode ? 5 : 50,
+                count: 8,
+                timeContext,
+            }, { loadCandidates });
+            const ms = Date.now() - t0;
+            meta.provenance = result.provenance;
+            if (result.degraded || !result.places.length) {
+                reply = `🧪 V2 retrieval: no owned-data candidates for this area yet (${result.reason || 'empty'}). `
+                      + `V1 would fall back to Google here — v2's Google tier isn't wired yet.`;
+            } else {
+                const lines = result.places.map((p, i) => {
+                    const bits = [
+                        p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km` : null,
+                        p.rating ? `★${p.rating}` : null,
+                        p._openNow === true ? 'open now' : (p._openNow === false ? 'closed now' : null),
+                        p.source !== 'cache' ? p.source : null,
+                    ].filter(Boolean);
+                    return `${i + 1}. ${p.name}${bits.length ? ' — ' + bits.join(' · ') : ''}`;
+                });
+                reply = `🧪 V2 retrieval core (owned data, hybrid-ranked, no AI narration yet) — `
+                      + `top ${result.places.length} of ${result.provenance.candidateCount} candidates in ${ms}ms`
+                      + `${result.provenance.cacheHit ? ' · semantic cache HIT' : ''}:\n\n${lines.join('\n')}`;
+                console.log(`[v2] q="${String(message).slice(0, 60)}" → ${result.places.length}/${result.provenance.candidateCount} in ${ms}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} cacheHit=${result.provenance.cacheHit}`);
+            }
+        } catch (err) {
+            console.error('[v2] retrieval failed:', err.message);
+            reply = '🧪 V2: retrieval hit an error (logged server-side). Switch to V1 for real answers.';
+        }
+    }
+
     for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
         send(res, { type: 'token', content: chunk });
     }
@@ -45,7 +90,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         type: 'complete',
         contentParts: [{ type: 'text', content: reply }],
         recommendations: [],
-        metadata: { engine: 'v2', build: 'scaffold', timestamp: new Date() },
+        metadata: meta,
     });
     send(res, { type: 'stream_end' });
     res.end();
