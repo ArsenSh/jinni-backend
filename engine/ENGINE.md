@@ -41,7 +41,11 @@ engine/
 - [x] Characterization tests for matching/events pure functions — 32 passing,
       `__tests__/engineMatching.test.js` (2026-08-21)
 - [x] places/matching + events/matching (copied from v1 w/ comments) (2026-08-21)
-- [ ] utils/safeFetch + events/eventService (copy of aiRoutes 4399–5271 + inline stage)
+- [x] utils/safeFetch (SSRF + guarded fetch) + events/{listing,sources,feed,discovery}
+      — the full v1 events machinery (aiRoutes ~4434–5270), 23 more tests (2026-08-21).
+      NOTE: the INLINE quick-action events stage (feed correct/supply, dedupe order,
+      past/horizon filters, AiFoundEvent capture) is NOT yet copied — it lands as
+      events/pipeline.js when the v2 quick-action path is built.
 - [ ] context/contextEngine (open-now/time — also backports as the v1 3 AM fix)
 - [ ] retrieval core v1 (corpus embeddings + hybrid + RRF + semantic cache)
 - [ ] narrator providers + toolLoop
