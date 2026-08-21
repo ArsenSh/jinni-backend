@@ -18,11 +18,16 @@ const deepseek = require('./providers/deepseek');
 
 const PROVIDERS = { deepseek };
 
-async function stream({ messages, tools = null, model = 'deepseek', onToken = null, maxTokens = 600, temperature = 0.5 } = {}, deps = {}) {
+async function stream({ messages, tools = null, model = 'deepseek', onToken = null, maxTokens = 600, temperature = 0.5, realStream = false } = {}, deps = {}) {
     if (tools && tools.length) {
         throw new Error('[engine/narrator] tool-use loop not implemented yet — see engine/ENGINE.md build state');
     }
     const provider = deps.provider || PROVIDERS[String(model).toLowerCase()] || deepseek;
+    // TRUE streaming when requested and the provider can (tokens reach onToken
+    // as the model produces them). Falls back to complete+pseudo-stream.
+    if (realStream && typeof provider.streamText === 'function') {
+        return provider.streamText({ messages, maxTokens, temperature, onDelta: onToken });
+    }
     const result = await provider.complete({ messages, maxTokens, temperature });
     if (typeof onToken === 'function' && result.text) {
         // Pseudo-stream: the reply arrives whole, the client still sees it flow.

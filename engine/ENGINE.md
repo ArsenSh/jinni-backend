@@ -74,7 +74,15 @@ engine/
       grounded prompts (may name ONLY retrieved places; chit-chat forbids venue
       names), pseudo-streamed. /chat-stream-v2 now: intent (reused v1 service,
       fail-open) → retrieval → grounded PROSE. 8 tests; suite at 181.
-- [ ] narrator: Claude + Ollama providers; TRUE token streaming; tool-use loop
+- [x] TRUE token streaming (2026-08-21): deepseek.streamText (SSE parsing with
+      v1's chunk-boundary lesson, pure _sseDeltas), narrator realStream flag,
+      DelimitedSplitter — grounded turns stream prose LIVE while the <<<CARDS>>>
+      JSON tail (blurb per EVERY card + question) stays private; degradation
+      ladder: no tail → fact-line cards → one-shot JSON → plain prose. Streamed
+      usage is chars/4 ESTIMATED (config/openai doesn't forward stream_options —
+      a v1 file; note for the billing pass). Parallel AppConfig+User loads.
+      11 tests; suite at 219.
+- [ ] narrator: Claude + Ollama providers; tool-use loop
       (the full agentic mode — currently retrieval runs before narration instead)
 - [x] v2 cards (2026-08-21): narrator/cards.js maps retrieval candidates to v1's
       EXACT chat-rec payload (field-for-field from processStreamCompletion) and

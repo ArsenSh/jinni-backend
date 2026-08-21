@@ -121,4 +121,55 @@ function parseNarrationJson(text, count) {
     } catch { return null; }
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, placeFactLine, historyTurns };
+/**
+ * STREAMED narration format: prose FIRST (streams live to the user), then the
+ * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
+ * plus the follow-up question. Same grounding rules as the JSON variant.
+ */
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [] }) {
+    const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
+    return [
+        {
+            role: 'system',
+            content:
+                'You are Jinni, a warm, concise travel companion.\n'
+              + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
+              + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
+              + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
+              + '{"cards": [{"i": 0, "blurb": "..."}, ...], "question": "..." | null}\n'
+              + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb ≤ 18 words in ${langName} on why it suits THIS ask. `
+              + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
+              + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
+              + '- If nothing genuinely fits, say so honestly in the prose and return "cards": [].',
+        },
+        ...historyTurns(history),
+        {
+            role: 'user',
+            content:
+                `Traveler asks: "${query}"\n`
+              + (timeNote ? `Right now: ${timeNote}.\n` : '')
+              + `Verified places:\n${facts}`,
+        },
+    ];
+}
+
+/** Parse the post-delimiter tail: {blurbs, question} or null on junk. */
+function parseCardsTail(tail, count) {
+    try {
+        const m = String(tail || '').match(/\{[\s\S]*\}/);
+        if (!m) return null;
+        const obj = JSON.parse(m[0]);
+        const blurbs = new Array(count).fill(null);
+        for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
+            if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
+                && typeof c.blurb === 'string' && c.blurb.trim()) {
+                blurbs[c.i] = c.blurb.trim().slice(0, 140);
+            }
+        }
+        const question = (typeof obj.question === 'string' && obj.question.trim())
+            ? obj.question.trim().slice(0, 200) : null;
+        return { blurbs, question };
+    } catch { return null; }
+}
+
+module.exports = { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, placeFactLine, historyTurns };

@@ -16,7 +16,8 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
+const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery } = require('../engine/retrieval/tuning');
 
@@ -81,8 +82,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         try {
             const intentService = require('../services/intentService');
             const AppConfig = require('../models/AppConfig');
-            const appCfg = await AppConfig.getConfig().catch(() => ({}));
-            const user = await require('../models/User').findById(req.user.id).select('settings preferences').lean().catch(() => null);
+            // Config + user load in PARALLEL (they were sequential — free ~200-400ms).
+            const [appCfg, user] = await Promise.all([
+                AppConfig.getConfig().catch(() => ({})),
+                require('../models/User').findById(req.user.id).select('settings preferences').lean().catch(() => null),
+            ]);
             const userLanguage = user?.settings?.language || 'en';
             intent = await intentService.classify({ message, recentTurns, userLanguage, appCfg });
             intent._userLanguage = userLanguage;
@@ -99,6 +103,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 messages: buildChitchatMessages({ message, langName, history: recentTurns }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 200,
+                realStream: true,
             });
             reply = out.text;
             console.log(`[v2] chit-chat narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)`);
@@ -133,24 +138,44 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 send(res, { type: 'token', content: reply });
             } else {
                 const timeNote = timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null;
-                // ── Structured narration: ONE call → intro + per-card blurbs +
-                //    follow-up question. JSON must not stream to the user, so no
-                //    onToken here; a malformed answer falls back to plain prose. ──
+                // ── TRUE-streamed narration: prose streams live to the user as
+                //    the model writes it; the <<<CARDS>>> tail (blurbs + question)
+                //    stays private via the splitter. Failure modes degrade in
+                //    order: no tail → fact-line cards; stream error → the older
+                //    one-shot JSON call; that too → plain grounded prose. ──
                 const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns };
-                const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
-                const parsed = parseNarrationJson(out.text, result.places.length);
-                let intro, blurbs = [];
-                if (parsed) {
-                    intro = parsed.intro;
-                    blurbs = parsed.blurbs;
-                    meta.followUpQuestion = parsed.question;
-                } else {
-                    console.warn('[v2] narration JSON malformed — falling back to plain grounded prose');
-                    const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400 });
-                    intro = fb.text;
+                let intro = '', blurbs = [], streamedOk = false;
+                try {
+                    const splitter = new DelimitedSplitter((text) => send(res, { type: 'token', content: text }));
+                    await narrator.stream({
+                        messages: buildStreamedNarrationMessages(promptArgs),
+                        maxTokens: 550,
+                        temperature: 0.6,
+                        realStream: true,
+                        onToken: (d) => splitter.feed(d),
+                    });
+                    const tail = splitter.finalize();
+                    intro = splitter.prose.trim();
+                    const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
+                    if (parsedTail) { blurbs = parsedTail.blurbs; meta.followUpQuestion = parsedTail.question; }
+                    streamedOk = !!intro;
+                } catch (err) {
+                    console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);
                 }
-                for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
-                    send(res, { type: 'token', content: chunk });
+                if (!streamedOk) {
+                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
+                    const parsed = parseNarrationJson(out.text, result.places.length);
+                    if (parsed) {
+                        intro = parsed.intro;
+                        blurbs = parsed.blurbs;
+                        meta.followUpQuestion = parsed.question;
+                    } else {
+                        const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400 });
+                        intro = fb.text;
+                    }
+                    for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
+                        send(res, { type: 'token', content: chunk });
+                    }
                 }
                 const footer = `\n\n🧪 v2 · ${result.places.length}/${result.provenance.candidateCount} candidates`
                              + `${result.provenance.cacheHit ? ' · cache HIT' : ''} · ${Date.now() - t0}ms`;
@@ -161,7 +186,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    frontend renders them unchanged (photos, map, votes). ──
                 recommendations = result.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode, description: blurbs[i] || null }));
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${parsed ? 'structured' : 'fallback'}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
         }
     } catch (err) {
