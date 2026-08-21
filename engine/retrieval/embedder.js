@@ -22,8 +22,10 @@ function setEmbedder(embedder) {
 async function _loadLocal() {
     try {
         // Optional dependency — resolved at runtime so the engine works (lexical-
-        // only) on installs that don't carry it.
-        const { pipeline } = require('@xenova/transformers');
+        // only) on installs that don't carry it. Dynamic import(), NOT require():
+        // the package is ESM-only and require() throws ERR_REQUIRE_ESM on server
+        // Node versions (caught live 2026-08-22 — ran lexical-only silently).
+        const { pipeline } = await import('@xenova/transformers');
         const pipe = await pipeline('feature-extraction', LOCAL_MODEL);
         return {
             model: LOCAL_MODEL,
