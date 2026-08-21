@@ -16,11 +16,20 @@ function placeFactLine(p) {
     return `- ${p.name}${bits.length ? ` (${bits.join(', ')})` : ''}`;
 }
 
+/** Session turns ({sender:'user'|'ai', text}) → provider messages, oldest first. */
+function historyTurns(history) {
+    return (history || [])
+        .filter(t => t && t.text)
+        .map(t => ({ role: t.sender === 'ai' ? 'assistant' : 'user', content: String(t.text).slice(0, 300) }));
+}
+
 /**
  * Place-query narration: retrieved facts in, warm prose out — nothing invented.
- * @param {object} opts {query, places, langName, timeNote}
+ * History rides along so follow-ups ("which one is closest?") read naturally,
+ * but the ONLY nameable places are still the ones on THIS turn's list.
+ * @param {object} opts {query, places, langName, timeNote, history}
  */
-function buildGroundedMessages({ query, places = [], langName = 'English', timeNote = null }) {
+function buildGroundedMessages({ query, places = [], langName = 'English', timeNote = null, history = [] }) {
     const facts = places.map(placeFactLine).join('\n');
     return [
         {
@@ -28,11 +37,12 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + 'You are given a VERIFIED list of real places. Rules:\n'
-              + '- Recommend ONLY from the list, by exact name. NEVER mention any place not on it.\n'
+              + '- Recommend ONLY from the list, by exact name. NEVER mention any place not on it — including places from earlier in the conversation.\n'
               + '- Only assert the facts given per place (distance, rating, open state). No prices, no hours, no dishes unless given.\n'
               + '- If nothing on the list genuinely fits the request, say so honestly and suggest broadening — do not force a bad match.\n'
               + '- 2–5 sentences. No lists, no headers — natural prose.',
         },
+        ...historyTurns(history),
         {
             role: 'user',
             content:
@@ -44,7 +54,7 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
 }
 
 /** Non-place turns: just be Jinni — and never name specific venues (none are verified). */
-function buildChitchatMessages({ message, langName = 'English' }) {
+function buildChitchatMessages({ message, langName = 'English', history = [] }) {
     return [
         {
             role: 'system',
@@ -54,8 +64,9 @@ function buildChitchatMessages({ message, langName = 'English' }) {
               + 'Do NOT recommend or name any specific real place, restaurant or venue in this reply '
               + '(none are verified on this turn); if asked for places, invite the traveler to ask for what they want.',
         },
+        ...historyTurns(history),
         { role: 'user', content: String(message || '') },
     ];
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, placeFactLine };
+module.exports = { buildGroundedMessages, buildChitchatMessages, placeFactLine, historyTurns };

@@ -22,14 +22,33 @@ const { toRecommendation, buildContentParts } = require('../engine/narrator/card
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
+const { recentTurnsFromMessages, shownFromMessages } = require('../engine/context/session');
+
 router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
-    const { message, location = null, userTimezone = null, nearbyMode = false } = req.body || {};
+    const { message, location = null, userTimezone = null, nearbyMode = false, sessionId = null } = req.body || {};
     if (!message || typeof message !== 'string') {
         return res.status(400).json({ error: 'Message is required and must be a string.' });
     }
     if (message.length > 2000) {
         return res.status(400).json({ error: 'Message too long. Maximum 2000 characters allowed.' });
     }
+
+    // ── Session peek (v1's pattern): ownership 403 BEFORE any history reaches
+    //    a prompt; last turns for intent/narration; activeDestination fallback;
+    //    already-shown places → excludes, so "more hotels" brings new ones. ──
+    let sessionPeek = null;
+    if (sessionId) {
+        sessionPeek = await require('../models/ChatSession')
+            .findById(sessionId)
+            .select({ userId: 1, activeDestination: 1, messages: { $slice: -8 } })
+            .lean()
+            .catch(() => null);
+        if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
+            return res.status(403).json({ error: 'forbidden', message: 'You do not have access to this conversation.' });
+        }
+    }
+    const recentTurns = recentTurnsFromMessages(sessionPeek?.messages);
+    const shown = shownFromMessages(sessionPeek?.messages);
 
     res.writeHead(200, {
         'Content-Type': 'text/plain; charset=utf-8',
@@ -42,8 +61,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    GROUNDED narration (may name ONLY retrieved places). Chit-chat skips
     //    retrieval entirely (the "Hi" case). Still honest about limits: no
     //    Google fallback tier, no cards yet, pseudo-streamed prose. ──
-    const center = (location && location.lat != null && location.lng != null)
+    let center = (location && location.lat != null && location.lng != null)
         ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
+    // Session-destination fallback (v1's rule): a Paphos conversation stays
+    // centered on Paphos even when this turn names no place and sends no GPS.
+    if (!center && sessionPeek?.activeDestination?.latitude != null && sessionPeek?.activeDestination?.longitude != null) {
+        center = { lat: sessionPeek.activeDestination.latitude, lng: sessionPeek.activeDestination.longitude };
+    }
 
     let reply;
     let recommendations = [];
@@ -59,7 +83,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const appCfg = await AppConfig.getConfig().catch(() => ({}));
             const user = await require('../models/User').findById(req.user.id).select('settings').lean().catch(() => null);
             const userLanguage = user?.settings?.language || 'en';
-            intent = await intentService.classify({ message, recentTurns: [], userLanguage, appCfg });
+            intent = await intentService.classify({ message, recentTurns, userLanguage, appCfg });
             intent._userLanguage = userLanguage;
         } catch (err) {
             console.warn('[v2] intent failed, treating as place query:', err.message);
@@ -70,7 +94,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         if (!intent.isTravel) {
             // ── Chit-chat: no retrieval, no place names — just Jinni. ──
             const out = await narrator.stream({
-                messages: buildChitchatMessages({ message, langName }),
+                messages: buildChitchatMessages({ message, langName, history: recentTurns }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 200,
             });
@@ -91,6 +115,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 radiusKm: nearbyMode ? 5 : 50,
                 count: 6,
                 timeContext,
+                excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
             meta.provenance = result.provenance;
             if (result.degraded || !result.places.length) {
@@ -101,7 +126,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             } else {
                 const timeNote = timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null;
                 const out = await narrator.stream({
-                    messages: buildGroundedMessages({ query: intent.searchQuery || message, places: result.places, langName, timeNote }),
+                    messages: buildGroundedMessages({ query: intent.searchQuery || message, places: result.places, langName, timeNote, history: recentTurns }),
                     onToken: (c) => send(res, { type: 'token', content: c }),
                     maxTokens: 400,
                 });

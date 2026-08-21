@@ -82,6 +82,12 @@ engine/
       (cache → place-image endpoint, validator rows → own images). Cards are
       real by construction — no post-hoc verification pass exists in v2 at all.
       7 tests; suite at 188.
+- [x] session history + follow-ups (2026-08-21): session peek w/ ownership 403
+      before history reaches any prompt (v1's rule); recentTurns → intent AND
+      narration (historyTurns, both prompt builders); activeDestination center
+      fallback; already-shown session recs → retrieval excludes ("more hotels"
+      brings NEW ones). Message PERSISTENCE was already free — the frontend
+      PATCHes /chat-sessions/:id engine-agnostically. 7 tests; suite at 195.
 - [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
       the one sanctioned server.js line is now used). Currently an honest scaffold
       reply in v1's SSE dialect; reached only via the admin-only "Chat engine"
