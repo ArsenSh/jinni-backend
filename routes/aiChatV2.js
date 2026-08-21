@@ -153,6 +153,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 radiusKm,
                 count: 6,
                 timeContext,
+                // Drop KNOWN-closed dining/shopping on right-now asks (nearby
+                // mode or late night). Unknown hours always survive — the
+                // filter can only act on affirmative "closed" data.
+                enforceOpenNow: nearbyMode || timeContext.isLateNight,
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
