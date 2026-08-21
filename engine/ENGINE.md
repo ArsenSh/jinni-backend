@@ -46,7 +46,10 @@ engine/
       NOTE: the INLINE quick-action events stage (feed correct/supply, dedupe order,
       past/horizon filters, AiFoundEvent capture) is NOT yet copied — it lands as
       events/pipeline.js when the v2 quick-action path is built.
-- [ ] context/contextEngine (open-now/time — also backports as the v1 3 AM fix)
+- [x] context/contextEngine (open-now/time-of-day; Google periods math incl.
+      overnight + week-wrap + 24/7; unknown-never-drops rule; drop-when-closed
+      policy table) — 13 tests (2026-08-21). READY to backport under v1's chat
+      grounding as the 3 AM fix whenever Arsen wants the v1 patch.
 - [ ] retrieval core v1 (corpus embeddings + hybrid + RRF + semantic cache)
 - [ ] narrator providers + toolLoop
 - [ ] routes/aiChatV2.js → `/chat-stream-v2` (test-gated mount)
