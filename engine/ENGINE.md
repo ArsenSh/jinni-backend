@@ -93,6 +93,12 @@ engine/
       narrator blurbs + full street addresses; user preferences flow into
       retrieval (style/tier parity with v1); frontend derives isChatRecommendation
       at complete (large-card style). Suite at 202.
+- [x] radius + query tuning (2026-08-21): retrieval/tuning.js — category-aware
+      radius (dining/shopping/activities cap at 15 km in discovery; the 37.7 km
+      Tsaghkadzor fix) + query enrichment (intent's lossy searchQuery + the raw
+      message's distinctive tokens: "romantic"/"girlfriend" survive into BM25,
+      ready for embeddings); proximity-aware RRF list (weight 0.5) in findPlaces
+      — near places climb, no hard cutoff. Suite at 208.
 - [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
       the one sanctioned server.js line is now used). Currently an honest scaffold
       reply in v1's SSE dialect; reached only via the admin-only "Chat engine"

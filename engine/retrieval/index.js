@@ -123,7 +123,16 @@ async function findPlaces(params = {}, deps = {}) {
             if (vec.length) { lists.push({ ids: vec.map(r => r.id), weight: 1 }); provenance.vector = true; }
         }
     }
-    lists.push({ ids: priorList, weight: lists.length ? 0.5 : 1 });
+    const relevanceLists = lists.length;
+    // Proximity evidence (tuning round): a distance-ordered list joins the
+    // blend at half weight — nearer places climb without any hard cutoff, and
+    // the effect scales with how far apart their prior ranks were.
+    const withDist = withIds.filter(({ c }) => Number.isFinite(c.distanceKm));
+    if (withDist.length >= 2) {
+        lists.push({ ids: [...withDist].sort((a, b) => a.c.distanceKm - b.c.distanceKm).map(({ id }) => id), weight: 0.5 });
+        provenance.proximity = true;
+    }
+    lists.push({ ids: priorList, weight: relevanceLists ? 0.5 : 1 });
     const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
     const places = fused.map(id => byId.get(id)).filter(Boolean).slice(0, wanted);
 

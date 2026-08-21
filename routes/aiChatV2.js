@@ -18,6 +18,7 @@ const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson } = require('../engine/narrator/prompts/grounded');
 const { toRecommendation, buildContentParts } = require('../engine/narrator/cards');
+const { effectiveRadiusKm, buildRetrievalQuery } = require('../engine/retrieval/tuning');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
@@ -107,13 +108,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         } else {
             const timeContext = buildTimeContext({ timezone: userTimezone, lng: center.lng });
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
+            const mode = nearbyMode ? 'nearby' : 'discovery';
+            // Tuning round: enrich the lossy intent query with the message's
+            // distinctive words, and cap dining/shopping radius (local decisions).
+            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, message);
+            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
             const result = await findPlaces({
-                query: intent.searchQuery || message,
+                query: retrievalQuery,
                 category,
                 subType: intent.subType || null,
                 center,
-                mode: nearbyMode ? 'nearby' : 'discovery',
-                radiusKm: nearbyMode ? 5 : 50,
+                mode,
+                radiusKm,
                 count: 6,
                 timeContext,
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
@@ -130,7 +136,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // ── Structured narration: ONE call → intro + per-card blurbs +
                 //    follow-up question. JSON must not stream to the user, so no
                 //    onToken here; a malformed answer falls back to plain prose. ──
-                const promptArgs = { query: intent.searchQuery || message, places: result.places, langName, timeNote, history: recentTurns };
+                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns };
                 const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
                 const parsed = parseNarrationJson(out.text, result.places.length);
                 let intro, blurbs = [];
@@ -155,7 +161,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    frontend renders them unchanged (photos, map, votes). ──
                 recommendations = result.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode, description: blurbs[i] || null }));
-                console.log(`[v2] q="${String(intent.searchQuery || message).slice(0, 50)}" cat=${category || 'free'} style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${parsed ? 'structured' : 'fallback'}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${parsed ? 'structured' : 'fallback'}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
         }
     } catch (err) {

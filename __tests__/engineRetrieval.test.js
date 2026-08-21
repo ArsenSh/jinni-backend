@@ -7,6 +7,7 @@ const { rankLexical, tokenize } = require('../engine/retrieval/lexical');
 const { cosineSimilarity, rankByVector } = require('../engine/retrieval/vector');
 const { SemanticCache } = require('../engine/retrieval/semanticCache');
 const { findPlaces } = require('../engine/retrieval/index');
+const { effectiveRadiusKm, buildRetrievalQuery, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
 
 describe('fuseRankings (RRF)', () => {
     test('agreement across lists wins; k=60 math', () => {
@@ -93,6 +94,63 @@ describe('SemanticCache', () => {
         cache.set(params, { queryText: 'three' }, 3);
         expect(cache.get(params, { queryText: 'one' })).toBe(null);
         expect(cache.get(params, { queryText: 'three' })).toBe(3);
+    });
+});
+
+describe('tuning: effectiveRadiusKm (the 37.7 km Tsaghkadzor fix)', () => {
+    test('dining/shopping/activities cap at 15 km in discovery', () => {
+        expect(effectiveRadiusKm({ category: 'restaurants', mode: 'discovery', radiusKm: 50 })).toBe(LOCAL_DISCOVERY_CAP_KM);
+        expect(effectiveRadiusKm({ category: 'shopping', mode: 'discovery', radiusKm: 50 })).toBe(15);
+    });
+    test('sights/hotels keep full radius; nearby mode passes through; small radii untouched', () => {
+        expect(effectiveRadiusKm({ category: 'historical', mode: 'discovery', radiusKm: 50 })).toBe(50);
+        expect(effectiveRadiusKm({ category: null, mode: 'discovery', radiusKm: 50 })).toBe(50);
+        expect(effectiveRadiusKm({ category: 'restaurants', mode: 'nearby', radiusKm: 5 })).toBe(5);
+        expect(effectiveRadiusKm({ category: 'restaurants', mode: 'discovery', radiusKm: 10 })).toBe(10);
+    });
+});
+
+describe('tuning: buildRetrievalQuery (keep the distinctive message words)', () => {
+    test('the girlfriend-dinner case: descriptive words survive, filler does not', () => {
+        const q = buildRetrievalQuery('restaurant', 'I am looking for romantic restaurant to meet with my girlfriend');
+        expect(q).toContain('restaurant');
+        expect(q).toContain('romantic');
+        expect(q).toContain('girlfriend');
+        expect(q).not.toContain('looking');
+        expect(q).not.toContain('with');
+    });
+    test('duplicates dropped, token budget respected, empty inputs safe', () => {
+        expect(buildRetrievalQuery('uzbek restaurant', 'uzbek restaurant please')).toBe('uzbek restaurant');
+        const long = buildRetrievalQuery('cafe', 'alpha bravo charlie delta echo foxtrot golf hotel india juliet');
+        expect(long.split(' ').length).toBeLessThanOrEqual(8);
+        expect(buildRetrievalQuery('', '')).toBe('');
+        expect(buildRetrievalQuery(null, 'хинкали здесь')).toContain('хинкали');
+    });
+});
+
+describe('proximity-aware fusion', () => {
+    test('a near candidate climbs past far higher-prior ones (no hard cutoff)', async () => {
+        // 12 candidates: prior order c0..c11; c10 is 0.5 km away, everything else 30+ km.
+        const cands = Array.from({ length: 12 }, (_, i) => ({
+            placeId: `c${i}`, name: `Place ${i}`, text: `spot ${i}`,
+            distanceKm: i === 10 ? 0.5 : 30 + i,
+        }));
+        const r = await findPlaces({ category: 'restaurants', count: 12 }, {
+            loadCandidates: async () => cands, cache: new SemanticCache({}), embedder: null,
+        });
+        expect(r.provenance.proximity).toBe(true);
+        const posNear = r.places.findIndex(p => p.placeId === 'c10');
+        expect(posNear).toBeGreaterThanOrEqual(0);
+        expect(posNear).toBeLessThan(10);                 // climbed above its prior rank
+        expect(r.places[0].placeId).toBe('c0');           // prior still leads overall
+    });
+    test('no distances → no proximity list, prior order intact', async () => {
+        const r = await findPlaces({ category: 'restaurants' }, {
+            loadCandidates: async () => [{ placeId: 'a', name: 'A' }, { placeId: 'b', name: 'B' }],
+            cache: new SemanticCache({}), embedder: null,
+        });
+        expect(r.provenance.proximity).toBeUndefined();
+        expect(r.places.map(p => p.placeId)).toEqual(['a', 'b']);
     });
 });
 
