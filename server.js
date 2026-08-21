@@ -415,6 +415,7 @@ const auth = require(path.join(__dirname, 'middleware', 'auth'));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV2')));   // v2 engine, parallel to v1 — see backend/engine/ENGINE.md
 app.use('/auth', authRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/business', businessRoutes);
