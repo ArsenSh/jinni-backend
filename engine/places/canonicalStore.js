@@ -134,6 +134,10 @@ function dbDocToCandidate(d, source, center) {
         // Spotlight / Signature) — v1 reads business.partnership.tier; without
         // this every partner rendered as "Jinni Verified" (live find 2026-08-22).
         tier: source === 'business' ? (d.partnership?.tier || 'verified') : null,
+        isPartner: source === 'business' ? !!d.partnership?.isPartner : false,
+        // Contact for the map popup (v1 parity — businesses carry their own).
+        website: d.contact?.website || null,
+        phone: d.contact?.phone || null,
         rating: d.rating || d.engagement?.rating || null,
         types: Array.isArray(d.type) ? d.type : [],
         primaryType: null,

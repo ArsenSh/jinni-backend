@@ -60,7 +60,7 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         cachedImageUrl,
         source: place.source === 'cache' ? 'cache' : 'database',
         verifiedId: place.verifiedId || null,
-        isPartner: false,
+        isPartner: !!place.isPartner,
         partnerTier: place.tier || null,
         _verifiedModel: place.source === 'business' ? 'business'
                       : place.source === 'destination' ? 'destination' : null,
@@ -68,8 +68,8 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         // coords for the recommendation map
         latitude: place.geometry?.lat ?? null,
         longitude: place.geometry?.lng ?? null,
-        website: null,
-        phone: null,
+        website: place.website || null,
+        phone: place.phone || null,
         isChatRecommendation: true,
         isLargeCard: true,
         appearsInline: true,
