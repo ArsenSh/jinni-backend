@@ -9279,7 +9279,17 @@ router.post('/my-votes', auth, async (req, res) => {
 });
 
 router.get('/location/detect', auth, async (req, res) => {
-    const services = ['https://ipapi.co/json/', 'https://ipwho.is/', 'https://ipwhois.app/json/'];
+    // CRITICAL FIX 2026-08-22 (caught live): these services geolocate the
+    // CALLER, and the caller is this server — so every user whose browser
+    // geolocation failed was placed at the Hetzner hall in Helsinki and got
+    // Finnish recommendations. Geolocate the CLIENT's IP instead: behind
+    // Cloudflare that's cf-connecting-ip, else x-forwarded-for's first hop.
+    // Private/absent IP (local dev) keeps the old caller-lookup behavior.
+    const clientIp = (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0] || '').trim();
+    const usable = clientIp && !/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|::1|fc|fe80)/i.test(clientIp);
+    const services = usable
+        ? [`https://ipapi.co/${clientIp}/json/`, `https://ipwho.is/${clientIp}`, `https://ipwhois.app/json/${clientIp}`]
+        : ['https://ipapi.co/json/', 'https://ipwho.is/', 'https://ipwhois.app/json/'];
     for (const url of services) {
         try {
             const response = await fetch(url, {headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(4000)});
