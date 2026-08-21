@@ -88,6 +88,11 @@ engine/
       fallback; already-shown session recs → retrieval excludes ("more hotels"
       brings NEW ones). Message PERSISTENCE was already free — the frontend
       PATCHes /chat-sessions/:id engine-agnostically. 7 tests; suite at 195.
+- [x] polish round (2026-08-21): structured narration (intro + per-card blurbs +
+      follow-up question in ONE call, JSON w/ prose fallback); cards carry
+      narrator blurbs + full street addresses; user preferences flow into
+      retrieval (style/tier parity with v1); frontend derives isChatRecommendation
+      at complete (large-card style). Suite at 202.
 - [x] routes/aiChatV2.js → `/chat-stream-v2` MOUNTED (2026-08-21, Arsen's request —
       the one sanctioned server.js line is now used). Currently an honest scaffold
       reply in v1's SSE dialect; reached only via the admin-only "Chat engine"
