@@ -17,7 +17,10 @@ describe('placeFactLine', () => {
     });
     test('validator/partner provenance is stated', () => {
         expect(placeFactLine({ name: 'Matenadaran', source: 'destination' })).toContain('verified by Jinni staff');
-        expect(placeFactLine({ name: 'Tashir', source: 'business' })).toContain('Jinni partner');
+        // Decision 2026-08-22: the partner relationship is disclosed by the
+        // card badge, NEVER told to the model — prose must sell the
+        // experience, not the tier.
+        expect(placeFactLine({ name: 'Tashir', source: 'business' })).not.toContain('partner');
     });
 });
 
