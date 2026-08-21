@@ -88,7 +88,7 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               + 'Schema: {"intro": string, "cards": [{"i": number, "blurb": string}], "question": string|null}\n'
               + 'Rules:\n'
               + `- intro: 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. NEVER mention a place not on the list — including ones from earlier in the conversation.\n`
-              + `- cards: one entry per listed index, blurb ≤ 18 words in ${langName} on why it suits THIS ask. Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n`
+              + `- cards: one entry per listed index, blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n`
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -115,7 +115,7 @@ function parseNarrationJson(text, count) {
         for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
             if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
                 && typeof c.blurb === 'string' && c.blurb.trim()) {
-                blurbs[c.i] = c.blurb.trim().slice(0, 140);
+                blurbs[c.i] = c.blurb.trim().slice(0, 240);
             }
         }
         const question = (typeof obj.question === 'string' && obj.question.trim())
@@ -140,7 +140,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
               + '{"cards": [{"i": 0, "blurb": "..."}, ...], "question": "..." | null}\n'
-              + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb ≤ 18 words in ${langName} on why it suits THIS ask. `
+              + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- If nothing genuinely fits, say so honestly in the prose and return "cards": [].',
@@ -166,7 +166,7 @@ function parseCardsTail(tail, count) {
         for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
             if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
                 && typeof c.blurb === 'string' && c.blurb.trim()) {
-                blurbs[c.i] = c.blurb.trim().slice(0, 140);
+                blurbs[c.i] = c.blurb.trim().slice(0, 240);
             }
         }
         const question = (typeof obj.question === 'string' && obj.question.trim())

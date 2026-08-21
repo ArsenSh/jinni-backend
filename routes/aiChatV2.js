@@ -211,6 +211,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    frontend renders them unchanged (photos, map, votes). ──
                 recommendations = result.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode, description: blurbs[i] || null }));
+                // ── Live card birth + description TYPING (v1's protocol):
+                //    streaming_recommendation creates each card immediately
+                //    (photo + name — better than v1's "Searching…" shells),
+                //    then description_token types the blurb into it. The
+                //    final `complete` replaces everything consistently. ──
+                if (streamedOk && recommendations.length) {
+                    for (const rec of recommendations) {
+                        send(res, { type: 'streaming_recommendation', recommendation: { ...rec, description: '', isStreaming: true }, metadata: { timestamp: new Date(), isPartial: true } });
+                    }
+                    for (const rec of recommendations) {
+                        for (const chunk of rec.description.match(/.{1,24}(\s|$)/gs) || [rec.description]) {
+                            send(res, { type: 'description_token', recommendationName: rec.name, content: chunk });
+                        }
+                        send(res, { type: 'description_complete', recommendationName: rec.name, timestamp: new Date() });
+                    }
+                }
                 console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} cacheHit=${result.provenance.cacheHit}`);
             }
         }
