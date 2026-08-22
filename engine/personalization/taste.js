@@ -27,13 +27,16 @@ const SEEN_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const VIEW_TTL_MS = SEEN_WINDOW_MS;
 
 // Rank nudges, in positions on the fused order. Liked beats saved (an explicit
-// vote beats a bookmark); they stack for a place that is both. The seen-sink is
-// capped at 2 positions and NEVER applies to liked/saved places, so fatigue
-// can't outweigh affection. The epsilon makes any fatigue sink STRICTLY —
-// without it a fresh-watched place ties the next rank and stability keeps it up.
+// vote beats a bookmark); they stack for a place that is both. The seen-sink
+// GROWS with repeat shows (Arsen 2026-08-22: "each time nothing new, same 6
+// results" — a place shown 4 times unliked should make room), is capped at 4
+// positions, and NEVER applies to liked/saved places, so fatigue can't
+// outweigh affection. The epsilon makes any fatigue sink STRICTLY — without
+// it a fresh-watched place ties the next rank and stability keeps it up.
 const LIKED_BOOST = 2.5;
 const SAVED_BOOST = 1.5;
-const SEEN_SINK_MAX = 2.0;
+const SEEN_SINK_MAX = 4.0;
+const SEEN_PENALTY_MAX = 6.0;   // watched(3) + repeat-show bonus, see loadTaste
 
 /**
  * Load the user's complete taste profile in one parallel pass.
@@ -55,7 +58,7 @@ async function loadTaste(userId, deps = {}) {
             .catch(err => { console.warn('[taste] feedback load failed:', err.message); return []; }),
         SavedPlace.find({ userId }).select('verifiedId googlePlaceId name').lean()
             .catch(err => { console.warn('[taste] saved load failed:', err.message); return []; }),
-        PlaceView.find({ userId }).select('placeId status lastShownAt').lean()
+        PlaceView.find({ userId }).select('placeId status shownCount lastShownAt').lean()
             .catch(err => { console.warn('[taste] views load failed:', err.message); return []; }),
     ]);
 
@@ -80,7 +83,12 @@ async function loadTaste(userId, deps = {}) {
         const age = now - new Date(v.lastShownAt || now).getTime();
         const freshness = Math.max(0, 1 - age / SEEN_WINDOW_MS);   // 1 = just seen, 0 = old
         const base = v.status === 'watched' ? SEEN_WATCHED_MAX : SEEN_SHOWN_MAX;
-        if (base * freshness > 0) seen.set(v.placeId, base * freshness);
+        // Repeat shows compound: each extra unacted appearance adds fatigue
+        // (+0.5, capped), so identical asks rotate the deck instead of
+        // replaying it. Age-decayed like the base — old repetition is forgiven.
+        const repeats = Math.min(6, Math.max(0, (v.shownCount || 1) - 1)) * 0.5;
+        const pen = (base + repeats) * freshness;
+        if (pen > 0) seen.set(v.placeId, Math.min(SEEN_PENALTY_MAX, pen));
     }
 
     return { liked, disliked, saved, seen };
@@ -142,7 +150,7 @@ function tasteAdjust(ordered, taste) {
         if (!isLiked && !isSaved && taste.seen?.size) {
             for (const k of keys) {
                 const pen = taste.seen.get(k);
-                if (pen) { score += Math.min(SEEN_SINK_MAX, (pen / SEEN_WATCHED_MAX) * SEEN_SINK_MAX) + 1e-3; break; }
+                if (pen) { score += Math.min(SEEN_SINK_MAX, (pen / SEEN_PENALTY_MAX) * SEEN_SINK_MAX) + 1e-3; break; }
             }
         }
         return { c, score, i };

@@ -68,86 +68,110 @@ async function findPlaces(params = {}, deps = {}) {
         } catch { queryVector = null; }
     }
 
-    // ── Semantic cache (query mode only — seeded taps are already cheap) ──
+    // ── Semantic cache (query mode only). THE 2026-08-22 lesson ("same 6
+    //    results every new chat"): the cache is process-global and 30-min, so
+    //    it may only hold the NEUTRAL ranked pool — the expensive, user-free
+    //    part (load + fuse). Everything personal or moment-bound (excludes,
+    //    open-now, taste, demand seats) runs fresh on EVERY request below;
+    //    caching a finished deck froze one user's exclusions into everyone's
+    //    answer for half an hour. ──
+    let pool = null;
     if (query) {
         const hit = cache.get(cacheParams, { queryVector, queryText: query });
-        if (hit) return { ...hit, provenance: { ...hit.provenance, cacheHit: true } };
-    }
-
-    // ── Candidates (the only source of places — real by construction) ──
-    let candidates;
-    try {
-        candidates = (await loadCandidates(params)) || [];
-    } catch (err) {
-        return { places: [], degraded: true, reason: `load_failed: ${err.message}`, provenance };
-    }
-    provenance.candidateCount = candidates.length;
-    if (!candidates.length) {
-        return { places: [], degraded: true, reason: 'no_candidates', provenance };
-    }
-
-    // ── Session excludes ──
-    const exIds = new Set((excludes.placeIds || []).filter(Boolean));
-    const exNames = new Set((excludes.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
-    // verifiedId too: dislikes on partner/validator places are keyed by the
-    // stringified Business/Destination _id, not a Google placeId.
-    candidates = candidates.filter(c =>
-        c && !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
-          && !exNames.has(normalizePlaceName(c.name || '')));
-
-    // ── Context engine: stamp _openNow; drop only KNOWN-closed, only for
-    //    droppable categories, only when the caller asked (right-now intent).
-    //    Unknown hours (null) always survive — the trust rule. ──
-    if (timeContext) {
-        annotateOpenNow(candidates, timeContext);
-        if (enforceOpenNow && shouldDropWhenClosed(category)) {
-            const before = candidates.length;
-            candidates = candidates.filter(c => c._openNow !== false);
-            provenance.openNowDropped = before - candidates.length;
+        if (hit && Array.isArray(hit.pool)) {
+            pool = hit.pool;
+            Object.assign(provenance, hit.provenance, { cacheHit: true });
         }
     }
-    if (!candidates.length) {
+
+    if (!pool) {
+        // ── Candidates (the only source of places — real by construction) ──
+        let candidates;
+        try {
+            candidates = (await loadCandidates(params)) || [];
+        } catch (err) {
+            return { places: [], degraded: true, reason: `load_failed: ${err.message}`, provenance };
+        }
+        provenance.candidateCount = candidates.length;
+        if (!candidates.length) {
+            return { places: [], degraded: true, reason: 'no_candidates', provenance };
+        }
+        candidates = candidates.filter(Boolean);
+
+        // ── Rank: prior order (store's proximity/quality) ∥ BM25 ∥ vector → RRF.
+        //    When the user expressed a QUERY, relevance evidence outweighs the
+        //    popularity prior (weight 0.5) — otherwise two swapped lists tie
+        //    exactly in plain RRF and the prior silently wins (see rrf.js). ──
+        const withIds = candidates.map(c => ({ c, id: _idOf(c) }));
+        const byId = new Map(withIds.map(({ c, id }) => [id, c]));
+        const priorList = withIds.map(({ id }) => id);
+        // Intent-conditioned weights (tuning.rankingWeights): callers may shift
+        // what evidence matters per ask — right-now boosts proximity, romantic
+        // boosts the quality prior. Absent → the historical defaults.
+        const W = { lexical: 1, vector: 1, proximity: 0.5, prior: 0.5, ...(params.weights || {}) };
+        const lists = [];
+        if (query) {
+            const lex = rankLexical(query, withIds.map(({ c, id }) => ({ id, text: c.text || c.name || '' })));
+            provenance.lexical = lex.length;
+            if (lex.length) lists.push({ ids: lex.map(r => r.id), weight: W.lexical });
+            if (queryVector) {
+                const vec = rankByVector(queryVector, withIds.map(({ c, id }) => ({ id, vector: c.vector })), 0.1);
+                if (vec.length) { lists.push({ ids: vec.map(r => r.id), weight: W.vector }); provenance.vector = true; }
+            }
+        }
+        const relevanceLists = lists.length;
+        // Proximity evidence (tuning round): a distance-ordered list joins the
+        // blend — nearer places climb without any hard cutoff, and the effect
+        // scales with how far apart their prior ranks were.
+        const withDist = withIds.filter(({ c }) => Number.isFinite(c.distanceKm));
+        if (withDist.length >= 2) {
+            lists.push({ ids: [...withDist].sort((a, b) => a.c.distanceKm - b.c.distanceKm).map(({ id }) => id), weight: W.proximity });
+            provenance.proximity = true;
+        }
+        lists.push({ ids: priorList, weight: relevanceLists ? W.prior : 1 });
+        const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
+        pool = fused.map(id => byId.get(id)).filter(Boolean);
+        if (query) {
+            cache.set(cacheParams, { queryVector, queryText: query },
+                { pool, provenance: { ...provenance } });
+        }
+    }
+
+    // ══ Per-user, per-moment pipeline — runs on EVERY request, hit or miss. ══
+    // Shallow-clone: cached pool objects are shared across users; annotations
+    // (_openNow, _tasteLiked) must never leak from one request into another.
+    let ordered = pool.map(c => ({ ...c }));
+
+    // ── Session excludes + dislikes. verifiedId too: dislikes on partner/
+    //    validator places are keyed by the stringified Business/Destination
+    //    _id, not a Google placeId. ──
+    const exIds = new Set((excludes.placeIds || []).filter(Boolean));
+    const exNames = new Set((excludes.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
+    ordered = ordered.filter(c =>
+        !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
+          && !exNames.has(normalizePlaceName(c.name || '')));
+
+    // ── Context engine: stamp _openNow FRESH (a cached pool may be 30 min
+    //    old); drop only KNOWN-closed, only for droppable categories, only
+    //    when the caller asked (right-now intent). Unknown hours (null)
+    //    always survive — the trust rule. ──
+    if (timeContext) {
+        annotateOpenNow(ordered, timeContext);
+        if (enforceOpenNow && shouldDropWhenClosed(category)) {
+            const before = ordered.length;
+            ordered = ordered.filter(c => c._openNow !== false);
+            provenance.openNowDropped = before - ordered.length;
+        }
+    }
+    if (!ordered.length) {
         return { places: [], degraded: true, reason: 'all_filtered', provenance };
     }
 
-    // ── Rank: prior order (store's proximity/quality) ∥ BM25 ∥ vector → RRF.
-    //    When the user expressed a QUERY, relevance evidence outweighs the
-    //    popularity prior (weight 0.5) — otherwise two swapped lists tie
-    //    exactly in plain RRF and the prior silently wins (see rrf.js). ──
-    const withIds = candidates.map(c => ({ c, id: _idOf(c) }));
-    const byId = new Map(withIds.map(({ c, id }) => [id, c]));
-    const priorList = withIds.map(({ id }) => id);
-    // Intent-conditioned weights (tuning.rankingWeights): callers may shift
-    // what evidence matters per ask — right-now boosts proximity, romantic
-    // boosts the quality prior. Absent → the historical defaults.
-    const W = { lexical: 1, vector: 1, proximity: 0.5, prior: 0.5, ...(params.weights || {}) };
-    const lists = [];
-    if (query) {
-        const lex = rankLexical(query, withIds.map(({ c, id }) => ({ id, text: c.text || c.name || '' })));
-        provenance.lexical = lex.length;
-        if (lex.length) lists.push({ ids: lex.map(r => r.id), weight: W.lexical });
-        if (queryVector) {
-            const vec = rankByVector(queryVector, withIds.map(({ c, id }) => ({ id, vector: c.vector })), 0.1);
-            if (vec.length) { lists.push({ ids: vec.map(r => r.id), weight: W.vector }); provenance.vector = true; }
-        }
-    }
-    const relevanceLists = lists.length;
-    // Proximity evidence (tuning round): a distance-ordered list joins the
-    // blend — nearer places climb without any hard cutoff, and the effect
-    // scales with how far apart their prior ranks were.
-    const withDist = withIds.filter(({ c }) => Number.isFinite(c.distanceKm));
-    if (withDist.length >= 2) {
-        lists.push({ ids: [...withDist].sort((a, b) => a.c.distanceKm - b.c.distanceKm).map(({ id }) => id), weight: W.proximity });
-        provenance.proximity = true;
-    }
-    lists.push({ ids: priorList, weight: relevanceLists ? W.prior : 1 });
-    const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
-    let ordered = fused.map(id => byId.get(id)).filter(Boolean);
-
     // ── Personal taste (nudge, never hijack — see personalization/taste.js):
-    //    liked/saved climb a few fused positions, oft-seen-never-acted sinks a
-    //    little. Runs BEFORE the demand-seat hoist so that guarantee stays on
-    //    top, and annotates _tasteLiked/_tasteSaved for the narrator. ──
+    //    liked/saved climb a few fused positions, oft-seen-never-acted sinks —
+    //    harder with every repeat show, so identical asks ROTATE the deck.
+    //    Runs BEFORE the demand-seat hoist so that guarantee stays on top,
+    //    and annotates _tasteLiked/_tasteSaved for the narrator. ──
     if (params.taste) {
         const { tasteAdjust } = require('../personalization/taste');
         ordered = tasteAdjust(ordered, params.taste);
@@ -172,10 +196,7 @@ async function findPlaces(params = {}, deps = {}) {
         }
     }
     const places = ordered.slice(0, wanted);
-
-    const result = { places, degraded: false, provenance };
-    if (query) cache.set(cacheParams, { queryVector, queryText: query }, result);
-    return result;
+    return { places, degraded: false, provenance };
 }
 
 module.exports = { findPlaces };

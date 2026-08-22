@@ -56,6 +56,19 @@ describe('loadTaste', () => {
         expect(t.seen.get('old')).toBeLessThan(0.1);
     });
 
+    test('repeat shows compound the penalty (deck rotation), capped at 6', async () => {
+        const t = await loadTaste('u1', baseDeps({
+            PlaceView: flatModel([
+                { placeId: 'once', status: 'shown', shownCount: 1, lastShownAt: new Date(NOW) },
+                { placeId: 'five', status: 'shown', shownCount: 5, lastShownAt: new Date(NOW) },
+                { placeId: 'many', status: 'watched', shownCount: 50, lastShownAt: new Date(NOW) },
+            ]),
+        }));
+        expect(t.seen.get('once')).toBeCloseTo(1.5, 1);
+        expect(t.seen.get('five')).toBeCloseTo(3.5, 1);   // 1.5 + 4×0.5
+        expect(t.seen.get('many')).toBe(6);               // capped
+    });
+
     test('fail-open: one broken source still yields the others', async () => {
         const t = await loadTaste('u1', baseDeps({
             PlaceFeedback: failingFeedback(),
