@@ -132,11 +132,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // Intent pre-pass — same classifier v1 trusts; failure degrades to
         // "treat it as a place query" rather than failing the turn.
         let intent = null;
+        let appCfg = {};
         try {
             const intentService = require('../services/intentService');
             const AppConfig = require('../models/AppConfig');
             // Config + user load in PARALLEL (they were sequential — free ~200-400ms).
-            const [appCfg, user] = await Promise.all([
+            let user = null;
+            [appCfg, user] = await Promise.all([
                 AppConfig.getConfig().catch(() => ({})),
                 require('../models/User').findById(req.user.id).select('settings preferences').lean().catch(() => null),
             ]);
@@ -149,6 +151,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
         }
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
+
+        // ── Admin-config parity (Arsen 2026-08-22: "we need create v2 same
+        //    way so admin will be able configure if needed"): the SAME
+        //    AppConfig knobs that drive v1 drive v2 — aiProviderChat picks
+        //    the narrator, claudeWebSearch + claudeWebSearchActionsChat gate
+        //    paid web search (a Claude-only server tool; DeepSeek has none),
+        //    with the admin's max-uses cap and domain lists. ──
+        const providerName = appCfg.aiProviderChat === 'claude' ? 'claude' : 'deepseek';
+        const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
+            ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
+        const webSearch = (providerName === 'claude' && appCfg.claudeWebSearch && wsActions.includes(intent.actionType))
+            ? {
+                maxUses: appCfg.claudeWebSearchMaxUses || 3,
+                allowedDomains: appCfg.claudeWebSearchAllowedDomains,
+                blockedDomains: appCfg.claudeWebSearchBlockedDomains,
+            } : null;
+        if (webSearch) meta.webSearch = true;
 
         // ── Detail-question branch (THE TOOL LOOP): the message names a place
         //    the traveler already saw in this session → the model drives, with
@@ -198,6 +217,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 200,
                 realStream: true,
+                model: providerName,
             });
             reply = out.text;
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
@@ -294,6 +314,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         temperature: 0.6,
                         realStream: true,
                         onToken: (d) => splitter.feed(d),
+                        model: providerName,
+                        webSearch,
                     });
                     actualTokens += (streamOut.usage?.in || 0) + (streamOut.usage?.out || 0);
                     const tail = splitter.finalize();
@@ -305,7 +327,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);
                 }
                 if (!streamedOk) {
-                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
+                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, webSearch });
                     actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
@@ -313,7 +335,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         blurbs = parsed.blurbs;
                         meta.followUpQuestion = parsed.question;
                     } else {
-                        const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400 });
+                        const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400, model: providerName });
                         actualTokens += (fb.usage?.in || 0) + (fb.usage?.out || 0);
                         intro = fb.text;
                     }
@@ -358,7 +380,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+ws' : ''}`);
             }
         }
     } catch (err) {
