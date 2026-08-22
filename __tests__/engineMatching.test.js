@@ -18,6 +18,12 @@ describe('normalizePlaceName', () => {
     test('non-Latin scripts pass through', () => {
         expect(normalizePlaceName('Զանգեզուր')).toBe('զանգեզուր');
     });
+    test('number words fold to digits — the "7 Visions"≡"Seven Visions" dedupe slip', () => {
+        expect(normalizePlaceName('Seven Visions')).toBe(normalizePlaceName('7 Visions'));
+        expect(normalizePlaceName('Seven Visions Hotel')).toBe('7 visions hotel');
+        expect(normalizePlaceName('One Republic Cafe')).toBe('1 republic cafe');
+        expect(normalizePlaceName('Someone\'s Place')).toBe('someones place');   // no mid-word folding
+    });
     test('empty/null safe', () => {
         expect(normalizePlaceName(null)).toBe('');
         expect(normalizePlaceName('')).toBe('');

@@ -1,8 +1,29 @@
 // Tests for the V2 narrator v0: grounded prompt builders (pure) and the
 // stream contract with an injected fake provider — no API keys, no network.
 
-const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, placeFactLine } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, placeFactLine, parseCardsTail } = require('../engine/narrator/prompts/grounded');
 const narrator = require('../engine/narrator');
+
+describe('parseCardsTail robustness (battery row 7 — the fact-line fallback)', () => {
+    test('clean tail parses; trailing commas repaired', () => {
+        const clean = parseCardsTail('{"cards":[{"i":0,"blurb":"Great spot"}],"question":"More?"}', 2);
+        expect(clean.blurbs).toEqual(['Great spot', null]);
+        expect(clean.question).toBe('More?');
+        const trailing = parseCardsTail('{"cards":[{"i":1,"blurb":"Nice"},],"question":"Q?",}', 2);
+        expect(trailing.blurbs).toEqual([null, 'Nice']);
+    });
+    test('truncated tail salvages the intact card fragments', () => {
+        const cut = '{"cards":[{"i":0,"blurb":"First blurb"},{"i":1,"blurb":"Second one"},{"i":2,"blu';
+        const r = parseCardsTail(cut, 3);
+        expect(r.blurbs).toEqual(['First blurb', 'Second one', null]);
+    });
+    test('escapes survive salvage; hopeless garbage stays null', () => {
+        const esc = parseCardsTail('broken {"i":0,"blurb":"He said \\"hi\\""} nonsense', 1);
+        expect(esc.blurbs[0]).toBe('He said "hi"');
+        expect(parseCardsTail('no json here at all', 3)).toBeNull();
+        expect(parseCardsTail('', 3)).toBeNull();
+    });
+});
 
 describe('placeFactLine', () => {
     test('renders only the facts we actually hold', () => {

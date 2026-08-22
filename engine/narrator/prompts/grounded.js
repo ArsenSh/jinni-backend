@@ -171,21 +171,52 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
 
 /** Parse the post-delimiter tail: {blurbs, question} or null on junk. */
 function parseCardsTail(tail, count) {
-    try {
-        const m = String(tail || '').match(/\{[\s\S]*\}/);
-        if (!m) return null;
-        const obj = JSON.parse(m[0]);
-        const blurbs = new Array(count).fill(null);
+    const text = String(tail || '');
+    const blurbs = new Array(count).fill(null);
+    let question = null;
+
+    // Pass 1 — parse the JSON, tolerating the model's most common slip
+    // (trailing commas before } or ]).
+    let obj = null;
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) {
+        for (const candidate of [m[0], m[0].replace(/,\s*([}\]])/g, '$1')]) {
+            try { obj = JSON.parse(candidate); break; } catch { /* next repair */ }
+        }
+    }
+    if (obj) {
         for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
             if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
                 && typeof c.blurb === 'string' && c.blurb.trim()) {
                 blurbs[c.i] = c.blurb.trim().slice(0, 240);
             }
         }
-        const question = (typeof obj.question === 'string' && obj.question.trim())
-            ? obj.question.trim().slice(0, 200) : null;
-        return { blurbs, question };
-    } catch { return null; }
+        if (typeof obj.question === 'string' && obj.question.trim()) {
+            question = obj.question.trim().slice(0, 200);
+        }
+        // A parse that yielded NOTHING (valid JSON, wrong shape) still gets
+        // the salvage pass below — don't return an empty win.
+        if (blurbs.some(Boolean) || question) return { blurbs, question };
+    }
+
+    // Pass 2 — salvage (battery row 7, 2026-08-22): a truncated or malformed
+    // tail still usually contains well-formed {"i":N,"blurb":"…"} fragments;
+    // recover them individually so most cards keep their written blurbs
+    // instead of ALL falling back to fact-lines.
+    const cardRe = /"i"\s*:\s*(\d+)\s*,\s*"blurb"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let hit, salvaged = false;
+    while ((hit = cardRe.exec(text))) {
+        const i = Number(hit[1]);
+        if (i >= 0 && i < count) {
+            try { blurbs[i] = JSON.parse(`"${hit[2]}"`).trim().slice(0, 240); salvaged = true; }
+            catch { /* bad escapes — skip this fragment */ }
+        }
+    }
+    const qm = text.match(/"question"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (qm) {
+        try { question = JSON.parse(`"${qm[1]}"`).trim().slice(0, 200); } catch { /* skip */ }
+    }
+    return (salvaged || question) ? { blurbs, question } : null;
 }
 
 /**

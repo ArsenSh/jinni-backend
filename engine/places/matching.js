@@ -6,6 +6,13 @@
 // Normalize a place name for cross-source matching (AI output ↔ Google
 // prefetch shortlist ↔ dedup). Lowercase, strip punctuation, collapse
 // whitespace. Unicode-aware so non-Latin names match.
+// Number words fold to digits so "Seven Visions" ≡ "7 Visions" — the battery
+// row-9 slip where one hotel shipped as two cards. Symmetric (both spellings
+// normalize to the digit form), English-only on purpose: digit-vs-word
+// aliases in the wild are Latin-script marketing names.
+const _NUM_WORDS = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', eleven: '11', twelve: '12' };
+const _NUM_WORDS_RE = /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g;
+
 const normalizePlaceName = (s) => (s || '')
     .toLowerCase()
     .trim()
@@ -20,7 +27,8 @@ const normalizePlaceName = (s) => (s || '')
     .replace(/\p{M}/gu, '')
     .replace(/[^\p{L}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .replace(_NUM_WORDS_RE, (w) => _NUM_WORDS[w]);
 
 // ── Name-similarity guard ─────────────────────────────────────────────────────
 // The model proposes a NAME; Google's text search returns its closest real match
