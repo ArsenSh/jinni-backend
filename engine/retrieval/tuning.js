@@ -82,4 +82,21 @@ function rankingWeights({ rightNow = false, nearbyMode = false, message = '' } =
     };
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, LOCAL_DISCOVERY_CAP_KM };
+// ── Refill follow-ups ("can you give 10 other results?", "ещё", "show me
+//    more") — caught live 2026-08-22: the intent LLM timed out, the keyword
+//    fallback saw no travel words and the traveler got chit-chat instead of
+//    cards. These messages carry no category on purpose — the SESSION holds
+//    the context, so the route treats them as a re-run of the previous ask
+//    with everything already shown excluded. Latin \b + non-Latin without
+//    (the Cyrillic \b lesson). Count: a bare 2-12 in a refill ask is the
+//    requested deck size ("10 other results" → 10). ──
+const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional)\b/i;
+const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի)/i;
+function parseRefillAsk(message) {
+    const msg = String(message || '');
+    const isRefill = REFILL_LATIN_RE.test(msg) || REFILL_NONLATIN_RE.test(msg);
+    const m = isRefill ? msg.match(/\b([2-9]|1[0-2])\b/) : null;
+    return { isRefill, count: m ? Number(m[1]) : null };
+}
+
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, parseRefillAsk, LOCAL_DISCOVERY_CAP_KM };

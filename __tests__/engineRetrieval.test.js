@@ -274,3 +274,22 @@ describe('findPlaces orchestration (injected deps)', () => {
         expect((await findPlaces({ category: 'restaurants' }, d)).reason).toMatch(/load_failed/);
     });
 });
+
+describe('parseRefillAsk (the "10 other results" lesson)', () => {
+    const { parseRefillAsk } = require('../engine/retrieval/tuning');
+    test('detects refill asks with and without a count', () => {
+        expect(parseRefillAsk('can you give 10 other results?')).toEqual({ isRefill: true, count: 10 });
+        expect(parseRefillAsk('show me more')).toEqual({ isRefill: true, count: null });
+        expect(parseRefillAsk('something else please')).toEqual({ isRefill: true, count: null });
+    });
+    test('non-Latin refills (no \\b — the Cyrillic lesson)', () => {
+        expect(parseRefillAsk('покажи ещё 5').isRefill).toBe(true);
+        expect(parseRefillAsk('покажи ещё 5').count).toBe(5);
+        expect(parseRefillAsk('другие варианты').isRefill).toBe(true);
+    });
+    test('plain asks are NOT refills; counts outside 2-12 ignored', () => {
+        expect(parseRefillAsk('suggest historical places').isRefill).toBe(false);
+        expect(parseRefillAsk('best restaurants in Yerevan').isRefill).toBe(false);
+        expect(parseRefillAsk('another 50 options').count).toBe(null);
+    });
+});

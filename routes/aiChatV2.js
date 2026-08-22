@@ -19,7 +19,7 @@ const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, parseRefillAsk } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -157,6 +157,26 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const sessionCards = shownPlaces(sessionPeek?.messages);
         const msgLower = String(message).toLowerCase();
         const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
+
+        // ── Refill follow-up ("can you give 10 other results?", "ещё") —
+        //    caught live 2026-08-22: the intent LLM timed out, the keyword
+        //    fallback saw no travel words → chit-chat, no cards. The SESSION
+        //    knows what "other results" means: re-run the PREVIOUS ask's query
+        //    (this message's own words are junk for retrieval), everything
+        //    already shown is excluded, and the asked count is honored. ──
+        const refill = parseRefillAsk(message);
+        const prevUserAsk = [...recentTurns].reverse()
+            .find(t => t.sender === 'user' && t.text && t.text !== message)?.text || null;
+        const refillActive = refill.isRefill && !namedCard && sessionCards.length > 0 && !!prevUserAsk;
+        if (refillActive) {
+            if (!intent.isTravel) intent.isTravel = true;
+            if (!intent.searchQuery || (intent.actionType || 'general') === 'general') {
+                intent.searchQuery = intent.searchQuery || prevUserAsk;
+            }
+            meta.refill = true;
+        }
+        const deckCount = refillActive && refill.count ? Math.min(12, Math.max(3, refill.count)) : 6;
+
         if (namedCard) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),
@@ -199,7 +219,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const mode = nearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
             // distinctive words, and cap dining/shopping radius (local decisions).
-            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, message);
+            // Refill turns enrich from the PREVIOUS ask — "10 other results"
+            // contributes nothing to relevance; "suggest historical places" does.
+            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
             const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
             const result = await findPlaces({
                 query: retrievalQuery,
@@ -212,7 +234,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 center,
                 mode,
                 radiusKm,
-                count: 6,
+                count: deckCount,
                 timeContext,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /
