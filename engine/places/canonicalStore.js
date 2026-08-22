@@ -232,7 +232,10 @@ async function loadCandidates(params = {}, deps = {}) {
             && !_exNames.has(normalizePlaceName(c.name || ''))).length;
         if ((unseenEvents < 3 || params.eventsHunt?.force) && params.eventsHunt && params.eventWindow) {
             try {
-                const city = params.center?.city || evs[0]?.city || null;
+                // First candidate whose city LOOKS like a city — dirty rows
+                // carry address fragments ("10/9") in the city field.
+                const _cityLooksReal = (c) => c && /^[\p{L}][\p{L}\s.'’-]{1,40}$/u.test(String(c).trim());
+                const city = [params.center?.city, ...evs.map(e => e?.city)].find(_cityLooksReal) || null;
                 const extra = await (deps.huntEvents || require('../events/hunt').huntEvents)({
                     city,
                     country: params.center?.country || null,
@@ -376,6 +379,14 @@ const VIBE_TOKENS = new Set([
     'hours', 'near', 'nearby', 'place', 'places', 'good', 'best', 'nice',
     'cheap', 'authentic', 'local', 'open', 'beautiful', 'view', 'views',
     'lively', 'relax', 'relaxing', 'social', 'today', 'meet', 'date',
+    // Function/request words (2026-08-23 live leak: a misread meta-question
+    // bought 3 Google fetches for "make,search,suggest,more,results" and
+    // carded WEB DESIGN AGENCIES as date spots). Imperatives and meta words
+    // are never a DEMAND for a kind of place — only concrete nouns are.
+    'make', 'search', 'suggest', 'suggestion', 'suggestions', 'more', 'results',
+    'result', 'show', 'give', 'find', 'want', 'need', 'please', 'other',
+    'another', 'internet', 'check', 'look', 'tell', 'list', 'recommend',
+    'recommendation', 'recommendations', 'sources', 'searched', 'options',
 ]);
 function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
     const tokens = String(coreQuery || '').toLowerCase().split(/[^a-zЀ-ӿ԰-֏]+/)

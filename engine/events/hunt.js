@@ -33,8 +33,17 @@ function _fmtWindow(win) {
  * @param {object} deps { AiFoundEvent?, searchWeb?, fetchHtml?, webSearchCfg?, nowFn? }
  * @returns {Promise<Array>} event candidates (eventStore shape); [] fail-open.
  */
+// A hunt query is only as good as its city. Dirty data leaks street numbers
+// into city fields (2026-08-23 live: hunted for "events 10/9 …" — the city
+// was an address fragment) — letters, spaces and simple punctuation only.
+const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
+
 async function huntEvents({ city, country = null, center = null, window: win } = {}, deps = {}) {
     if (!city || !win) return [];
+    if (!_CITY_RE.test(String(city).trim())) {
+        console.log(`[hunt] refusing garbage city "${String(city).slice(0, 30)}" — no search`);
+        return [];
+    }
     const AiFoundEvent = deps.AiFoundEvent || require('../../models/AiFoundEvent');
     const search = deps.searchWeb || searchWeb;
     const fetchHtml = deps.fetchHtml || _fetchListingHtml;
