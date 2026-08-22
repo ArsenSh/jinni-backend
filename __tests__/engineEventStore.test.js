@@ -182,6 +182,55 @@ describe('huntEvents (the fresh tier — search fills the database)', () => {
     });
 });
 
+describe('readPage + extracted tier (the "enter any web and read" tool)', () => {
+    const { readPage, extractEventsFromPage } = require('../engine/search/readPage');
+    const HTML = `<html><head><title>Afisha Yerevan</title>
+        <meta property="og:image" content="/img/poster.jpg">
+        <meta name="description" content="City events guide"></head>
+        <body><img src="https://cdn/logo.svg"><img src="/img/jazz.jpg">
+        <p>Jazz Night at Club X on 24 August 2026, 20:00.</p></body></html>`;
+
+    test('readPage: title, description, images (absolutized, chrome skipped), text', async () => {
+        const p = await readPage('https://afisha.am/en', { deps: { fetchHtml: async () => HTML } });
+        expect(p.title).toBe('Afisha Yerevan');
+        expect(p.description).toBe('City events guide');
+        expect(p.image).toBe('https://afisha.am/img/poster.jpg');       // og:image absolutized
+        expect(p.images).not.toContain('https://cdn/logo.svg');          // chrome skipped
+        expect(p.text).toContain('Jazz Night');
+        expect(await readPage('https://x.am', { deps: { fetchHtml: async () => null } })).toBeNull();
+    });
+
+    test('extractEventsFromPage: model proposes, code disposes (dates + window)', async () => {
+        const win = parseEventWindow('next week', NOW);
+        const narrator = { stream: async () => ({ text: JSON.stringify([
+            { name: 'Jazz Night', startDate: '2026-08-25', time: '20:00', venueName: 'Club X' },
+            { name: 'Undated Fest' },                                    // no date → dropped
+            { name: 'Too Far', startDate: '2026-10-01' },                // outside window → dropped
+        ]) }) };
+        const evs = await extractEventsFromPage(
+            { url: 'https://afisha.am', title: 'Afisha', image: 'https://a/p.jpg', text: 'stuff' },
+            { city: 'Yerevan', window: win }, { narrator });
+        expect(evs).toHaveLength(1);
+        expect(evs[0].name).toBe('Jazz Night');
+        expect(evs[0]._tier).toBe('extracted');
+        expect(evs[0].image).toBe('https://a/p.jpg');                    // page poster rides along
+    });
+
+    test('hunt falls back to the extracted tier on JSON-LD-free pages', async () => {
+        const bulkWrite = jest.fn(() => Promise.resolve());
+        const narrator = { stream: async () => ({ text: '[{"name":"Jazz Night","startDate":"2026-08-25","time":"20:00"}]' }) };
+        const { huntEvents } = require('../engine/events/hunt');
+        const out = await huntEvents(
+            { city: 'Yerevan', center: CENTER, window: parseEventWindow('next week', NOW) },
+            { AiFoundEvent: { bulkWrite }, searchWeb: async () => [{ url: 'https://afisha.am/list' }],
+              fetchHtml: async () => HTML, narrator, nowFn: () => NOW });
+        expect(out).toHaveLength(1);
+        expect(out[0].name).toBe('Jazz Night');
+        const op = bulkWrite.mock.calls[0][0][0].updateOne;
+        expect(op.update.$setOnInsert.sourceTier).toBe('extracted');     // honest tier label
+    });
+});
+
 describe('event cards + facts', () => {
     test('toRecommendation passes eventSchedule through (frontend date row)', () => {
         const rec = toRecommendation(aiEventToCandidate(aiEvent(), CENTER), 0, { action: 'events' });

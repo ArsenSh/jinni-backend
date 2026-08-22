@@ -58,12 +58,15 @@ if (_fetchUnavailable) {
     console.warn('[safeFetch] global fetch() unavailable on this Node runtime (needs 18+) — page reads disabled');
 }
 
-async function _fetchListingHtml(rawUrl) {
+async function _fetchListingHtml(rawUrl, { timeoutMs = EVENT_LISTING_TIMEOUT_MS, maxBytes = EVENT_LISTING_MAX_BYTES } = {}) {
+    // opts (additive, 2026-08-23 — "i need a tool that can enter any web and
+    // read"): in-turn callers keep the tight default so users never wait on a
+    // slow site; background readers (the cron, forced hunts) may be patient.
     let target = rawUrl;
     for (let hop = 0; hop <= EVENT_LISTING_MAX_REDIRECTS; hop++) {
         const url = await _assertPublicHttpUrl(target);   // re-validated on EVERY hop
         const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), EVENT_LISTING_TIMEOUT_MS);
+        const timer = setTimeout(() => ac.abort(), timeoutMs);
         let res;
         try {
             res = await fetch(url, {
@@ -98,7 +101,7 @@ async function _fetchListingHtml(rawUrl) {
             const { done, value } = await reader.read();
             if (done) break;
             received += value.length;
-            if (received > EVENT_LISTING_MAX_BYTES) { await reader.cancel().catch(() => {}); break; }
+            if (received > maxBytes) { await reader.cancel().catch(() => {}); break; }
             chunks.push(value);
         }
         return Buffer.concat(chunks).toString('utf8');

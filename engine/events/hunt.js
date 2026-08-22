@@ -56,9 +56,10 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     const found = [];
     for (const u of urls) {
         try {
-            const html = await fetchHtml(u.url);
+            const html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
             if (!html) continue;
             const nodes = _extractLdEvents(html) || [];
+            let ldFound = 0;
             for (const raw of nodes) {
                 const n = _normalizeLdEvent(raw);
                 if (!n.name || !n.startDate) continue;              // undated ⇒ unverifiable ⇒ skip
@@ -67,7 +68,31 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 if (Number.isNaN(start.getTime())) continue;
                 if (start > wEnd) continue;                          // starts after the asked window
                 if ((end || start) < wStart) continue;               // over before it
-                found.push({ ...n, startDate: start, endDate: end, sourceUrl: n.url || u.url });
+                found.push({ ...n, startDate: start, endDate: end, sourceUrl: n.url || u.url, _tier: 'listing' });
+                ldFound++;
+            }
+            // No JSON-LD on the page ⇒ the ChatGPT-style READ (Arsen
+            // 2026-08-23): the model reads the page text and proposes dated
+            // events; code validates dates + window; stored honestly at the
+            // 'extracted' trust tier. Armenian event sites rarely publish
+            // schema.org — without this tier the hunt starves.
+            if (!ldFound && deps.allowExtracted !== false) {
+                const { extractEventsFromPage } = require('../search/readPage');
+                const page = deps.page || await (async () => {
+                    // Reuse the fetched html — wrap it as a page via the same reducer.
+                    const { _htmlToText } = require('./listing');
+                    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || null;
+                    const og = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1] || null;
+                    const text = String(_htmlToText(html) || '').slice(0, 18000);
+                    return text.trim() ? { url: u.url, title, image: og, text } : null;
+                })();
+                if (page) {
+                    const extracted = await extractEventsFromPage(page, { city, window: win }, deps);
+                    for (const e of extracted) {
+                        found.push({ ...e, sourceUrl: e.url || u.url });
+                    }
+                    if (extracted.length) console.log(`[hunt] extracted-tier: +${extracted.length} model-read event(s) from ${String(u.url).slice(0, 60)}`);
+                }
             }
         } catch (err) {
             console.warn(`[hunt] ${String(u.url).slice(0, 90)}: ${err.message}`);
@@ -107,7 +132,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 isRecurring: false,
                 image: e.image || null,
                 sourceUrl: e.sourceUrl || null,
-                sourceTier: 'listing',
+                sourceTier: e._tier === 'extracted' ? 'extracted' : 'listing',
                 status: 'new',
                 // Queue self-cleans a week after the event passes (v1 parity).
                 expireAt: new Date((e.endDate || e.startDate).getTime() + 7 * 24 * 3600 * 1000),
