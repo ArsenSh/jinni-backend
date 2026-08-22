@@ -20,6 +20,7 @@ const { _htmlToText } = require('../events/listing');
 const DEFAULT_TIMEOUT_MS = 15000;   // background-read default; pass less in-turn
 const DEFAULT_MAX_CHARS = 18000;    // ~4-5k tokens of page text for the model
 const MAX_IMAGES = 6;
+const MAX_IMAGE_PAIRS = 24;         // src+alt pairs offered to the model for matching
 
 function _pick(re, html) {
     const m = String(html).match(re);
@@ -48,23 +49,49 @@ function _pageImages(html, baseUrl) {
     return out.slice(0, MAX_IMAGES);
 }
 
+/** src+alt pairs from <img> tags (lazy-load data-src wins over placeholder
+ *  src), so the model can match events to THEIR posters by caption/filename
+ *  — a listing page's og:image is the site banner, and stamping it on every
+ *  event gave N identical cards (Arsen live report 2026-08-23). */
+function _imagePairs(html, baseUrl) {
+    const out = [];
+    const tagRe = /<img\b[^>]*>/gi;
+    let m;
+    while ((m = tagRe.exec(html)) && out.length < MAX_IMAGE_PAIRS) {
+        const tag = m[0];
+        const src = (tag.match(/\bdata-src=["']([^"']+)["']/i) || tag.match(/\ssrc=["']([^"']+)["']/i) || [])[1];
+        if (!src || /logo|icon|sprite|pixel|avatar|\.svg(\?|$)/i.test(src)) continue;
+        const alt = ((tag.match(/\balt=["']([^"']*)["']/i) || [])[1] || '').replace(/\s+/g, ' ').trim();
+        try {
+            const abs = new URL(src, baseUrl).toString();
+            if (/^https:\/\//i.test(abs) && !out.some((p) => p.src === abs)) out.push({ src: abs, alt });
+        } catch { /* unparseable src */ }
+    }
+    return out;
+}
+
+/** Reduce already-fetched HTML to the page shape. null when nothing readable. */
+function _reducePage(html, url, maxChars = DEFAULT_MAX_CHARS) {
+    if (!html) return null;
+    const title = _pick(/<title[^>]*>([\s\S]*?)<\/title>/i, html)
+        || _pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i, html);
+    const description = _pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)/i, html)
+        || _pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)/i, html);
+    const images = _pageImages(html, url);
+    const text = String(_htmlToText(html) || '').slice(0, maxChars);
+    if (!text.trim() && !title) return null;
+    return { url, title, description, image: images[0] || null, images, imagePairs: _imagePairs(html, url), text };
+}
+
 /**
  * Fetch + reduce any public page to readable info. null on any failure.
- * @returns {Promise<{url,title,description,image,images,text}|null>}
+ * @returns {Promise<{url,title,description,image,images,imagePairs,text}|null>}
  */
 async function readPage(url, { timeoutMs = DEFAULT_TIMEOUT_MS, maxChars = DEFAULT_MAX_CHARS, deps = {} } = {}) {
     try {
         const fetchHtml = deps.fetchHtml || _fetchListingHtml;
         const html = await fetchHtml(url, { timeoutMs });
-        if (!html) return null;
-        const title = _pick(/<title[^>]*>([\s\S]*?)<\/title>/i, html)
-            || _pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i, html);
-        const description = _pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)/i, html)
-            || _pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)/i, html);
-        const images = _pageImages(html, url);
-        const text = String(_htmlToText(html) || '').slice(0, maxChars);
-        if (!text.trim() && !title) return null;
-        return { url, title, description, image: images[0] || null, images, text };
+        return _reducePage(html, url, maxChars);
     } catch (err) {
         console.warn(`[read] ${String(url).slice(0, 90)}: ${err.message}`);
         return null;
@@ -88,6 +115,14 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
         // date, so allevents.in read as empty).
         const winFrom = new Date(win.start).toISOString().slice(0, 10);
         const winTo = new Date(win.end).toISOString().slice(0, 10);
+        // Offer the page's images (src + caption) so each event can get ITS
+        // poster; without this every event inherited the page og:image and
+        // Arsen saw N identical cards. The model may only pick from this
+        // list — code checks membership below, so no invented URLs.
+        const pairs = Array.isArray(page.imagePairs) ? page.imagePairs.slice(0, 24) : [];
+        const imgBlock = pairs.length
+            ? `\nIMAGES ON THE PAGE:\n${pairs.map((p, i) => `${i + 1}. ${p.src}${p.alt ? ` — "${p.alt}"` : ''}`).join('\n')}\n`
+            : '';
         const out = await narrator.stream({
             messages: [{
                 role: 'user',
@@ -97,10 +132,13 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
                     + `List ONLY events whose DAY and MONTH the page explicitly prints (e.g. "30 Aug", "August 30").`
                     + ` If the page omits the year, resolve it so the date falls in or nearest to ${winFrom}..${winTo}.`
                     + ` Never invent a day or month the page does not print.\n`
-                    + `Reply with ONLY a JSON array: [{"name":"…","startDate":"YYYY-MM-DD","time":"HH:MM or null","venueName":"… or null"}]\n`
-                    + `Empty array [] if the page dates no events.\n\nPAGE TITLE: ${page.title || ''}\n\nPAGE TEXT:\n${page.text}`,
+                    + `Reply with ONLY a JSON array: [{"name":"…","startDate":"YYYY-MM-DD","time":"HH:MM or null","venueName":"… or null","image":"URL or null"}]\n`
+                    + (pairs.length
+                        ? `For "image", pick the URL from IMAGES ON THE PAGE whose caption or filename clearly belongs to that event; null if none matches. Never reuse one image for several events.\n`
+                        : `Set "image" to null.\n`)
+                    + `Empty array [] if the page dates no events.\n\nPAGE TITLE: ${page.title || ''}\n${imgBlock}\nPAGE TEXT:\n${page.text}`,
             }],
-            maxTokens: 600,
+            maxTokens: 900,
             temperature: 0,
         });
         const m = String(out.text || '').match(/\[[\s\S]*\]/);
@@ -117,11 +155,15 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
             const start = new Date(`${e.startDate}T${time}:00Z`);
             if (Number.isNaN(start.getTime())) continue;
             if (start > wEnd || start < new Date(wStart.getTime() - 12 * 3600 * 1000)) continue;   // window brake
+            // Poster: only an image the page actually contains. When images
+            // were offered and none matched, no image beats the page banner
+            // stamped on every card.
+            const offered = pairs.length ? pairs.some((p) => p.src === e.image) : false;
             events.push({
                 name: e.name.trim().slice(0, 120),
                 startDate: start,
                 endDate: null,
-                image: page.image || null,
+                image: offered ? e.image : (pairs.length ? null : page.image || null),
                 url: page.url,
                 venueName: (typeof e.venueName === 'string' && e.venueName.trim()) ? e.venueName.trim().slice(0, 80) : null,
                 venueAddress: null,
@@ -135,4 +177,4 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
     }
 }
 
-module.exports = { readPage, extractEventsFromPage, DEFAULT_TIMEOUT_MS };
+module.exports = { readPage, extractEventsFromPage, _reducePage, DEFAULT_TIMEOUT_MS };

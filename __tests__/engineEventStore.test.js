@@ -216,6 +216,22 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(evs[0].image).toBe('https://a/p.jpg');                    // page poster rides along
     });
 
+    test('per-event posters: only images the page actually contains, no shared banner', async () => {
+        const win = parseEventWindow('next week', NOW);
+        const page = {
+            url: 'https://afisha.am', title: 'Afisha', text: 'stuff',
+            image: 'https://a/banner.jpg',
+            imagePairs: [{ src: 'https://a/jazz.jpg', alt: 'Jazz Night poster' }],
+        };
+        const narrator = { stream: async () => ({ text: JSON.stringify([
+            { name: 'Jazz Night', startDate: '2026-08-25', image: 'https://a/jazz.jpg' },        // offered → kept
+            { name: 'Rock Fest', startDate: '2026-08-26', image: 'https://evil/x.jpg' },         // invented → dropped
+            { name: 'Folk Eve', startDate: '2026-08-27' },                                       // unmatched → null, not banner
+        ]) }) };
+        const evs = await extractEventsFromPage(page, { city: 'Yerevan', window: win }, { narrator });
+        expect(evs.map(e => e.image)).toEqual(['https://a/jazz.jpg', null, null]);
+    });
+
     test('hunt falls back to the extracted tier on JSON-LD-free pages', async () => {
         const bulkWrite = jest.fn(() => Promise.resolve());
         const narrator = { stream: async () => ({ text: '[{"name":"Jazz Night","startDate":"2026-08-25","time":"20:00"}]' }) };

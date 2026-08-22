@@ -77,15 +77,8 @@ async function huntEvents({ city, country = null, center = null, window: win } =
             // 'extracted' trust tier. Armenian event sites rarely publish
             // schema.org — without this tier the hunt starves.
             if (!ldFound && deps.allowExtracted !== false) {
-                const { extractEventsFromPage } = require('../search/readPage');
-                const page = deps.page || await (async () => {
-                    // Reuse the fetched html — wrap it as a page via the same reducer.
-                    const { _htmlToText } = require('./listing');
-                    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || null;
-                    const og = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1] || null;
-                    const text = String(_htmlToText(html) || '').slice(0, 18000);
-                    return text.trim() ? { url: u.url, title, image: og, text } : null;
-                })();
+                const { extractEventsFromPage, _reducePage } = require('../search/readPage');
+                const page = deps.page || _reducePage(html, u.url);
                 if (page) {
                     const extracted = await extractEventsFromPage(page, { city, window: win }, deps);
                     for (const e of extracted) {
@@ -156,7 +149,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     return rows.map(({ e }) => aiEventToCandidate({
         name: e.name, placeId: null, lat: null, lng: null,
         venueName: e.venueName || null, address: e.venueAddress || null,
-        city, country, image: e.image || null,
+        city, country, image: e.image || null, sourceUrl: e.sourceUrl || null,
         startDate: e.startDate, endDate: e.endDate, isRecurring: false, description: null,
     }, center));
 }

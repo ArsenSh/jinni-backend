@@ -145,6 +145,10 @@ function aiEventToCandidate(e, center) {
         // renders the date row (isEventRec). No timezone on pipeline finds —
         // the card falls back to UTC display, same as v1.
         eventSchedule: { startDate: e.startDate, endDate: e.endDate || null, isRecurring: !!e.isRecurring },
+        // Where the event was found — the frontend renders it as a source
+        // link below the card (Arsen 2026-08-23: "source it can show below
+        // card, i already have in front").
+        sourceUrl: e.sourceUrl || null,
     };
 }
 

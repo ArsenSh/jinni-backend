@@ -78,6 +78,8 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         // Present ⇒ the frontend's isEventRec() renders the date row on the
         // card (v1's exact contract). Event candidates carry it; places don't.
         eventSchedule: place.eventSchedule || null,
+        // Source link shown below event cards (frontend rec.sourceUrl).
+        sourceUrl: place.sourceUrl || null,
         _isExpired: false,
         _action: action || 'general',
         metadata: {
