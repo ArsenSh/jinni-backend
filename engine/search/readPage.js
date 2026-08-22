@@ -91,6 +91,74 @@ function _linkPairs(html, baseUrl) {
     return out;
 }
 
+// Listing pages put each event in a CARD: an <a> to its own page and an <img>
+// poster, sitting right beside the event's title in the markup. So once the
+// model has told us an event's name, the card's assets are findable by plain
+// code — no extra tokens, no guessing, and it works on any site's HTML.
+//
+// This replaced offering the model "the first N links/images": on a real
+// listing page (allevents.in, live 2026-08-23) the first 30 links are all
+// navigation chrome and the real cards start far below, so every event fell
+// back to the catalog URL with no poster at all.
+const _BLOCK_BEFORE = 4000;   // chars of markup before the title (card open + img)
+const _BLOCK_AFTER = 1200;    // and after (some layouts put the image below)
+
+function _findAssetsNear(html, baseUrl, name) {
+    const out = { url: null, image: null };
+    if (!html || !name) return out;
+    // A distinctive slice of the name — listing markup often truncates titles
+    // ("Արսեն և Արթուր Սաֆարյաններ…"), so match on the head, not the whole.
+    const probe = String(name).replace(/[…\s]+$/, '').slice(0, 24).trim();
+    if (probe.length < 4) return out;
+    let at = html.indexOf(probe);
+    if (at < 0) at = html.toLowerCase().indexOf(probe.toLowerCase());
+    if (at < 0) return out;
+
+    const from = Math.max(0, at - _BLOCK_BEFORE);
+    const block = html.slice(from, Math.min(html.length, at + _BLOCK_AFTER));
+    const titleAt = at - from;
+    // A card OPENS before its title (<a><img><h3>Name</h3></a>), so the
+    // nearest tag that PRECEDES the title belongs to this event, while the
+    // nearest one after it usually belongs to the NEXT card. Prefer before;
+    // fall back to after only when the card has nothing before the title.
+    const nearest = (re, pick) => {
+        let before = null, after = null, m;
+        re.lastIndex = 0;
+        while ((m = re.exec(block))) {
+            const val = pick(m);
+            if (!val) continue;
+            const d = Math.abs(m.index - titleAt);
+            if (m.index <= titleAt) { if (!before || d < before.d) before = { d, val }; }
+            else if (!after || d < after.d) after = { d, val };
+        }
+        return (before || after)?.val || null;
+    };
+    const abs = (v) => {
+        try {
+            const u = new URL(v, baseUrl).toString();
+            return /^https:\/\//i.test(u) ? u : null;
+        } catch { return null; }
+    };
+    // The card's own link: skip nav/social/in-page hrefs.
+    const href = nearest(/<a\b[^>]*\bhref=["']([^"'\s]+)["']/gi, (m) => {
+        const h = m[1];
+        if (/^(javascript|mailto|tel):|^#/i.test(h)) return null;
+        if (/facebook|twitter|instagram|linkedin|whatsapp|telegram|\/login|\/signup|\/register/i.test(h)) return null;
+        return abs(h);
+    });
+    // The card's poster: a lazy-load attribute wins over the placeholder src.
+    const img = nearest(/<img\b[^>]*>/gi, (m) => {
+        const tag = m[0];
+        const src = (tag.match(/\bdata-(?:src|original|lazy-src)=["']([^"']+)["']/i)
+            || tag.match(/\ssrc=["']([^"']+)["']/i) || [])[1];
+        if (!src || /logo|icon|sprite|pixel|avatar|placeholder|blank\.|\.svg(\?|$)|^data:/i.test(src)) return null;
+        return abs(src);
+    });
+    if (href && href !== baseUrl) out.url = href;
+    out.image = img;
+    return out;
+}
+
 /** Reduce already-fetched HTML to the page shape. null when nothing readable. */
 function _reducePage(html, url, maxChars = DEFAULT_MAX_CHARS) {
     if (!html) return null;
@@ -101,7 +169,9 @@ function _reducePage(html, url, maxChars = DEFAULT_MAX_CHARS) {
     const images = _pageImages(html, url);
     const text = String(_htmlToText(html) || '').slice(0, maxChars);
     if (!text.trim() && !title) return null;
-    return { url, title, description, image: images[0] || null, images, imagePairs: _imagePairs(html, url), linkPairs: _linkPairs(html, url), text };
+    // `html` rides along so per-event asset matching can read the card markup
+    // around each title. It is NEVER sent to the model — only page.text is.
+    return { url, title, description, image: images[0] || null, images, imagePairs: _imagePairs(html, url), linkPairs: _linkPairs(html, url), html, text };
 }
 
 /**
@@ -186,13 +256,24 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
             // Poster: only an image the page actually contains. When images
             // were offered and none matched, no image beats the page banner
             // stamped on every card.
-            const offered = pairs.length ? pairs.some((p) => p.src === e.image) : false;
-            const ownLink = links.length && links.some((p) => p.href === e.url) ? e.url : null;
+            const name = e.name.trim().slice(0, 120);
+            // Assets, in order of trust: an image/link the model picked from
+            // the offered lists (membership-checked) → the card markup around
+            // this event's own title (deterministic) → nothing. The page
+            // banner is used only when the page offered no images at all.
+            let image = (pairs.length && pairs.some((p) => p.src === e.image)) ? e.image : null;
+            let ownLink = (links.length && links.some((p) => p.href === e.url)) ? e.url : null;
+            if (!image || !ownLink) {
+                const near = _findAssetsNear(page.html, page.url, name);
+                if (!image) image = near.image;
+                if (!ownLink) ownLink = near.url;
+            }
+            if (!image && !pairs.length && !page.html) image = page.image || null;
             events.push({
-                name: e.name.trim().slice(0, 120),
+                name,
                 startDate: start,
                 endDate: null,
-                image: offered ? e.image : (pairs.length ? null : page.image || null),
+                image,
                 url: ownLink || page.url,
                 venueName: (typeof e.venueName === 'string' && e.venueName.trim()) ? e.venueName.trim().slice(0, 80) : null,
                 venueAddress: null,
@@ -206,4 +287,4 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
     }
 }
 
-module.exports = { readPage, extractEventsFromPage, _reducePage, DEFAULT_TIMEOUT_MS };
+module.exports = { readPage, extractEventsFromPage, _reducePage, _findAssetsNear, DEFAULT_TIMEOUT_MS };

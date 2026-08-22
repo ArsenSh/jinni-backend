@@ -232,6 +232,25 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(evs.map(e => e.image)).toEqual(['https://a/jazz.jpg', null, null]);
     });
 
+    test('card matching: assets come from the markup around the title, past the nav chrome', async () => {
+        const { _findAssetsNear } = require('../engine/search/readPage');
+        // Realistic listing shape: 30+ chrome links first, then the event cards.
+        const chrome = Array.from({ length: 30 }, (_, i) =>
+            `<a href="/nav/${i}">Menu ${i}</a><img src="/img/icon-${i}.svg">`).join('');
+        const html = `<html><body>${chrome}
+            <div class="card"><a href="/e/jazz-night"><img data-src="https://cdn/jazz.jpg" src="/img/placeholder.png">
+            <h3>Jazz Night at Club X</h3></a></div>
+            <div class="card"><a href="/e/folk-eve"><img data-src="https://cdn/folk.jpg">
+            <h3>Folk Evening</h3></a></div></body></html>`;
+
+        const jazz = _findAssetsNear(html, 'https://allevents.in/yerevan/all', 'Jazz Night at Club X');
+        expect(jazz.url).toBe('https://allevents.in/e/jazz-night');       // its own page, not the catalog
+        expect(jazz.image).toBe('https://cdn/jazz.jpg');                  // lazy-load src beats the placeholder
+        const folk = _findAssetsNear(html, 'https://allevents.in/yerevan/all', 'Folk Evening');
+        expect(folk.image).toBe('https://cdn/folk.jpg');                  // each card matched separately
+        expect(_findAssetsNear(html, 'https://x.am', 'Nonexistent Gala')).toEqual({ url: null, image: null });
+    });
+
     test('detail-page links: model-matched url becomes the event page; hunt pulls its og:image poster', async () => {
         const win = parseEventWindow('next week', NOW);
         const page = {
