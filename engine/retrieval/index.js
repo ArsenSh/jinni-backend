@@ -167,6 +167,27 @@ async function findPlaces(params = {}, deps = {}) {
         return { places: [], degraded: true, reason: 'all_filtered', provenance };
     }
 
+    // ── Curated-first nudge (the moat rule, 2026-08-22: Arsen's luxury-tagged
+    //    partners passed the gate yet never reached a deck — cache rows beat
+    //    them on every evidence channel). The first TWO validator/partner
+    //    candidates in fused order climb 3 positions: enough to reach a deck
+    //    they were near, never enough to hijack a specific ask. Capped seats
+    //    per the monetization guardrail (labeled by the badge; a quality
+    //    floor joins when paid placement goes live). ──
+    {
+        const CURATED_BOOST = 3, CURATED_SEATS = 2;
+        const isCurated = (c) => c.source === 'business' || c.source === 'destination';
+        if (ordered.some(isCurated)) {
+            let seats = 0;
+            const scored = ordered.map((c, i) => {
+                const boost = isCurated(c) && seats < CURATED_SEATS ? (seats++, CURATED_BOOST) : 0;
+                return { c, i, s: i - boost };
+            });
+            scored.sort((a, b) => a.s - b.s || a.i - b.i);
+            ordered = scored.map(e => e.c);
+        }
+    }
+
     // ── Personal taste (nudge, never hijack — see personalization/taste.js):
     //    liked/saved climb a few fused positions, oft-seen-never-acted sinks —
     //    harder with every repeat show, so identical asks ROTATE the deck.
