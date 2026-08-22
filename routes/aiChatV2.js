@@ -58,6 +58,28 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     const recentTurns = recentTurnsFromMessages(sessionPeek?.messages);
     const shown = shownFromMessages(sessionPeek?.messages);
 
+    // ── Per-user dislikes → excludes (caught live 2026-08-22: a place disliked
+    //    in an earlier session reappeared). v1 semantics mirrored: latest vote
+    //    per placeId wins; a dislike means "stop suggesting this", NOT "refuse
+    //    to discuss it" — a place the user names right now is never hidden.
+    //    Fail-open: a broken vote load never fails the turn. ──
+    try {
+        const PlaceFeedback = require('../models/PlaceFeedback');
+        const voteRows = await PlaceFeedback.find({ userId: req.user.id })
+            .sort({ updatedAt: -1 }).select('placeId vote name').lean();
+        const latestByPlace = new Map();
+        for (const r of voteRows) if (!latestByPlace.has(r.placeId)) latestByPlace.set(r.placeId, r);
+        const msgLowerVotes = String(message || '').toLowerCase();
+        for (const [pid, r] of latestByPlace) {
+            if (r.vote !== 'dislike') continue;
+            if (r.name && messageNamesPlace(msgLowerVotes, r.name)) continue;   // direct-ask exception
+            shown.placeIds.push(pid);
+            if (r.name) shown.names.push(r.name);
+        }
+    } catch (pfErr) {
+        console.warn('[v2] PlaceFeedback dislike load failed:', pfErr.message);
+    }
+
     res.writeHead(200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache',

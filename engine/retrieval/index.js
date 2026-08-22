@@ -88,8 +88,11 @@ async function findPlaces(params = {}, deps = {}) {
     // ── Session excludes ──
     const exIds = new Set((excludes.placeIds || []).filter(Boolean));
     const exNames = new Set((excludes.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
+    // verifiedId too: dislikes on partner/validator places are keyed by the
+    // stringified Business/Destination _id, not a Google placeId.
     candidates = candidates.filter(c =>
-        c && !exIds.has(c.placeId) && !exNames.has(normalizePlaceName(c.name || '')));
+        c && !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
+          && !exNames.has(normalizePlaceName(c.name || '')));
 
     // ── Context engine: stamp _openNow; drop only KNOWN-closed, only for
     //    droppable categories, only when the caller asked (right-now intent).
