@@ -232,6 +232,36 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(evs.map(e => e.image)).toEqual(['https://a/jazz.jpg', null, null]);
     });
 
+    test('detail-page links: model-matched url becomes the event page; hunt pulls its og:image poster', async () => {
+        const win = parseEventWindow('next week', NOW);
+        const page = {
+            url: 'https://afisha.am/all', title: 'Afisha', text: 'stuff', image: null,
+            imagePairs: [{ src: 'https://a/unrelated.jpg', alt: 'ad' }],
+            linkPairs: [{ href: 'https://afisha.am/e/jazz-night', text: 'Jazz Night' }],
+        };
+        const narrator = { stream: async () => ({ text: JSON.stringify([
+            { name: 'Jazz Night', startDate: '2026-08-25', url: 'https://afisha.am/e/jazz-night' },
+            { name: 'Rock Fest', startDate: '2026-08-26', url: 'https://evil/x' },               // invented link → page.url
+        ]) }) };
+        const evs = await extractEventsFromPage(page, { city: 'Yerevan', window: win }, { narrator });
+        expect(evs[0].url).toBe('https://afisha.am/e/jazz-night');
+        expect(evs[1].url).toBe('https://afisha.am/all');
+
+        const bulkWrite = jest.fn(() => Promise.resolve());
+        const { huntEvents } = require('../engine/events/hunt');
+        const detailHtml = '<html><head><meta property="og:image" content="https://cdn/jazz-poster.jpg"></head></html>';
+        const out = await huntEvents(
+            { city: 'Yerevan', center: CENTER, window: win },
+            { AiFoundEvent: { bulkWrite }, searchWeb: async () => [{ url: 'https://afisha.am/all' }],
+              fetchHtml: async (u) => u === 'https://afisha.am/e/jazz-night' ? detailHtml : '<html><body>x</body></html>',
+              page, narrator, nowFn: () => NOW });
+        const jazz = out.find(e => e.name === 'Jazz Night');
+        expect(jazz.image).toBe('https://cdn/jazz-poster.jpg');          // poster from the detail page
+        const ops = bulkWrite.mock.calls[0][0];
+        const jazzOp = ops.find(o => o.updateOne.update.$setOnInsert.name === 'Jazz Night').updateOne.update.$setOnInsert;
+        expect(jazzOp.sourceUrl).toBe('https://afisha.am/e/jazz-night'); // Check listing → the event's own page
+    });
+
     test('hunt falls back to the extracted tier on JSON-LD-free pages', async () => {
         const bulkWrite = jest.fn(() => Promise.resolve());
         const narrator = { stream: async () => ({ text: '[{"name":"Jazz Night","startDate":"2026-08-25","time":"20:00"}]' }) };

@@ -81,7 +81,20 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 const page = deps.page || _reducePage(html, u.url);
                 if (page) {
                     const extracted = await extractEventsFromPage(page, { city, window: win }, deps);
+                    // Posters live on detail pages (og:image), not listing
+                    // thumbnails — spend a few extra fetches on events whose
+                    // own link the model matched but whose image it couldn't
+                    // (allevents.in live 2026-08-23: 7 events, 0 posters).
+                    let detailBudget = 4;
                     for (const e of extracted) {
+                        if (!e.image && e.url && e.url !== page.url && detailBudget > 0) {
+                            detailBudget--;
+                            try {
+                                const dHtml = await fetchHtml(e.url, { timeoutMs: deps.timeoutMs || 10000 });
+                                const og = dHtml && (dHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1];
+                                if (og && /^https:\/\//i.test(og)) e.image = og;
+                            } catch { /* poster is optional */ }
+                        }
                         found.push({ ...e, sourceUrl: e.url || u.url });
                     }
                     // Log the 0 case too — silence here is indistinguishable
