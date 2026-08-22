@@ -167,16 +167,16 @@ async function findPlaces(params = {}, deps = {}) {
         return { places: [], degraded: true, reason: 'all_filtered', provenance };
     }
 
-    // ── Curated-first nudge (the moat rule, 2026-08-22: Arsen's luxury-tagged
-    //    partners passed the gate yet never reached a deck — cache rows beat
-    //    them on every evidence channel). The first TWO validator/partner
-    //    candidates in fused order climb 3 positions: enough to reach a deck
-    //    they were near, never enough to hijack a specific ask. Capped seats
-    //    per the monetization guardrail (labeled by the badge; a quality
-    //    floor joins when paid placement goes live). ──
+    // ── Paid-tier nudge (Arsen's decision, 2026-08-22 evening: "only
+    //    spotlight and signature ones can be a little more visible than
+    //    ordinary destinations and verified business ones"). The first TWO
+    //    Spotlight/Signature partners in fused order climb 3 positions;
+    //    plain destinations and Verified businesses compete on pure merit.
+    //    Never enough to hijack a specific ask; labeled by the badge; a
+    //    quality floor joins when paid placement goes live. ──
     {
         const CURATED_BOOST = 3, CURATED_SEATS = 2;
-        const isCurated = (c) => c.source === 'business' || c.source === 'destination';
+        const isCurated = (c) => c.tier === 'spotlight' || c.tier === 'signature';
         if (ordered.some(isCurated)) {
             let seats = 0;
             const scored = ordered.map((c, i) => {
@@ -211,6 +211,10 @@ async function findPlaces(params = {}, deps = {}) {
         const rare = uncoveredQueryTokens(params.coreQuery, ordered, 0.25);
         if (rare.length) {
             const seats = ordered.filter(c => {
+                // _demandMatch: the store FETCHED this place for the demanded
+                // term (the Uzbechka lesson — "uzbek" isn't a substring of
+                // "Uzbechka", knowledge beats spelling).
+                if (c._demandMatch) return true;
                 const t = String(c.text || c.name || '').toLowerCase();
                 return rare.some(d => t.includes(d));
             }).slice(0, 3);

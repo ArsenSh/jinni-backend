@@ -309,6 +309,23 @@ async function loadCandidates(params = {}, deps = {}) {
             if (extra.length) {
                 console.log(`[canonicalStore] google fallback: +${extra.length} (owned had ${merged.length}${missing.length ? `, uncovered: ${missing.join(',')}` : ''})`);
                 merged = mergeAndDedupe(merged, extra);
+                // Demand-fetched marking (the Uzbechka lesson, 2026-08-22
+                // evening): "uzbek" is not a substring of "Uzbechka", so
+                // string matching downstream can't recognize the fetched
+                // match. The fallback KNOWS these places answer the demanded
+                // term — mark the surviving twins (dedupe may have kept the
+                // owned copy) so demand seats + the adaptive deck key off
+                // knowledge, not spelling.
+                if (missing.length) {
+                    const fetchedKeys = new Set(extra
+                        .flatMap(e => [e.placeId, normalizePlaceName(e.name || '')])
+                        .filter(Boolean));
+                    for (const c of merged) {
+                        if (fetchedKeys.has(c.placeId) || fetchedKeys.has(normalizePlaceName(c.name || ''))) {
+                            c._demandMatch = true;
+                        }
+                    }
+                }
             }
         } catch (err) {
             console.warn(`[canonicalStore] google fallback failed: ${err.message} — serving owned data only`);

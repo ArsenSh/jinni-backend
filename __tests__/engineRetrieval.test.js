@@ -332,21 +332,36 @@ describe('adaptive deck size (battery fix #2 — the padding lesson)', () => {
     });
 });
 
-describe('curated-first nudge (the moat rule)', () => {
-    test('first two curated candidates climb ~3 positions; cache leader keeps #1', async () => {
+describe('paid-tier nudge (Spotlight/Signature only — Arsen 2026-08-22)', () => {
+    test('spotlight/signature climb ~3; verified business + plain destination stay on merit', async () => {
         const mk = (n) => Array.from({ length: n }, (_, i) => ({
             placeId: `c${i}`, name: `Cafe ${i}`, text: `Cafe ${i}`, source: 'cache',
         }));
         const pool = mk(8);
-        pool[5] = { verifiedId: 'biz1', name: 'Zanzibar', text: 'Zanzibar', source: 'business' };
-        pool[6] = { verifiedId: 'dst1', name: 'Sirelis', text: 'Sirelis', source: 'destination' };
-        pool[7] = { verifiedId: 'biz2', name: 'Third', text: 'Third', source: 'business' };
+        pool[5] = { verifiedId: 'biz1', name: 'Zanzibar', text: 'Zanzibar', source: 'business', tier: 'signature' };
+        pool[6] = { verifiedId: 'dst1', name: 'Sirelis', text: 'Sirelis', source: 'destination', tier: null };
+        pool[7] = { verifiedId: 'biz2', name: 'PlainBiz', text: 'PlainBiz', source: 'business', tier: 'verified' };
         const r = await findPlaces({ count: 8 }, { loadCandidates: async () => pool.map(c => ({ ...c })), embedder: null });
         const names = r.places.map(p => p.name);
-        expect(names[0]).toBe('Cafe 0');                                  // never hijacks the leader
-        expect(names.indexOf('Zanzibar')).toBeLessThan(5);                // climbed ~3
-        expect(names.indexOf('Sirelis')).toBeLessThan(6);                 // climbed ~3
-        expect(names.indexOf('Third')).toBe(7);                           // seat cap: only 2 boosted
+        expect(names[0]).toBe('Cafe 0');                        // never hijacks the leader
+        expect(names.indexOf('Zanzibar')).toBeLessThan(5);      // signature climbed ~3
+        expect(names.indexOf('Sirelis')).toBe(6);               // plain destination: merit only
+        expect(names.indexOf('PlainBiz')).toBe(7);              // verified business: merit only
+    });
+});
+
+describe('demand-match seats (the Uzbechka spelling lesson)', () => {
+    test('a store-fetched demand match gets the seat + adaptive shrink despite zero text overlap', async () => {
+        const pool = [
+            ...Array.from({ length: 7 }, (_, i) => ({ placeId: `r${i}`, name: `Rest ${i}`, text: `Rest ${i} armenian food`, source: 'cache' })),
+            { placeId: 'uzb', name: 'Uzbechka', text: 'Uzbechka restaurant yerevan', source: 'cache', _demandMatch: true },
+        ];
+        const r = await findPlaces(
+            { count: 6, coreQuery: 'uzbek restaurant', query: 'uzbek restaurant', adaptiveDeck: true },
+            { loadCandidates: async () => pool.map(c => ({ ...c })), embedder: null });
+        expect(r.places[0].placeId).toBe('uzb');    // seat via knowledge, not spelling
+        expect(r.places).toHaveLength(3);           // adaptive fired
+        expect(r.provenance.adaptive).toBe('specific');
     });
 });
 
