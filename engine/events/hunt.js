@@ -91,7 +91,11 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     for (const e of extracted) {
                         found.push({ ...e, sourceUrl: e.url || u.url });
                     }
-                    if (extracted.length) console.log(`[hunt] extracted-tier: +${extracted.length} model-read event(s) from ${String(u.url).slice(0, 60)}`);
+                    // Log the 0 case too — silence here is indistinguishable
+                    // from "reader not deployed" (live lesson 2026-08-23).
+                    console.log(`[hunt] extracted-tier: +${extracted.length} model-read event(s) from ${String(u.url).slice(0, 60)} (${page.text.length} chars read)`);
+                } else {
+                    console.log(`[hunt] extracted-tier: no readable text on ${String(u.url).slice(0, 60)} — skipped`);
                 }
             }
         } catch (err) {
