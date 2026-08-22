@@ -124,7 +124,17 @@ async function loadEventCandidates(params = {}, deps = {}) {
 
     // Radius is soft-edged for events: rows without coords (city-only finds)
     // survive — a city-wide festival with no venue pin is still an answer.
-    const within = out.filter(c => c.distanceKm == null || c.distanceKm <= radiusKm);
+    // BUT only when their city matches somewhere actually in radius (caught
+    // live 2026-08-22: a coordless DUBAI comedy show served in a Yerevan ask).
+    // No in-radius city evidence → the coordless row drops; wrong-city cards
+    // are worse than a missed festival.
+    const cityOf = (c) => String(c.city || '').trim().toLowerCase();
+    const inRadiusCities = new Set(out
+        .filter(c => c.distanceKm != null && c.distanceKm <= radiusKm)
+        .map(cityOf).filter(Boolean));
+    const within = out.filter(c => c.distanceKm != null
+        ? c.distanceKm <= radiusKm
+        : (!!cityOf(c) && inRadiusCities.has(cityOf(c))));
     within.sort((a, b) => {
         const ta = a.eventSchedule?.startDate ? new Date(a.eventSchedule.startDate).getTime() : Infinity;
         const tb = b.eventSchedule?.startDate ? new Date(b.eventSchedule.startDate).getTime() : Infinity;

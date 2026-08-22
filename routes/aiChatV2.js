@@ -257,9 +257,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // claimed the Google tier wasn't wired; it is, and events now
                 // serve from owned data too. Reaching here means every source
                 // genuinely came up dry for this ask+area).
+                // all_filtered = everything I had was already shown (or
+                // excluded) — "that's the lot" reads honest; "I have none"
+                // would be false. no_candidates = genuinely nothing listed.
+                const sawEverything = result.reason === 'all_filtered';
                 reply = category === 'events'
-                    ? '🧪 V2: I don\'t have any verified upcoming events for this area in my listings right now. Try asking again closer to the date, or ask me for places instead.'
-                    : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.';
+                    ? (sawEverything
+                        ? '🧪 V2: That\'s every upcoming event I have for this area right now — you\'ve seen them all. Ask me for places, or check back in a day or two.'
+                        : '🧪 V2: I don\'t have any verified upcoming events for this area in my listings right now. Try asking again closer to the date, or ask me for places instead.')
+                    : (sawEverything
+                        ? '🧪 V2: You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
+                        : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
                 send(res, { type: 'token', content: reply });
             } else {
                 const weather = await weatherPromise;   // resolved long ago or null

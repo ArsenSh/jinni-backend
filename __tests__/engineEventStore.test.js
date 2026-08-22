@@ -58,13 +58,21 @@ describe('loadEventCandidates', () => {
         expect(aiModel.lastQuery.startDate.$lte).toBeInstanceOf(Date);
     });
 
-    test('radius filters coord rows, spares coordless (city-wide) ones', async () => {
+    test('radius filters coord rows; coordless survive ONLY on an in-radius city match', async () => {
         const out = await loadEventCandidates({ center: CENTER, radiusKm: 10 }, deps([], [
             aiEvent({ name: 'Near', lat: 40.19, lng: 44.52 }),
-            aiEvent({ name: 'Gyumri Fest', lat: 40.79, lng: 43.85 }),        // ~120 km
-            aiEvent({ name: 'City-wide', lat: null, lng: null }),
+            aiEvent({ name: 'Gyumri Fest', lat: 40.79, lng: 43.85 }),                    // ~120 km
+            aiEvent({ name: 'City-wide', lat: null, lng: null }),                        // city Yerevan → kept
+            aiEvent({ name: 'Dubai Comedy', lat: null, lng: null, city: 'Dubai' }),      // the live bug → dropped
         ]));
         expect(out.map(c => c.name)).toEqual(['Near', 'City-wide']);
+    });
+
+    test('no in-radius city evidence → coordless rows drop too', async () => {
+        const out = await loadEventCandidates({ center: CENTER, radiusKm: 10 }, deps([], [
+            aiEvent({ name: 'Orphan City-wide', lat: null, lng: null }),
+        ]));
+        expect(out).toEqual([]);
     });
 
     test('no center → no candidates (events need a where)', async () => {
