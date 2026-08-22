@@ -19,7 +19,7 @@ const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -165,6 +165,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // parallel with retrieval + narration setup, awaited only at
             // prompt-build. 10-min cache in the engine → repeat turns free.
             const weatherPromise = getWeather(center.lat, center.lng);
+            // Right-now context, decided ONCE: the AI's intent.when is the
+            // brain; nearby/late-night/now-words are the degradation path.
+            const rightNow = intent.when === 'planned' ? false
+                : (intent.when === 'now' || nearbyMode || timeContext.isLateNight || isRightNowAsk(message));
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
             const mode = nearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
@@ -189,8 +193,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // 'planned' / 'unspecified'); nearby/late-night/now-words are
                 // the degradation path when it abstains. An explicit 'planned'
                 // ALWAYS skips the filter. Unknown hours survive regardless.
-                enforceOpenNow: intent.when === 'planned' ? false
-                    : (intent.when === 'now' || nearbyMode || timeContext.isLateNight || isRightNowAsk(message)),
+                enforceOpenNow: rightNow,
+                // The ask's nature shifts what evidence matters: right-now →
+                // proximity up; romantic/special → quality prior up.
+                weights: rankingWeights({ rightNow, nearbyMode, message }),
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });

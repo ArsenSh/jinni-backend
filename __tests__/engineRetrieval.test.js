@@ -7,7 +7,7 @@ const { rankLexical, tokenize } = require('../engine/retrieval/lexical');
 const { cosineSimilarity, rankByVector } = require('../engine/retrieval/vector');
 const { SemanticCache } = require('../engine/retrieval/semanticCache');
 const { findPlaces } = require('../engine/retrieval/index');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
 
 describe('fuseRankings (RRF)', () => {
     test('agreement across lists wins; k=60 math', () => {
@@ -136,6 +136,22 @@ describe('tuning: isRightNowAsk (open-hours enforcement trigger, fallback tier)'
         expect(isRightNowAsk('restaurants for next week')).toBe(false);
         expect(isRightNowAsk('plan my trip for tomorrow')).toBe(false);
         expect(isRightNowAsk('')).toBe(false);
+    });
+});
+
+describe('tuning: rankingWeights (intent-conditioned fusion)', () => {
+    test('defaults reproduce the historical weights exactly', () => {
+        expect(rankingWeights({})).toEqual({ lexical: 1, vector: 1, proximity: 0.5, prior: 0.5 });
+    });
+    test('right-now / nearby boost proximity to full weight', () => {
+        expect(rankingWeights({ rightNow: true }).proximity).toBe(1);
+        expect(rankingWeights({ nearbyMode: true }).proximity).toBe(1);
+    });
+    test('romantic asks boost the quality prior and relax distance', () => {
+        const w = rankingWeights({ message: 'restaurant for our anniversary dinner' });
+        expect(w.prior).toBe(0.9);
+        expect(w.proximity).toBe(0.35);
+        expect(rankingWeights({ message: 'романтический ужин' }).prior).toBe(0.9);
     });
 });
 

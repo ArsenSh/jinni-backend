@@ -116,26 +116,30 @@ async function findPlaces(params = {}, deps = {}) {
     const withIds = candidates.map(c => ({ c, id: _idOf(c) }));
     const byId = new Map(withIds.map(({ c, id }) => [id, c]));
     const priorList = withIds.map(({ id }) => id);
+    // Intent-conditioned weights (tuning.rankingWeights): callers may shift
+    // what evidence matters per ask — right-now boosts proximity, romantic
+    // boosts the quality prior. Absent → the historical defaults.
+    const W = { lexical: 1, vector: 1, proximity: 0.5, prior: 0.5, ...(params.weights || {}) };
     const lists = [];
     if (query) {
         const lex = rankLexical(query, withIds.map(({ c, id }) => ({ id, text: c.text || c.name || '' })));
         provenance.lexical = lex.length;
-        if (lex.length) lists.push({ ids: lex.map(r => r.id), weight: 1 });
+        if (lex.length) lists.push({ ids: lex.map(r => r.id), weight: W.lexical });
         if (queryVector) {
             const vec = rankByVector(queryVector, withIds.map(({ c, id }) => ({ id, vector: c.vector })), 0.1);
-            if (vec.length) { lists.push({ ids: vec.map(r => r.id), weight: 1 }); provenance.vector = true; }
+            if (vec.length) { lists.push({ ids: vec.map(r => r.id), weight: W.vector }); provenance.vector = true; }
         }
     }
     const relevanceLists = lists.length;
     // Proximity evidence (tuning round): a distance-ordered list joins the
-    // blend at half weight — nearer places climb without any hard cutoff, and
-    // the effect scales with how far apart their prior ranks were.
+    // blend — nearer places climb without any hard cutoff, and the effect
+    // scales with how far apart their prior ranks were.
     const withDist = withIds.filter(({ c }) => Number.isFinite(c.distanceKm));
     if (withDist.length >= 2) {
-        lists.push({ ids: [...withDist].sort((a, b) => a.c.distanceKm - b.c.distanceKm).map(({ id }) => id), weight: 0.5 });
+        lists.push({ ids: [...withDist].sort((a, b) => a.c.distanceKm - b.c.distanceKm).map(({ id }) => id), weight: W.proximity });
         provenance.proximity = true;
     }
-    lists.push({ ids: priorList, weight: relevanceLists ? 0.5 : 1 });
+    lists.push({ ids: priorList, weight: relevanceLists ? W.prior : 1 });
     const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
     let ordered = fused.map(id => byId.get(id)).filter(Boolean);
 

@@ -64,4 +64,22 @@ function isRightNowAsk(message) {
     return RIGHT_NOW_LATIN_RE.test(m) || RIGHT_NOW_NONLATIN_RE.test(m);
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, LOCAL_DISCOVERY_CAP_KM };
+/* 4. Intent-conditioned fusion weights (the ChatGPT-essay §5 idea, adopted
+ * 2026-08-22): the ask's NATURE shifts what evidence matters. A "right now"
+ * ask cares where you ARE (proximity up); a romantic/special-occasion ask
+ * cares how GOOD the place is (quality prior up, distance matters less —
+ * nobody picks an anniversary dinner by walking distance). Defaults match
+ * the weights findPlaces has always used. Pure. */
+const ROMANTIC_RE = /\b(romantic|romance|anniversary|proposal|honeymoon|special occasion|celebrat\w*|impress)\b|романти|годовщин|юбилей/i;
+
+function rankingWeights({ rightNow = false, nearbyMode = false, message = '' } = {}) {
+    const romantic = ROMANTIC_RE.test(String(message || ''));
+    return {
+        lexical: 1,
+        vector: 1,
+        proximity: (rightNow || nearbyMode) ? 1 : romantic ? 0.35 : 0.5,
+        prior: romantic ? 0.9 : 0.5,
+    };
+}
+
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, LOCAL_DISCOVERY_CAP_KM };
