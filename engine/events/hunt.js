@@ -20,7 +20,8 @@ const { _fetchListingHtml } = require('../utils/safeFetch');
 const { normalizePlaceName } = require('../places/matching');
 const { aiEventToCandidate } = require('../places/eventStore');
 
-const MAX_PAGES = 3;     // fetched per hunt
+const MAX_PAGES = 3;     // fetched per hunt (search fallback)
+const MAX_CURATED = 8;   // registered sources read per hunt
 const MAX_STORE = 12;    // events stored per hunt
 
 function _fmtWindow(win) {
@@ -48,13 +49,40 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     const search = deps.searchWeb || searchWeb;
     const fetchHtml = deps.fetchHtml || _fetchListingHtml;
 
+    // Curated sources FIRST (Arsen 2026-08-23: "if there are 8 sources for
+    // instance in the location needed claude will not fill that database").
+    // Validator-registered pages for this city/country are read directly —
+    // free fetches, no paid search. Web search remains only the automatic
+    // fallback for locations nobody has curated ("one time claude search").
     const q = `events ${city} ${_fmtWindow(win)}`;
-    const urls = (await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null })).slice(0, MAX_PAGES);
+    let curated = [];
+    try {
+        // Real model only when Mongo is actually connected — a buffering
+        // mongoose query would hang the hunt (and every dep-injected test).
+        const EventSource = deps.EventSource
+            || (require('mongoose').connection.readyState === 1 ? require('../../models/EventSource') : null);
+        if (!EventSource) throw Object.assign(new Error('no DB connection'), { _quiet: true });
+        const cityRe = new RegExp(`^${String(city).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+        const or = [{ city: cityRe }];
+        if (country) {
+            const countryRe = new RegExp(`^${String(country).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+            or.push({ city: null, country: countryRe });
+        }
+        curated = await EventSource.find({ enabled: true, $or: or }).limit(MAX_CURATED).lean();
+    } catch (err) {
+        if (!err._quiet) console.warn(`[hunt] source registry unavailable: ${err.message}`);
+    }
+    const urls = curated.length
+        ? curated.map((s) => ({ url: s.url, _sourceId: s._id }))
+        : (await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null })).slice(0, MAX_PAGES);
+    if (curated.length) console.log(`[hunt] curated: reading ${curated.length} registered source(s) for ${city} — no web search`);
     if (!urls.length) return [];
 
     const wStart = new Date(win.start), wEnd = new Date(win.end);
     const found = [];
+    const sourceYield = new Map();                    // _sourceId → events read this hunt
     for (const u of urls) {
+        const beforeCount = found.length;
         try {
             const html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
             if (!html) continue;
@@ -107,7 +135,18 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         } catch (err) {
             console.warn(`[hunt] ${String(u.url).slice(0, 90)}: ${err.message}`);
         }
+        if (u._sourceId) sourceYield.set(String(u._sourceId), found.length - beforeCount);
         if (found.length >= MAX_STORE) break;
+    }
+    // Yield tracking: dead sources become visible in the staff list.
+    if (sourceYield.size) {
+        try {
+            const EventSource = deps.EventSource || require('../../models/EventSource');
+            await EventSource.bulkWrite([...sourceYield].map(([id, n]) => ({ updateOne: {
+                filter: { _id: id },
+                update: { $set: { lastReadAt: new Date(), lastFoundCount: n } },
+            } })), { ordered: false });
+        } catch { /* bookkeeping only */ }
     }
     if (!found.length) {
         console.log(`[hunt] "${q}" → 0 dated events on ${urls.length} page(s)`);

@@ -277,6 +277,58 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
     });
 });
 
+describe('curated source registry (validator URLs beat web search)', () => {
+    const HTML_LD = `<html><head><script type="application/ld+json">
+        {"@type":"Event","name":"Jazz Night","startDate":"2026-08-25T20:00:00"}
+        </script></head><body></body></html>`;
+    const _sources = (rows) => ({
+        find: () => ({ limit: () => ({ lean: async () => rows }) }),
+        bulkWrite: jest.fn(() => Promise.resolve()),
+    });
+
+    test('registered sources are read directly — web search never called', async () => {
+        const { huntEvents } = require('../engine/events/hunt');
+        const EventSource = _sources([{ _id: 'src1', url: 'https://tomsarkgh.am/en', name: 'Tomsarkgh' }]);
+        const searchWeb = jest.fn(async () => [{ url: 'https://should-not-be-used' }]);
+        const out = await huntEvents(
+            { city: 'Yerevan', country: 'Armenia', center: CENTER, window: parseEventWindow('next week', NOW) },
+            { AiFoundEvent: { bulkWrite: jest.fn(() => Promise.resolve()) }, EventSource, searchWeb,
+              fetchHtml: async () => HTML_LD, nowFn: () => NOW });
+        expect(searchWeb).not.toHaveBeenCalled();                        // "claude will not fill that database"
+        expect(out).toHaveLength(1);
+        const yieldOp = EventSource.bulkWrite.mock.calls[0][0][0].updateOne;
+        expect(yieldOp.filter._id).toBe('src1');
+        expect(yieldOp.update.$set.lastFoundCount).toBe(1);              // yield tracked
+    });
+
+    test('no registered sources → search fallback still works', async () => {
+        const { huntEvents } = require('../engine/events/hunt');
+        const searchWeb = jest.fn(async () => [{ url: 'https://found.by/search' }]);
+        const out = await huntEvents(
+            { city: 'Yerevan', center: CENTER, window: parseEventWindow('next week', NOW) },
+            { AiFoundEvent: { bulkWrite: jest.fn(() => Promise.resolve()) }, EventSource: _sources([]), searchWeb,
+              fetchHtml: async () => HTML_LD, nowFn: () => NOW });
+        expect(searchWeb).toHaveBeenCalledTimes(1);
+        expect(out).toHaveLength(1);
+    });
+
+    test('nightly sweep hunts each registered location with search hard-disabled', async () => {
+        const { sweepEventSources } = require('../engine/events/sourceSweep');
+        const calls = [];
+        const r = await sweepEventSources({
+            EventSource: { aggregate: async () => [
+                { _id: { city: 'Yerevan', country: 'Armenia' }, n: 2 },
+                { _id: { city: null, country: 'Armenia' }, n: 1 },       // country-wide source
+            ] },
+            huntEvents: async (args, deps) => { calls.push({ args, deps }); return [{}, {}]; },
+        });
+        expect(r).toEqual({ locations: 2, events: 4 });
+        expect(calls.map(c => c.args.city)).toEqual(['Yerevan', 'Armenia']);
+        expect(await calls[0].deps.searchWeb()).toEqual([]);             // cron can never spend a search
+        expect(calls[0].deps.timeoutMs).toBe(30000);                     // patient overnight reads
+    });
+});
+
 describe('event cards + facts', () => {
     test('toRecommendation passes eventSchedule through (frontend date row)', () => {
         const rec = toRecommendation(aiEventToCandidate(aiEvent(), CENTER), 0, { action: 'events' });

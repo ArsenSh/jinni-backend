@@ -777,6 +777,73 @@ const aiEventGate = (req, res, next) => {
     return res.status(403).json({ error: 'You do not have permission to review AI-found events' });
 };
 
+// ── EVENT SOURCES — the curated registry the hunt reads BEFORE any search ──
+// Validators register named listing pages per city/country ("Tomsarkgh —
+// tomsarkgh.am"); the hunt reads them directly (free) and the nightly sweep
+// keeps the shelf warm. Same gate as the events queue: the people who review
+// events curate where they come from.
+const EventSource = require('../models/EventSource');
+
+router.get('/event-sources', aiEventGate, async (req, res) => {
+    try {
+        const rows = await EventSource.find({}).sort({ country: 1, city: 1, name: 1 }).limit(500).lean();
+        res.json({ success: true, data: rows.filter(s => isWithinScope(req.user, { country: s.country, city: s.city })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/event-sources', aiEventGate, async (req, res) => {
+    try {
+        const { name, url, city, country } = req.body || {};
+        if (!name?.trim() || !url?.trim()) return res.status(400).json({ error: 'name and url are required' });
+        try {
+            const u = new URL(url.trim());
+            if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
+        } catch { return res.status(400).json({ error: 'url must be a valid http(s) address' }); }
+        if (!city?.trim() && !country?.trim()) return res.status(400).json({ error: 'city or country is required' });
+        if (!isWithinScope(req.user, { country: country?.trim() || null, city: city?.trim() || null })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        const row = await EventSource.create({
+            name: name.trim(), url: url.trim(),
+            city: city?.trim() || null, country: country?.trim() || null,
+            addedBy: req.user._id || req.user.id || null,
+        });
+        res.json({ success: true, data: row });
+    } catch (err) {
+        if (err.code === 11000) return res.status(409).json({ error: 'This url is already registered for that city' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.patch('/event-sources/:id', aiEventGate, async (req, res) => {
+    try {
+        const row = await EventSource.findById(req.params.id);
+        if (!row) return res.status(404).json({ error: 'Source not found' });
+        if (!isWithinScope(req.user, { country: row.country, city: row.city })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        for (const k of ['name', 'url', 'city', 'country']) {
+            if (typeof req.body?.[k] === 'string') row[k] = req.body[k].trim() || null;
+        }
+        if (typeof req.body?.enabled === 'boolean') row.enabled = req.body.enabled;
+        if (!row.name || !row.url) return res.status(400).json({ error: 'name and url are required' });
+        await row.save();
+        res.json({ success: true, data: row });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/event-sources/:id', aiEventGate, async (req, res) => {
+    try {
+        const row = await EventSource.findById(req.params.id);
+        if (!row) return res.status(404).json({ error: 'Source not found' });
+        if (!isWithinScope(req.user, { country: row.country, city: row.city })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        await row.deleteOne();
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/staff/ai-events?status=new|approved|hidden|all
 router.get('/ai-events', aiEventGate, async (req, res) => {
     try {

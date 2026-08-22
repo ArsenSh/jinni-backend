@@ -712,6 +712,21 @@ const runEmbedSweep = async () => {
 setTimeout(runEmbedSweep, 2 * 60 * 1000);   // post-boot top-up (give Mongo time)
 setInterval(runEmbedSweep, EMBED_SWEEP_MS);
 
+// ── Curated event-source sweep ───────────────────────────────────────────────
+// Reads every validator-registered EventSource with patient timeouts and
+// fills the AiFoundEvent shelf daily, so events are warm before anyone asks.
+// Never spends a paid web search (the sweep hard-stubs searchWeb).
+const SOURCE_SWEEP_MS = 24 * 60 * 60 * 1000;
+const runSourceSweep = async () => {
+    try {
+        const { sweepEventSources } = require('./engine/events/sourceSweep');
+        const r = await sweepEventSources();
+        if (r.locations > 0) logger.info(`[source-sweep] ${r.locations} location(s) → ${r.events} event(s)`);
+    } catch (err) { logger.warn(`[source-sweep] failed: ${err.message}`); }
+};
+setTimeout(runSourceSweep, 4 * 60 * 1000);  // post-boot (after Mongo + embedder)
+setInterval(runSourceSweep, SOURCE_SWEEP_MS);
+
 // ── Crash visibility & survival ──────────────────────────────────────────────
 // Previous version had two problems that made crashes invisible AND fatal:
 //   1. `logger.error('…:', err)` — winston often swallows an Error passed as
