@@ -16,37 +16,12 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { getEmbedder } = require('../engine/retrieval/embedder');
+// ONE definition of "what text a place embeds" — shared with the daily
+// in-server sweep (engine/retrieval/embedSweep.js), so new registrations
+// and this manual backfill can never drift apart.
+const { SOURCES } = require('../engine/retrieval/embedSweep');
 
 const APPLY = process.argv.includes('--apply');
-
-// Business.description is an object ({short, detailed}); Destination's is a
-// string — same normalization canonicalStore._descText applies at query time.
-const descText = (desc) => !desc ? null
-    : (typeof desc === 'string' ? desc : [desc.short, desc.detailed].filter(Boolean).join(' ') || null);
-
-const SOURCES = [
-    {
-        name: 'PlaceCache',
-        model: () => require('../models/PlaceCache'),
-        select: 'name primaryType types interests city embedding embeddingModel',
-        textOf: (d) => [d.name, d.primaryType, ...(d.types || []).slice(0, 6), ...(d.interests || []), d.city]
-            .filter(Boolean).join(' '),
-    },
-    {
-        name: 'Destination',
-        model: () => require('../models/Destination'),
-        select: 'name type description location.city embedding embeddingModel',
-        textOf: (d) => [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, descText(d.description)]
-            .filter(Boolean).join(' ').slice(0, 300),
-    },
-    {
-        name: 'Business',
-        model: () => require('../models/Business'),
-        select: 'name type description location.city embedding embeddingModel',
-        textOf: (d) => [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, descText(d.description)]
-            .filter(Boolean).join(' ').slice(0, 300),
-    },
-];
 
 (async () => {
     await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);

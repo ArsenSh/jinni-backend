@@ -275,6 +275,38 @@ describe('findPlaces orchestration (injected deps)', () => {
     });
 });
 
+describe('embedSweep (new registrations get vectors automatically)', () => {
+    const { sweepMissingEmbeddings } = require('../engine/retrieval/embedSweep');
+    test('embeds docs missing a vector, skips textless, records model', async () => {
+        const writes = [];
+        const fakeModel = {
+            find: () => ({ select: () => ({ limit: () => ({ lean: () => Promise.resolve([
+                { _id: 'b1', name: 'Zanzibar', type: ['restaurants'], location: { city: 'Yerevan' } },
+                { _id: 'b2', name: '' },   // textless → skipped
+            ]) }) }) }),
+            updateOne: async (q, u) => { writes.push({ q, u }); },
+        };
+        const r = await sweepMissingEmbeddings({
+            getEmbedder: async () => ({ model: 'fake-model', embed: async () => [[0.1, 0.2]] }),
+            sources: [{ name: 'Business', model: () => fakeModel, select: 'x',
+                textOf: (d) => [d.name, ...(d.type || []), d.location?.city].filter(Boolean).join(' ') }],
+        });
+        expect(r.embedded).toBe(1);
+        expect(r.skipped).toBe(1);
+        expect(writes[0].u.$set.embedding).toEqual([0.1, 0.2]);
+        expect(writes[0].u.$set.embeddingModel).toBe('fake-model');
+    });
+    test('no embedder / broken source → fail-open, zero embedded', async () => {
+        const r = await sweepMissingEmbeddings({ getEmbedder: async () => null });
+        expect(r.embedded).toBe(0);
+        const r2 = await sweepMissingEmbeddings({
+            getEmbedder: async () => ({ model: 'm', embed: async () => [[1]] }),
+            sources: [{ name: 'Boom', model: () => { throw new Error('db down'); }, select: '', textOf: () => 'x' }],
+        });
+        expect(r2.embedded).toBe(0);
+    });
+});
+
 describe('adaptive deck size (battery fix #2 — the padding lesson)', () => {
     const pool = () => [
         ...Array.from({ length: 9 }, (_, i) => ({ placeId: `r${i}`, name: `Rest ${i}`, text: `Rest ${i} armenian food`, source: 'cache' })),

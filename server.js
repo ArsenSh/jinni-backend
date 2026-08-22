@@ -695,6 +695,23 @@ if (AUCTION_SCHEDULER_ENABLED) {
     logger.info('⚖️  Zone Auction scheduler disabled via AUCTION_SCHEDULER_ENABLED=false');
 }
 
+// ── Embedding sweep (v2 corpus) ──────────────────────────────────────────────
+// A newly registered Business / validator Destination / fresh PlaceCache row
+// gets its semantic vector automatically: shortly after boot and then daily,
+// any doc missing an embedding for the current model is topped up. The
+// embedder is already resident (it embeds every v2 chat query), so a normal
+// sweep costs milliseconds. Fail-open — a sweep failure only logs.
+const EMBED_SWEEP_MS = 24 * 60 * 60 * 1000;
+const runEmbedSweep = async () => {
+    try {
+        const { sweepMissingEmbeddings } = require('./engine/retrieval/embedSweep');
+        const r = await sweepMissingEmbeddings();
+        if (r.embedded > 0) logger.info(`[embed] sweep: +${r.embedded} embedded ${JSON.stringify(r.bySource)}`);
+    } catch (err) { logger.warn(`[embed] sweep failed: ${err.message}`); }
+};
+setTimeout(runEmbedSweep, 2 * 60 * 1000);   // post-boot top-up (give Mongo time)
+setInterval(runEmbedSweep, EMBED_SWEEP_MS);
+
 // ── Crash visibility & survival ──────────────────────────────────────────────
 // Previous version had two problems that made crashes invisible AND fatal:
 //   1. `logger.error('…:', err)` — winston often swallows an Error passed as
