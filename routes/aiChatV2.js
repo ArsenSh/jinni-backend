@@ -252,8 +252,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // contributes nothing to relevance; "suggest historical places" does.
             const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
             const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
+            // Events: the asked PERIOD rules the window ("upcoming weekend"
+            // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
+            // engine no longer serves a blind next-14-days slice).
+            const eventWindow = category === 'events'
+                ? require('../engine/places/eventStore').parseEventWindow(message)
+                : null;
             const result = await findPlaces({
                 query: retrievalQuery,
+                eventWindow,
                 // Clean intent query only — drives the fallback's "demanded term
                 // with zero owned matches" check (the Uzbek lesson); enriched
                 // chat tokens must never trigger paid searches.
@@ -390,7 +397,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+ws' : ''}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
             }
         }
     } catch (err) {

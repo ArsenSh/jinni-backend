@@ -23,10 +23,50 @@
 
 const { haversineKm } = require('../utils/geo');
 
-const EVENT_HORIZON_DAYS = 14;   // "upcoming week" asks with margin
+const EVENT_HORIZON_DAYS = 14;   // default window when the ask names no period
 const MAX_AI_ROWS = 80;
 
 function _dayStartUTC(now) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); return d; }
+
+// ── Asked-period parsing (Arsen 2026-08-22: "for upcoming weekend not — it
+//    automatically finds the next 7 day period only"). The WINDOW comes from
+//    the ask itself: tonight ⇒ rest of today, weekend ⇒ the actual Sat–Sun,
+//    next week ⇒ Mon–Sun after this one. Six app languages; Latin \b group +
+//    boundary-free non-Latin group (the Cyrillic lesson). Day math is UTC —
+//    at day granularity the ±4h Yerevan offset only matters at midnight edges.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const _RE_TODAY = /\b(today|tonight|this evening|ce soir|aujourd'hui)\b|сегодня|вечером|今天|今晚|اليوم|الليلة|այսօր|այս երեկո/i;
+const _RE_TOMORROW = /\b(tomorrow|demain)\b|завтра|明天|غدا|غداً|վաղը/i;
+const _RE_WEEKEND = /\b(weekend|week-end)\b|выходн|уик-?энд|周末|نهاية الأسبوع|ուիքենդ|հանգստյան օր/i;
+const _RE_NEXT_WEEK = /\bnext week\b|\bla semaine prochaine\b|следующ\S* недел|на той неделе|下周|下星期|الأسبوع القادم|հաջորդ շաբաթ/i;
+
+/** What period does the message ask about? → {start, end, label} (UTC). */
+function parseEventWindow(message, now = Date.now()) {
+    const msg = String(message || '');
+    const today = _dayStartUTC(new Date(now));
+    const endOfDay = (d) => new Date(d.getTime() + DAY_MS - 1);
+    if (_RE_TODAY.test(msg)) return { start: new Date(now), end: endOfDay(today), label: 'today' };
+    if (_RE_TOMORROW.test(msg)) {
+        const t = new Date(today.getTime() + DAY_MS);
+        return { start: t, end: endOfDay(t), label: 'tomorrow' };
+    }
+    if (_RE_WEEKEND.test(msg)) {
+        // Upcoming Sat–Sun; already inside the weekend ⇒ now through Sunday.
+        const dow = today.getUTCDay();                        // 0 Sun … 6 Sat
+        const daysToSat = dow === 0 ? -1 : (6 - dow);          // Sunday counts as ongoing weekend
+        const sat = new Date(today.getTime() + Math.max(0, daysToSat) * DAY_MS);
+        const sun = new Date(sat.getTime() + (dow === 0 ? 0 : DAY_MS));
+        const start = (dow === 0 || dow === 6) ? new Date(now) : sat;
+        return { start, end: endOfDay(sun), label: 'weekend' };
+    }
+    if (_RE_NEXT_WEEK.test(msg)) {
+        const dow = today.getUTCDay();
+        const daysToNextMon = ((8 - dow) % 7) || 7;
+        const mon = new Date(today.getTime() + daysToNextMon * DAY_MS);
+        return { start: mon, end: endOfDay(new Date(mon.getTime() + 6 * DAY_MS)), label: 'next-week' };
+    }
+    return { start: new Date(now), end: new Date(now + EVENT_HORIZON_DAYS * DAY_MS), label: 'default' };
+}
 
 function _dist(center, lat, lng) {
     return (center && lat != null && lng != null)
@@ -96,16 +136,19 @@ async function loadEventCandidates(params = {}, deps = {}) {
     const AiFoundEvent = deps.AiFoundEvent || require('../../models/AiFoundEvent');
     const Destination = deps.Destination || require('../../models/Destination');
     const now = deps.nowFn ? new Date(deps.nowFn()) : new Date();
-    const horizon = new Date(now.getTime() + EVENT_HORIZON_DAYS * 86400000);
-    const today = _dayStartUTC(now);
+    // The asked period rules the query (params.eventWindow from the route's
+    // parseEventWindow); absent ⇒ the default now→+14d horizon.
+    const win = params.eventWindow || parseEventWindow('', now.getTime());
+    const wStart = new Date(win.start), wEnd = new Date(win.end);
+    const wStartDay = _dayStartUTC(wStart);
 
     const [destRows, aiRows] = await Promise.all([
         Destination.find({ type: 'events' }).lean()
             .catch(err => { console.warn('[events] destination tier failed:', err.message); return []; }),
         AiFoundEvent.find({
             status: 'new',
-            startDate: { $lte: horizon },
-            $or: [{ endDate: { $gte: now } }, { endDate: null, startDate: { $gte: today } }],
+            startDate: { $lte: wEnd },
+            $or: [{ endDate: { $gte: wStart } }, { endDate: null, startDate: { $gte: wStartDay } }],
         }).limit(MAX_AI_ROWS).lean()
             .catch(err => { console.warn('[events] pipeline tier failed:', err.message); return []; }),
     ]);
@@ -118,8 +161,8 @@ async function loadEventCandidates(params = {}, deps = {}) {
         if (!s || (!s.startDate && !s.isRecurring)) continue;
         if (!s.isRecurring) {
             const end = new Date(s.endDate || s.startDate);
-            if (end.getTime() < now.getTime()) continue;                        // ended
-            if (s.startDate && new Date(s.startDate) > horizon) continue;       // too far out
+            if (end.getTime() < wStart.getTime()) continue;                     // over before the window
+            if (s.startDate && new Date(s.startDate) > wEnd) continue;          // starts after the window
         }
         out.push(destEventToCandidate(d, center));
     }
@@ -146,4 +189,4 @@ async function loadEventCandidates(params = {}, deps = {}) {
     return within;
 }
 
-module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, EVENT_HORIZON_DAYS };
+module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, parseEventWindow, EVENT_HORIZON_DAYS };

@@ -1,7 +1,7 @@
 // Engine events tier (battery fix #1) — owned-data events candidates.
 // Fake models, fixed clock — no DB, no network.
 
-const { loadEventCandidates, aiEventToCandidate, EVENT_HORIZON_DAYS } = require('../engine/places/eventStore');
+const { loadEventCandidates, aiEventToCandidate, parseEventWindow, EVENT_HORIZON_DAYS } = require('../engine/places/eventStore');
 const { toRecommendation } = require('../engine/narrator/cards');
 const { placeFactLine } = require('../engine/narrator/prompts/grounded');
 
@@ -78,6 +78,43 @@ describe('loadEventCandidates', () => {
 
     test('no center → no candidates (events need a where)', async () => {
         expect(await loadEventCandidates({ center: null }, deps([destEvent()], [aiEvent()]))).toEqual([]);
+    });
+});
+
+describe('parseEventWindow (the asked period rules)', () => {
+    // NOW is Sat Aug 22 2026 12:00 UTC (see top).
+    test('weekend from mid-weekend → now through Sunday; from a Wednesday → next Sat–Sun', () => {
+        const w = parseEventWindow('things to do this weekend', NOW);
+        expect(w.label).toBe('weekend');
+        expect(w.start.getTime()).toBe(NOW);                                  // already Saturday
+        expect(w.end.getUTCDay()).toBe(0);                                    // ends Sunday
+        const wed = Date.UTC(2026, 7, 19, 12, 0, 0);                          // Wed Aug 19
+        const w2 = parseEventWindow('на выходных куда сходить', wed);
+        expect(w2.start.getUTCDay()).toBe(6);                                 // next Saturday
+        expect(w2.end.getUTCDay()).toBe(0);
+    });
+    test('tonight / tomorrow / next week / default', () => {
+        expect(parseEventWindow('concerts tonight', NOW).label).toBe('today');
+        expect(parseEventWindow('что завтра?', NOW).label).toBe('tomorrow');
+        expect(parseEventWindow('events next week', NOW).label).toBe('next-week');
+        const d = parseEventWindow('suggest events', NOW);
+        expect(d.label).toBe('default');
+        expect(d.end.getTime() - d.start.getTime()).toBe(EVENT_HORIZON_DAYS * 24 * 3600 * 1000);
+    });
+    test('loadEventCandidates honors the window — weekend ask excludes Tuesday and Thursday events', async () => {
+        const rows = [
+            aiEvent({ name: 'SatConcert', startDate: new Date(NOW + 6 * 3600 * 1000) }),        // tonight (Sat)
+            aiEvent({ name: 'SunParty', startDate: new Date(Date.UTC(2026, 7, 23, 11)) }),      // Sunday
+            aiEvent({ name: 'TueSymphony', startDate: new Date(NOW + 3 * DAY) }),               // Tuesday
+            aiEvent({ name: 'ThuAnime', startDate: new Date(NOW + 5 * DAY) }),                  // Thursday
+        ];
+        // Fake model returns everything; the JS-side dest filter + the window
+        // math on aiRows happens in Mongo normally — here assert via the
+        // query the store builds:
+        await loadEventCandidates(
+            { center: CENTER, eventWindow: parseEventWindow('this weekend', NOW) },
+            deps([], rows));
+        expect(aiModel.lastQuery.startDate.$lte.getUTCDay()).toBe(0);          // capped at Sunday
     });
 });
 
