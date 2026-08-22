@@ -198,8 +198,13 @@ async function loadCandidates(params = {}, deps = {}) {
     } = params;
     if (!center || center.lat == null || center.lng == null) return [];
     // Events are never served from the place cache (a cached venue is not a
-    // dated event) — the events pipeline owns that category end to end.
-    if (category === 'events') return [];
+    // dated event) — the OWNED events tier serves them instead: validator
+    // Destinations typed 'events' + moderated AiFoundEvent pipeline finds
+    // (battery fix #1, 2026-08-22 — this used to `return []` and every
+    // events ask hit the empty-scaffold error).
+    if (category === 'events') {
+        return require('./eventStore').loadEventCandidates(params, deps);
+    }
 
     // ── Cache tier ──
     let cacheDocs = [];
@@ -277,7 +282,12 @@ async function loadCandidates(params = {}, deps = {}) {
     // the intent's CLEAN coreQuery only, never the enriched chat tokens
     // ("girlfriend", "acquainted" must not trigger paid searches).
     const wanted = Math.min(Math.max(Number(params.count) || 8, 1), 20);
-    const missing = uncoveredQueryTokens(params.coreQuery, merged);
+    // Category words never justify a PAID search: on a cat=historical request
+    // the token "historical" is already answered by the category filter itself
+    // (caught live 2026-08-22: fallback bought 3 places for "uncovered:
+    // historical" while 22 owned historical candidates sat in the pool).
+    const missing = uncoveredQueryTokens(params.coreQuery, merged)
+        .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
     if ((merged.length < wanted || missing.length) && (params.query || category)) {
         try {
             const extra = await googleFallback({

@@ -28,15 +28,19 @@ const VIEW_TTL_MS = SEEN_WINDOW_MS;
 
 // Rank nudges, in positions on the fused order. Liked beats saved (an explicit
 // vote beats a bookmark); they stack for a place that is both. The seen-sink
-// GROWS with repeat shows (Arsen 2026-08-22: "each time nothing new, same 6
-// results" — a place shown 4 times unliked should make room), is capped at 4
-// positions, and NEVER applies to liked/saved places, so fatigue can't
-// outweigh affection. The epsilon makes any fatigue sink STRICTLY — without
-// it a fresh-watched place ties the next rank and stability keeps it up.
+// GROWS with repeat shows and is strong on purpose (Arsen 2026-08-22, twice:
+// "each time nothing new, same 6 results ... in new session it recommends
+// exactly same things, but 28 candidates it has") — a place seen and not
+// acted on should genuinely LEAVE the front row while unseen candidates wait.
+// Guardrails that keep this a nudge, not a hijack: liked/saved places are
+// immune, the demand-seat guarantee (specific asks) runs after taste, and the
+// sink caps at 10 positions so nothing is ever hidden — just deprioritized.
+// The epsilon makes any fatigue sink STRICTLY — without it a fresh-watched
+// place ties the next rank and stability keeps it up.
 const LIKED_BOOST = 2.5;
 const SAVED_BOOST = 1.5;
-const SEEN_SINK_MAX = 4.0;
-const SEEN_PENALTY_MAX = 6.0;   // watched(3) + repeat-show bonus, see loadTaste
+const SEEN_SINK_MAX = 10.0;
+const SEEN_PENALTY_MAX = 8.0;   // clamp: watched(3) + repeat-show bonus (cap +5)
 
 /**
  * Load the user's complete taste profile in one parallel pass.
@@ -84,9 +88,10 @@ async function loadTaste(userId, deps = {}) {
         const freshness = Math.max(0, 1 - age / SEEN_WINDOW_MS);   // 1 = just seen, 0 = old
         const base = v.status === 'watched' ? SEEN_WATCHED_MAX : SEEN_SHOWN_MAX;
         // Repeat shows compound: each extra unacted appearance adds fatigue
-        // (+0.5, capped), so identical asks rotate the deck instead of
-        // replaying it. Age-decayed like the base — old repetition is forgiven.
-        const repeats = Math.min(6, Math.max(0, (v.shownCount || 1) - 1)) * 0.5;
+        // (+1 per repeat, capped at +5), so identical asks rotate the deck
+        // instead of replaying it. Age-decayed like the base — old repetition
+        // is forgiven.
+        const repeats = Math.min(5, Math.max(0, (v.shownCount || 1) - 1));
         const pen = (base + repeats) * freshness;
         if (pen > 0) seen.set(v.placeId, Math.min(SEEN_PENALTY_MAX, pen));
     }
@@ -150,7 +155,7 @@ function tasteAdjust(ordered, taste) {
         if (!isLiked && !isSaved && taste.seen?.size) {
             for (const k of keys) {
                 const pen = taste.seen.get(k);
-                if (pen) { score += Math.min(SEEN_SINK_MAX, (pen / SEEN_PENALTY_MAX) * SEEN_SINK_MAX) + 1e-3; break; }
+                if (pen) { score += Math.min(SEEN_SINK_MAX, pen * 2) + 1e-3; break; }
             }
         }
         return { c, score, i };

@@ -11,6 +11,9 @@ function placeFactLine(p) {
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
         p.source === 'destination' ? 'verified by Jinni staff' : null,
+        // Event date — the ONE fact that makes an event an event. English
+        // weekday/month; the narrator renders it in the reply language.
+        p.eventSchedule?.startDate ? `event on ${new Date(p.eventSchedule.startDate).toUTCString().slice(0, 16)}` : null,
         // Personal-taste facts (personalization/taste.js annotations): honest,
         // user-visible memory — "you saved this one" is delight, not ads.
         // One line max: an explicit like outranks the bookmark mention.

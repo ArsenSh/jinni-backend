@@ -111,9 +111,16 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
         coverage: async () => false,     // fallback off unless a test enables it
     });
 
-    test('no center → []; events → [] (events pipeline owns that category)', async () => {
+    test('no center → []; events delegate to the events tier, never the cache', async () => {
         expect(await loadCandidates({}, fakes([], {}))).toEqual([]);
-        expect(await loadCandidates({ category: 'events', center: CENTER }, fakes([cacheDoc()], {}))).toEqual([]);
+        // Events branch (2026-08-22): served by eventStore (owned event data),
+        // NOT by cached venues — a cache doc must not leak into an events ask.
+        const evDeps = {
+            ...fakes([cacheDoc()], {}),
+            Destination: { find: () => ({ lean: () => Promise.resolve([]) }) },
+            AiFoundEvent: { find: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) },
+        };
+        expect(await loadCandidates({ category: 'events', center: CENTER }, evDeps)).toEqual([]);
     });
 
     test('gates: photo-less, out-of-radius and community-rejected docs drop; validator first', async () => {

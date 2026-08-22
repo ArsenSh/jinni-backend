@@ -253,9 +253,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }, { loadCandidates });
             meta.provenance = result.provenance;
             if (result.degraded || !result.places.length) {
-                reply = '🧪 V2: I don\'t have verified places for that here yet — my owned-data corpus is thin '
-                      + 'in this area (V1 would reach for Google; that tier isn\'t wired into V2 yet). '
-                      + 'Try a broader ask, or switch to V1.';
+                // Honest empty (copy refreshed 2026-08-22 — the old text
+                // claimed the Google tier wasn't wired; it is, and events now
+                // serve from owned data too. Reaching here means every source
+                // genuinely came up dry for this ask+area).
+                reply = category === 'events'
+                    ? '🧪 V2: I don\'t have any verified upcoming events for this area in my listings right now. Try asking again closer to the date, or ask me for places instead.'
+                    : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.';
                 send(res, { type: 'token', content: reply });
             } else {
                 const weather = await weatherPromise;   // resolved long ago or null

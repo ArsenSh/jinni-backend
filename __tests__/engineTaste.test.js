@@ -65,8 +65,8 @@ describe('loadTaste', () => {
             ]),
         }));
         expect(t.seen.get('once')).toBeCloseTo(1.5, 1);
-        expect(t.seen.get('five')).toBeCloseTo(3.5, 1);   // 1.5 + 4×0.5
-        expect(t.seen.get('many')).toBe(6);               // capped
+        expect(t.seen.get('five')).toBeCloseTo(5.5, 1);   // 1.5 + 4×1
+        expect(t.seen.get('many')).toBe(8);               // clamped
     });
 
     test('fail-open: one broken source still yields the others', async () => {
@@ -118,10 +118,10 @@ describe('tasteAdjust', () => {
         expect(savedOnly.find(c => c.placeId === 'p5')._tasteSaved).toBe(true);
     });
 
-    test('oft-seen-unacted sinks; a liked place never sinks for being seen', () => {
-        const seen = new Map([['p0', 3.0], ['p1', 3.0]]);
+    test('oft-seen-unacted sinks below ALL unseen peers; liked never sinks', () => {
+        const seen = new Map([['p0', 3.0], ['p1', 3.0]]);   // watched-fresh → sink 6
         const sunk = tasteAdjust(mk(4), { liked: new Map(), saved: new Map(), seen });
-        expect(sunk.map(c => c.placeId)).toEqual(['p2', 'p0', 'p3', 'p1']);   // seen p0/p1 sink strictly below unseen peers
+        expect(sunk.map(c => c.placeId)).toEqual(['p2', 'p3', 'p0', 'p1']);   // fresh first, seen to the back
         const loved = tasteAdjust(mk(4), { liked: new Map([['p0', '']]), saved: new Map(), seen });
         expect(loved[0].placeId).toBe('p0');   // liked → boost, no fatigue
     });

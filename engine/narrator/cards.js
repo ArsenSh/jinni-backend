@@ -75,7 +75,9 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         appearsInline: true,
         isStreaming: false,
         ...(nearbyMode && place.distanceKm != null && { distance: `${place.distanceKm.toFixed(1)} km` }),
-        eventSchedule: null,
+        // Present ⇒ the frontend's isEventRec() renders the date row on the
+        // card (v1's exact contract). Event candidates carry it; places don't.
+        eventSchedule: place.eventSchedule || null,
         _isExpired: false,
         _action: action || 'general',
         metadata: {
