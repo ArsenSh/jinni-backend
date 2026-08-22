@@ -32,6 +32,7 @@ const { PLACE_DETAILS_TOOL, makeExecutors } = require('../engine/narrator/tools'
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
+const { loadTaste, dislikeExcludes, recordViews } = require('../engine/personalization/taste');
 
 router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     const { message, location = null, userTimezone = null, nearbyMode = false, sessionId = null } = req.body || {};
@@ -59,26 +60,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     const recentTurns = recentTurnsFromMessages(sessionPeek?.messages);
     const shown = shownFromMessages(sessionPeek?.messages);
 
-    // ── Per-user dislikes → excludes (caught live 2026-08-22: a place disliked
-    //    in an earlier session reappeared). v1 semantics mirrored: latest vote
-    //    per placeId wins; a dislike means "stop suggesting this", NOT "refuse
-    //    to discuss it" — a place the user names right now is never hidden.
-    //    Fail-open: a broken vote load never fails the turn. ──
+    // ── Personal taste, one load for the whole turn (grown 2026-08-22 from the
+    //    dislikes-only block): likes + saves + cross-session seen history +
+    //    dislikes. Dislikes stay EXCLUDES (latest vote per place wins, and the
+    //    direct-ask exception holds — a place the user names right now is never
+    //    hidden); likes/saves/seen become a soft rank nudge inside retrieval
+    //    and honest narrator facts ("you saved this one"). These collections
+    //    outlive deleted chat sessions by design. Fail-open: a broken signal
+    //    load costs personalization, never the turn. ──
+    let taste = null;
     try {
-        const PlaceFeedback = require('../models/PlaceFeedback');
-        const voteRows = await PlaceFeedback.find({ userId: req.user.id })
-            .sort({ updatedAt: -1 }).select('placeId vote name').lean();
-        const latestByPlace = new Map();
-        for (const r of voteRows) if (!latestByPlace.has(r.placeId)) latestByPlace.set(r.placeId, r);
-        const msgLowerVotes = String(message || '').toLowerCase();
-        for (const [pid, r] of latestByPlace) {
-            if (r.vote !== 'dislike') continue;
-            if (r.name && messageNamesPlace(msgLowerVotes, r.name)) continue;   // direct-ask exception
-            shown.placeIds.push(pid);
-            if (r.name) shown.names.push(r.name);
-        }
-    } catch (pfErr) {
-        console.warn('[v2] PlaceFeedback dislike load failed:', pfErr.message);
+        taste = await loadTaste(req.user.id);
+        const ex = dislikeExcludes(taste, message);
+        shown.placeIds.push(...ex.placeIds);
+        shown.names.push(...ex.names);
+    } catch (tasteErr) {
+        console.warn('[v2] taste load failed:', tasteErr.message);
     }
 
     // ── Usage gate (caught 2026-08-22: a whole V2 evening barely moved the
@@ -227,6 +224,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // proximity up; romantic/special → quality prior up.
                 weights: rankingWeights({ rightNow, nearbyMode, message }),
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
+                // Likes/saves climb, oft-seen-unacted sinks — a nudge on the
+                // fused order, never a filter (personalization/taste.js).
+                taste,
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
             meta.provenance = result.provenance;
@@ -294,6 +294,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode, description: hoisted.blurbs[i] || null }));
+                // Remember what this turn showed (fire-and-forget) — feeds the
+                // cross-session novelty signal, and survives session deletion.
+                recordViews(req.user.id, recommendations, category);
                 // ── Live card birth + description TYPING (v1's protocol):
                 //    streaming_recommendation creates each card immediately
                 //    (photo + name — better than v1's "Searching…" shells),
@@ -317,7 +320,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} cacheHit=${result.provenance.cacheHit}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit}`);
             }
         }
     } catch (err) {

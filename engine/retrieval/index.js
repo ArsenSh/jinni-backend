@@ -15,6 +15,7 @@
 //   preferences,     // { interests, travelStyle, budget } — user's saved prefs
 //   timeContext,     // from contextEngine.buildTimeContext (optional)
 //   enforceOpenNow,  // drop KNOWN-closed places for droppable categories (right-now asks)
+//   taste,           // loadTaste() profile (likes/saves/seen) — soft rank nudge
 //   excludes,        // { names: [], placeIds: [] } — already-shown this session
 //   count,           // requested card count
 //   tapState,        // 'first' | 'refill'
@@ -142,6 +143,16 @@ async function findPlaces(params = {}, deps = {}) {
     lists.push({ ids: priorList, weight: relevanceLists ? W.prior : 1 });
     const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
     let ordered = fused.map(id => byId.get(id)).filter(Boolean);
+
+    // ── Personal taste (nudge, never hijack — see personalization/taste.js):
+    //    liked/saved climb a few fused positions, oft-seen-never-acted sinks a
+    //    little. Runs BEFORE the demand-seat hoist so that guarantee stays on
+    //    top, and annotates _tasteLiked/_tasteSaved for the narrator. ──
+    if (params.taste) {
+        const { tasteAdjust } = require('../personalization/taste');
+        ordered = tasteAdjust(ordered, params.taste);
+        provenance.taste = true;
+    }
 
     // ── Demanded-term guarantee (the sushi lesson, 2026-08-22): when the clean
     //    query names something RARE in the pool (sushi, uzbek — ≤25% of

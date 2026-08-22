@@ -11,6 +11,11 @@ function placeFactLine(p) {
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
         p.source === 'destination' ? 'verified by Jinni staff' : null,
+        // Personal-taste facts (personalization/taste.js annotations): honest,
+        // user-visible memory — "you saved this one" is delight, not ads.
+        // One line max: an explicit like outranks the bookmark mention.
+        p._tasteLiked ? 'the traveler liked this place before'
+            : (p._tasteSaved ? 'the traveler has saved this place' : null),
         // Deliberately NOT told to the model (decision 2026-08-22): the partner
         // relationship is disclosed by the card BADGE, never by narration —
         // "a Jinni partner" in prose reads as advertising and burns blurb words
