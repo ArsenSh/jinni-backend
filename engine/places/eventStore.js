@@ -44,38 +44,77 @@ const _RE_NEXT_WEEK = /\bnext week\b|\bla semaine prochaine\b|следующ\S* 
 // "what if user asks for next 3 days?"). Capture the number, cap at 30.
 const _RE_N_DAYS = /(?:next|coming|следующие|ближайшие|prochains?|القادمة|առաջիկա|未来|接下来)\D{0,6}?(\d{1,2})\s*(?:days?|дня|дней|день|jours?|أيام|يوم|օր|天)|(\d{1,2})\s*(?:days?|дня|дней|jours?|أيام|օր|天)/i;
 
-/** What period does the message ask about? → {start, end, label} (UTC). */
-function parseEventWindow(message, now = Date.now()) {
-    const msg = String(message || '');
-    const today = _dayStartUTC(new Date(now));
-    const endOfDay = (d) => new Date(d.getTime() + DAY_MS - 1);
-    if (_RE_TODAY.test(msg)) return { start: new Date(now), end: endOfDay(today), label: 'today' };
-    if (_RE_TOMORROW.test(msg)) {
+const _endOfDay = (d) => new Date(d.getTime() + DAY_MS - 1);
+
+// Shared date math — one implementation serves BOTH the AI brain
+// (windowFromPeriod: the intent model NAMES the period, this code computes
+// and clamps it) and the regex fallback (parseEventWindow).
+const _WINDOWS = {
+    today: (now, today) => ({ start: new Date(now), end: _endOfDay(today), label: 'today' }),
+    tomorrow: (now, today) => {
         const t = new Date(today.getTime() + DAY_MS);
-        return { start: t, end: endOfDay(t), label: 'tomorrow' };
-    }
-    if (_RE_WEEKEND.test(msg)) {
+        return { start: t, end: _endOfDay(t), label: 'tomorrow' };
+    },
+    weekend: (now, today) => {
         // Upcoming Sat–Sun; already inside the weekend ⇒ now through Sunday.
         const dow = today.getUTCDay();                        // 0 Sun … 6 Sat
         const daysToSat = dow === 0 ? -1 : (6 - dow);          // Sunday counts as ongoing weekend
         const sat = new Date(today.getTime() + Math.max(0, daysToSat) * DAY_MS);
         const sun = new Date(sat.getTime() + (dow === 0 ? 0 : DAY_MS));
         const start = (dow === 0 || dow === 6) ? new Date(now) : sat;
-        return { start, end: endOfDay(sun), label: 'weekend' };
-    }
-    if (_RE_NEXT_WEEK.test(msg)) {
+        return { start, end: _endOfDay(sun), label: 'weekend' };
+    },
+    nextWeek: (now, today) => {
         const dow = today.getUTCDay();
         const daysToNextMon = ((8 - dow) % 7) || 7;
         const mon = new Date(today.getTime() + daysToNextMon * DAY_MS);
-        return { start: mon, end: endOfDay(new Date(mon.getTime() + 6 * DAY_MS)), label: 'next-week' };
+        return { start: mon, end: _endOfDay(new Date(mon.getTime() + 6 * DAY_MS)), label: 'next-week' };
+    },
+    nDays: (now, today, n) => ({
+        // "next 3 days" = today, tomorrow, the day after.
+        start: new Date(now), end: _endOfDay(new Date(today.getTime() + (n - 1) * DAY_MS)), label: `next-${n}-days`,
+    }),
+};
+
+/**
+ * The AI-brain path (Arsen 2026-08-23: "ai should understand itself... gas
+ * and brake pedals"): the intent model names a validated period string —
+ * today | tomorrow | weekend | next_week | Ndays | YYYY-MM-DD..YYYY-MM-DD —
+ * and this deterministic code turns it into a clamped window. null ⇒ caller
+ * falls back to the regex parser.
+ */
+function windowFromPeriod(period, now = Date.now()) {
+    if (!period || typeof period !== 'string') return null;
+    const p = period.trim().toLowerCase();
+    const today = _dayStartUTC(new Date(now));
+    if (p === 'today') return _WINDOWS.today(now, today);
+    if (p === 'tomorrow') return _WINDOWS.tomorrow(now, today);
+    if (p === 'weekend') return _WINDOWS.weekend(now, today);
+    if (p === 'next_week') return _WINDOWS.nextWeek(now, today);
+    const nd = p.match(/^(\d{1,2})days$/);
+    if (nd) return _WINDOWS.nDays(now, today, Math.min(30, Math.max(1, Number(nd[1]))));
+    const rng = p.match(/^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/);
+    if (rng) {
+        const start = new Date(`${rng[1]}T00:00:00Z`);
+        const end = new Date(`${rng[2]}T23:59:59Z`);
+        // Brakes: valid dates, ordered, not in the past, span ≤ 90 days.
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+        if (end < start || end.getTime() < now || (end - start) > 90 * DAY_MS) return null;
+        return { start: start.getTime() < now ? new Date(now) : start, end, label: `range-${rng[1]}` };
     }
+    return null;
+}
+
+/** Regex FALLBACK (LLM-timeout path): what period does the message ask about? */
+function parseEventWindow(message, now = Date.now()) {
+    const msg = String(message || '');
+    const today = _dayStartUTC(new Date(now));
+    if (_RE_TODAY.test(msg)) return _WINDOWS.today(now, today);
+    if (_RE_TOMORROW.test(msg)) return _WINDOWS.tomorrow(now, today);
+    if (_RE_WEEKEND.test(msg)) return _WINDOWS.weekend(now, today);
+    if (_RE_NEXT_WEEK.test(msg)) return _WINDOWS.nextWeek(now, today);
     const nd = msg.match(_RE_N_DAYS);
-    if (nd) {
-        const n = Math.min(30, Math.max(1, Number(nd[1] || nd[2])));
-        // "next 3 days" = today, tomorrow, the day after — now through the
-        // end of day (n-1) ahead.
-        return { start: new Date(now), end: endOfDay(new Date(today.getTime() + (n - 1) * DAY_MS)), label: `next-${n}-days` };
-    }
+    if (nd) return _WINDOWS.nDays(now, today, Math.min(30, Math.max(1, Number(nd[1] || nd[2]))));
     return { start: new Date(now), end: new Date(now + EVENT_HORIZON_DAYS * DAY_MS), label: 'default' };
 }
 
@@ -200,4 +239,4 @@ async function loadEventCandidates(params = {}, deps = {}) {
     return within;
 }
 
-module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, parseEventWindow, EVENT_HORIZON_DAYS };
+module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, parseEventWindow, windowFromPeriod, EVENT_HORIZON_DAYS };

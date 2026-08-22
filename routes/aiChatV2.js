@@ -191,10 +191,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    knows what "other results" means: re-run the PREVIOUS ask's query
         //    (this message's own words are junk for retrieval), everything
         //    already shown is excluded, and the asked count is honored. ──
+        // The BRAIN decides first (Arsen 2026-08-23: "ai should understand
+        // itself... gas and brake pedals"): intent.refill is the LLM's read
+        // of the conversation; the regex is the LLM-timeout fallback.
         const refill = parseRefillAsk(message);
         const prevUserAsk = [...recentTurns].reverse()
             .find(t => t.sender === 'user' && t.text && t.text !== message)?.text || null;
-        const refillActive = refill.isRefill && !namedCard && sessionCards.length > 0 && !!prevUserAsk;
+        const refillActive = (intent.refill === true || refill.isRefill)
+            && !namedCard && sessionCards.length > 0 && !!prevUserAsk;
         if (refillActive) {
             if (!intent.isTravel) intent.isTravel = true;
             if (!intent.searchQuery || (intent.actionType || 'general') === 'general') {
@@ -255,13 +259,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).
-            // Refill turns inherit the PREVIOUS ask's window too ("other ones
-            // please" after a next-week ask means other NEXT-WEEK events —
-            // caught live 2026-08-23: the refill fell back to the default
-            // window and served this-week events as "others").
+            // The asked PERIOD: the intent model NAMES it (period field —
+            // handles any phrasing in any language, inherits across
+            // follow-ups); eventStore.windowFromPeriod does the clamped date
+            // math. The regex parser remains the LLM-timeout fallback, with
+            // refill turns inheriting the previous ask's words.
+            const _ev = require('../engine/places/eventStore');
             const eventWindow = category === 'events'
-                ? require('../engine/places/eventStore').parseEventWindow(
-                    refillActive ? (prevUserAsk || message) : message)
+                ? (_ev.windowFromPeriod(intent.period)
+                    || _ev.parseEventWindow(refillActive ? (prevUserAsk || message) : message))
                 : null;
             const result = await findPlaces({
                 query: retrievalQuery,

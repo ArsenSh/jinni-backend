@@ -93,6 +93,19 @@ describe('parseEventWindow (the asked period rules)', () => {
         expect(w2.start.getUTCDay()).toBe(6);                                 // next Saturday
         expect(w2.end.getUTCDay()).toBe(0);
     });
+    test('windowFromPeriod — the AI names the period, code does clamped math', () => {
+        const { windowFromPeriod } = require('../engine/places/eventStore');
+        expect(windowFromPeriod('next_week', NOW).label).toBe('next-week');
+        expect(windowFromPeriod('3days', NOW).label).toBe('next-3-days');
+        expect(windowFromPeriod('weekend', NOW).start.getTime()).toBe(NOW);   // mid-weekend ⇒ now
+        const r = windowFromPeriod('2026-09-05..2026-09-07', NOW);
+        expect(r.start.toISOString()).toContain('2026-09-05');
+        expect(r.end.toISOString()).toContain('2026-09-07');
+        expect(windowFromPeriod('2026-01-01..2026-01-02', NOW)).toBeNull();   // past ⇒ brakes
+        expect(windowFromPeriod('2026-09-07..2026-09-05', NOW)).toBeNull();   // reversed ⇒ brakes
+        expect(windowFromPeriod('garbage', NOW)).toBeNull();                  // fallback path
+    });
+
     test('numeric spans — "next 3 days" and friends get an exact window', () => {
         const w = parseEventWindow('events for the next 3 days', NOW);
         expect(w.label).toBe('next-3-days');

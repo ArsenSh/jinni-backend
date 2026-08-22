@@ -142,6 +142,8 @@ function buildUserPrompt(message, recentTurns) {
     return `Recent conversation (oldest first, may be empty):
 ${context}
 
+Today's date (UTC): ${new Date().toISOString().slice(0, 10)}
+
 Current user message: """${String(message || '').slice(0, 1000)}"""
 
 Return ONLY this JSON object:
@@ -153,6 +155,8 @@ Return ONLY this JSON object:
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
 "place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
 "when":"<now, planned, or unspecified — 'now' when the user wants something for RIGHT NOW or tonight (going out immediately, 'where can I eat', late-hour context); 'planned' when clearly for another day (tomorrow, next week, a trip); 'unspecified' otherwise>",
+"period":"<the TIME PERIOD the message asks about (events/activities): one of today, tomorrow, weekend, next_week, Ndays (e.g. 3days for 'the next 3 days'), or explicit dates as YYYY-MM-DD..YYYY-MM-DD (resolve phrases like 'on September 5' or 'when my parents visit early September' using today's date). Follow-ups INHERIT the conversation's period ('other ones' after a next-week ask is still next_week). Empty string when no period is asked.>",
+"refill":<true or false — true when the CURRENT message asks for MORE or OTHER results of the previous ask ("other ones", "another suggestions", "ещё", "d'autres") rather than a new topic>,
 "needs_weather":<true or false>}
 
 Rules:
@@ -224,6 +228,18 @@ function validateIntent(raw, message) {
         ? raw.when.trim().toLowerCase()
         : 'unspecified';
 
+    // Asked period + refill (additive, 2026-08-23 — Arsen: "ai should
+    // understand itself... gas and brake pedals"): the BRAIN names the
+    // period/refill; deterministic code validates the format here and does
+    // the date math downstream (eventStore.windowFromPeriod). Regex parsers
+    // remain only as the LLM-timeout fallback. v1 ignores both fields.
+    const period = (typeof raw.period === 'string'
+        && /^(today|tomorrow|weekend|next_week|\d{1,2}days|\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2})$/
+            .test(raw.period.trim().toLowerCase()))
+        ? raw.period.trim().toLowerCase()
+        : null;
+    const refill = raw.refill === true;
+
     return {
         source: 'llm',
         language,
@@ -233,6 +249,8 @@ function validateIntent(raw, message) {
         subType,
         placeNames,
         when,
+        period,
+        refill,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
         searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),
