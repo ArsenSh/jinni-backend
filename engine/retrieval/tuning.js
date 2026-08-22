@@ -57,8 +57,10 @@ function buildRetrievalQuery(searchQuery, rawMessage, maxTokens = 8) {
  * planning-ahead ask ("next week", "tomorrow") never matches. */
 // \b is ASCII-only in JS regex — it never matches beside Cyrillic/Armenian
 // letters, so the non-Latin now-words are tested without boundaries.
-const RIGHT_NOW_LATIN_RE = /\b(right now|now|tonight|currently|open now|at the moment|this evening)\b/i;
-const RIGHT_NOW_NONLATIN_RE = /(сейчас|сегодня вечером|այս պահին|հիմա)/i;
+// All six app languages (EN/FR share the \b group; RU/HY/ZH/AR go boundary-
+// free — JS \b is ASCII-only, the Cyrillic lesson).
+const RIGHT_NOW_LATIN_RE = /\b(right now|now|tonight|currently|open now|at the moment|this evening|maintenant|ce soir|tout de suite|actuellement)\b/i;
+const RIGHT_NOW_NONLATIN_RE = /(сейчас|сегодня вечером|այս պահին|հիմա|现在|今晚|此刻|马上|الآن|الليلة|حالا)/i;
 function isRightNowAsk(message) {
     const m = String(message || '');
     return RIGHT_NOW_LATIN_RE.test(m) || RIGHT_NOW_NONLATIN_RE.test(m);
@@ -70,7 +72,7 @@ function isRightNowAsk(message) {
  * cares how GOOD the place is (quality prior up, distance matters less —
  * nobody picks an anniversary dinner by walking distance). Defaults match
  * the weights findPlaces has always used. Pure. */
-const ROMANTIC_RE = /\b(romantic|romance|anniversary|proposal|honeymoon|special occasion|celebrat\w*|impress)\b|романти|годовщин|юбилей/i;
+const ROMANTIC_RE = /\b(romantic|romance|anniversary|proposal|honeymoon|special occasion|celebrat\w*|impress|romantique|anniversaire|lune de miel)\b|романти|годовщин|юбилей|ռոմանտիկ|浪漫|求婚|周年|蜜月|رومانسي|شهر العسل|ذكرى/i;
 
 function rankingWeights({ rightNow = false, nearbyMode = false, message = '' } = {}) {
     const romantic = ROMANTIC_RE.test(String(message || ''));
@@ -90,8 +92,8 @@ function rankingWeights({ rightNow = false, nearbyMode = false, message = '' } =
 //    with everything already shown excluded. Latin \b + non-Latin without
 //    (the Cyrillic \b lesson). Count: a bare 2-12 in a refill ask is the
 //    requested deck size ("10 other results" → 10). ──
-const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional)\b/i;
-const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի)/i;
+const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;
+const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի|更多|其他|别的|另外|再来|再推荐|المزيد|أخرى|غيرها|أكثر|اقتراحات جديدة)/i;
 function parseRefillAsk(message) {
     const msg = String(message || '');
     const isRefill = REFILL_LATIN_RE.test(msg) || REFILL_NONLATIN_RE.test(msg);

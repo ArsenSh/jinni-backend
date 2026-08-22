@@ -287,6 +287,12 @@ describe('parseRefillAsk (the "10 other results" lesson)', () => {
         expect(parseRefillAsk('покажи ещё 5').count).toBe(5);
         expect(parseRefillAsk('другие варианты').isRefill).toBe(true);
     });
+    test('all six app languages refill (HY/FR/ZH/AR)', () => {
+        expect(parseRefillAsk('ուրիշ տեղեր ցույց տուր').isRefill).toBe(true);          // Armenian
+        expect(parseRefillAsk("montre-moi d'autres options").isRefill).toBe(true);      // French
+        expect(parseRefillAsk('再推荐几个').isRefill).toBe(true);                        // Chinese
+        expect(parseRefillAsk('أعطني المزيد من الأماكن').isRefill).toBe(true);          // Arabic
+    });
     test('plain asks are NOT refills; counts outside 2-12 ignored', () => {
         expect(parseRefillAsk('suggest historical places').isRefill).toBe(false);
         expect(parseRefillAsk('best restaurants in Yerevan').isRefill).toBe(false);
