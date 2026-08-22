@@ -255,8 +255,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).
+            // Refill turns inherit the PREVIOUS ask's window too ("other ones
+            // please" after a next-week ask means other NEXT-WEEK events —
+            // caught live 2026-08-23: the refill fell back to the default
+            // window and served this-week events as "others").
             const eventWindow = category === 'events'
-                ? require('../engine/places/eventStore').parseEventWindow(message)
+                ? require('../engine/places/eventStore').parseEventWindow(
+                    refillActive ? (prevUserAsk || message) : message)
                 : null;
             const result = await findPlaces({
                 query: retrievalQuery,
