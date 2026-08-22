@@ -102,6 +102,40 @@ describe('annotateOpenNow', () => {
     });
 });
 
+describe('weather context (fail-open fetch + pure note)', () => {
+    const { getWeather, weatherNote, _resetWeatherCache } = require('../engine/context/weather');
+    const OPEN_METEO = (over = {}) => ({ json: async () => ({ current: {
+        temperature_2m: 31.4, relative_humidity_2m: 30, precipitation_probability: 5,
+        weather_code: 0, wind_speed_10m: 8, ...over } }) });
+    beforeEach(() => _resetWeatherCache());
+    test('maps the response and caches by coordinate for 10 minutes', async () => {
+        let calls = 0, now = 1_000_000;
+        const deps = { fetchImpl: async () => { calls++; return OPEN_METEO(); }, nowFn: () => now };
+        const w1 = await getWeather(40.18, 44.51, deps);
+        expect(w1).toMatchObject({ temperature: 31.4, condition: 'Clear sky' });
+        now += 5 * 60 * 1000;
+        await getWeather(40.18, 44.51, deps);
+        expect(calls).toBe(1);                       // cache hit
+        now += 6 * 60 * 1000;
+        await getWeather(40.18, 44.51, deps);
+        expect(calls).toBe(2);                       // TTL expired
+    });
+    test('fail-open: fetch error → null, never throws', async () => {
+        expect(await getWeather(40, 44, { fetchImpl: async () => { throw new Error('down'); } })).toBe(null);
+        expect(await getWeather(NaN, 44)).toBe(null);
+    });
+    test('weatherNote: facts + one actionable advice; unknown → empty', () => {
+        expect(weatherNote({ temperature: 31.4, condition: 'Clear sky', rainProbability: 5 }))
+            .toBe('weather Clear sky, 31°C — hot — favor shade and indoor comfort');
+        expect(weatherNote({ temperature: 12, condition: 'Rain', rainProbability: 80 }))
+            .toBe('weather Rain, 12°C — favor indoor options');
+        expect(weatherNote({ temperature: 21, condition: 'Partly cloudy', rainProbability: 10 }))
+            .toBe('weather Partly cloudy, 21°C — great weather for outdoor spots');
+        expect(weatherNote({ temperature: -3, condition: 'Snow' })).toBe('weather Snow, -3°C — favor indoor options');
+        expect(weatherNote(null)).toBe('');
+    });
+});
+
 describe('scheduleToPeriods (Business/Destination day-name hours → Google periods)', () => {
     test('normal day converts and drives isOpenAt', () => {
         const hours = scheduleToPeriods({ days: [{ day: 'Monday', open: '09:00', close: '17:00' }] });

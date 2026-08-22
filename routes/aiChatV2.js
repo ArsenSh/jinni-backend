@@ -20,6 +20,7 @@ const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseN
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk } = require('../engine/retrieval/tuning');
+const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -160,6 +161,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             send(res, { type: 'token', content: reply });
         } else {
             const timeContext = buildTimeContext({ timezone: userTimezone, lng: center.lng });
+            // Weather rides along fail-open: fired here so it resolves in
+            // parallel with retrieval + narration setup, awaited only at
+            // prompt-build. 10-min cache in the engine → repeat turns free.
+            const weatherPromise = getWeather(center.lat, center.lng);
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
             const mode = nearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
@@ -196,7 +201,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                       + 'Try a broader ask, or switch to V1.';
                 send(res, { type: 'token', content: reply });
             } else {
-                const timeNote = timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null;
+                const weather = await weatherPromise;   // resolved long ago or null
+                const timeNote = [
+                    timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null,
+                    weatherNote(weather) || null,
+                ].filter(Boolean).join('; ') || null;
                 // ── TRUE-streamed narration: prose streams live to the user as
                 //    the model writes it; the <<<CARDS>>> tail (blurbs + question)
                 //    stays private via the splitter. Failure modes degrade in
