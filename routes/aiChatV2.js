@@ -261,6 +261,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const result = await findPlaces({
                 query: retrievalQuery,
                 eventWindow,
+                // Hunt permission rides the SAME admin gate as narration web
+                // search: events category enabled + master switch on. The
+                // store decides WHEN (thin shelf for the asked window).
+                eventsHunt: (category === 'events' && webSearch) ? { webSearch } : null,
                 // Clean intent query only — drives the fallback's "demanded term
                 // with zero owned matches" check (the Uzbek lesson); enriched
                 // chat tokens must never trigger paid searches.

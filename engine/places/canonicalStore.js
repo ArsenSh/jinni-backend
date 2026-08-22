@@ -215,7 +215,27 @@ async function loadCandidates(params = {}, deps = {}) {
     // (battery fix #1, 2026-08-22 — this used to `return []` and every
     // events ask hit the empty-scaffold error).
     if (category === 'events') {
-        return require('./eventStore').loadEventCandidates(params, deps);
+        let evs = await require('./eventStore').loadEventCandidates(params, deps);
+        // ── Fresh-tier HUNT (Arsen sign-off 2026-08-22): thin shelf for the
+        //    ASKED window + admin web-search permission ⇒ search that window,
+        //    extract JSON-LD-verified events, STORE them (AiFoundEvent, 'new',
+        //    validator-moderatable), serve as honest cards. One hunt fills
+        //    the shelf for every later asker — cost amortizes toward zero. ──
+        if (evs.length < 3 && params.eventsHunt && params.eventWindow) {
+            try {
+                const city = params.center?.city || evs[0]?.city || null;
+                const extra = await require('../events/hunt').huntEvents({
+                    city,
+                    country: params.center?.country || null,
+                    center: params.center,
+                    window: params.eventWindow,
+                }, { webSearchCfg: params.eventsHunt.webSearch || null });
+                if (extra.length) evs = mergeAndDedupe(evs, extra);
+            } catch (err) {
+                console.warn(`[canonicalStore] events hunt failed: ${err.message} — serving owned events only`);
+            }
+        }
+        return evs;
     }
 
     // ── Cache tier ──

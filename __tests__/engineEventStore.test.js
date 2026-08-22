@@ -118,6 +118,47 @@ describe('parseEventWindow (the asked period rules)', () => {
     });
 });
 
+describe('huntEvents (the fresh tier — search fills the database)', () => {
+    const { huntEvents } = require('../engine/events/hunt');
+    const LD = (obj) => `<html><head><script type="application/ld+json">${JSON.stringify(obj)}</script></head></html>`;
+    const page = LD({
+        '@context': 'https://schema.org', '@type': 'Event',
+        name: 'Jazz Fest', startDate: '2026-08-23T18:00:00Z',
+        image: 'https://cdn/jazz.jpg', url: 'https://tickets/jazz',
+        location: { '@type': 'Place', name: 'Club X' },
+    });
+    const huntDeps = (bulkWrite, { html = page, urls = [{ url: 'https://x/events' }] } = {}) => ({
+        AiFoundEvent: { bulkWrite },
+        searchWeb: async () => urls,
+        fetchHtml: async () => html,
+        nowFn: () => NOW,
+    });
+
+    test('stores JSON-LD-verified events with the v1 key formula and serves them as candidates', async () => {
+        const bulkWrite = jest.fn(() => Promise.resolve());
+        const win = parseEventWindow('this weekend', NOW);
+        const out = await huntEvents({ city: 'Yerevan', center: CENTER, window: win }, huntDeps(bulkWrite));
+        expect(out).toHaveLength(1);
+        expect(out[0].name).toBe('Jazz Fest');
+        expect(out[0].image).toBe('https://cdn/jazz.jpg');
+        expect(out[0].eventSchedule.startDate.toISOString()).toContain('2026-08-23');
+        const op = bulkWrite.mock.calls[0][0][0].updateOne;
+        expect(op.filter.key).toBe('jazz fest|2026-08-23|yerevan');
+        expect(op.update.$setOnInsert.sourceTier).toBe('listing');
+        expect(op.update.$setOnInsert.status).toBe('new');
+    });
+
+    test('out-of-window events are skipped; no city or no results → [] and no writes', async () => {
+        const bulkWrite = jest.fn(() => Promise.resolve());
+        const tue = LD({ '@type': 'Event', name: 'Tue Show', startDate: '2026-08-25T19:00:00Z' });
+        const win = parseEventWindow('this weekend', NOW);
+        expect(await huntEvents({ city: 'Yerevan', window: win }, huntDeps(bulkWrite, { html: tue }))).toEqual([]);
+        expect(await huntEvents({ city: null, window: win }, huntDeps(bulkWrite))).toEqual([]);
+        expect(await huntEvents({ city: 'Yerevan', window: win }, huntDeps(bulkWrite, { urls: [] }))).toEqual([]);
+        expect(bulkWrite).not.toHaveBeenCalled();
+    });
+});
+
 describe('event cards + facts', () => {
     test('toRecommendation passes eventSchedule through (frontend date row)', () => {
         const rec = toRecommendation(aiEventToCandidate(aiEvent(), CENTER), 0, { action: 'events' });
