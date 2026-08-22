@@ -11,7 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { usageTracker } = require('../middleware/usageTracker');
+const { usageTracker, estimateTokens } = require('../middleware/usageTracker');
 const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
@@ -81,10 +81,37 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         console.warn('[v2] PlaceFeedback dislike load failed:', pfErr.message);
     }
 
+    // ── Usage gate (caught 2026-08-22: a whole V2 evening barely moved the
+    //    meters — V2 turns were FREE). Parity with v1 aiRoutes ~701: consume an
+    //    ESTIMATE before the stream opens (a 429 must still be a JSON response,
+    //    and limit-crossing must block the turn), then true up after narration
+    //    with the provider's real token counts. usageTracker (fail-closed)
+    //    already put req.userLimit here — it was just never charged. ──
+    let estimatedTokens = 0;
+    let actualTokens = 0;
+    try {
+        if (req.userLimit) {
+            estimatedTokens = estimateTokens(message) + 500;
+            const usageStatus = await req.userLimit.checkAndUpdateUsage(estimatedTokens, 0, 1);
+            res.set('X-Usage-Tokens-Used', usageStatus.dailyTokensUsed.toString());
+            res.set('X-Usage-Tokens-Remaining', usageStatus.dailyTokensRemaining.toString());
+            res.set('X-Usage-Places-Viewed', usageStatus.dailyPlacesViewed.toString());
+            res.set('X-Usage-Places-Remaining', usageStatus.dailyPlacesRemaining.toString());
+            if (usageStatus.estimatedRequestsRemaining != null) { res.set('X-Usage-Requests-Remaining', usageStatus.estimatedRequestsRemaining.toString()); }
+            if (usageStatus.onCooldown) {
+                return res.status(429).json({ type: 'cooldown', message: 'AI services are on cooldown.', cooldownUntil: usageStatus.cooldownUntil, reason: 'daily_limit_exceeded' });
+            }
+        }
+    } catch (limitError) {
+        console.log(`[v2][limits] blocked: ${limitError.message}`);
+        return res.status(429).json({ type: 'cooldown', message: limitError.message, cooldownUntil: req.userLimit?.cooldownUntil });
+    }
+
     res.writeHead(200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'Access-Control-Expose-Headers': 'X-Usage-Tokens-Used, X-Usage-Tokens-Remaining, X-Usage-Places-Viewed, X-Usage-Places-Remaining, X-Usage-Requests-Remaining',
     });
 
     // ── V2 build state: RETRIEVAL + NARRATOR v0.
@@ -140,6 +167,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                 maxTokens: 400,
             }, { provider: deepseekProvider });
+            actualTokens += (loop.usage?.in || 0) + (loop.usage?.out || 0);
             reply = loop.text || 'I couldn\'t verify that just now — the place\'s card has the details under More.';
             for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                 send(res, { type: 'token', content: chunk });
@@ -155,6 +183,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 realStream: true,
             });
             reply = out.text;
+            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             console.log(`[v2] chit-chat narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)`);
         } else if (!center) {
             reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
@@ -221,13 +250,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 let intro = '', blurbs = [], streamedOk = false;
                 try {
                     const splitter = new DelimitedSplitter((text) => send(res, { type: 'token', content: text }));
-                    await narrator.stream({
+                    const streamOut = await narrator.stream({
                         messages: buildStreamedNarrationMessages(promptArgs),
                         maxTokens: 550,
                         temperature: 0.6,
                         realStream: true,
                         onToken: (d) => splitter.feed(d),
                     });
+                    actualTokens += (streamOut.usage?.in || 0) + (streamOut.usage?.out || 0);
                     const tail = splitter.finalize();
                     intro = splitter.prose.trim();
                     const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
@@ -238,6 +268,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 }
                 if (!streamedOk) {
                     const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6 });
+                    actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
                         intro = parsed.intro;
@@ -245,6 +276,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         meta.followUpQuestion = parsed.question;
                     } else {
                         const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400 });
+                        actualTokens += (fb.usage?.in || 0) + (fb.usage?.out || 0);
                         intro = fb.text;
                     }
                     for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
@@ -292,6 +324,24 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         console.error('[v2] turn failed:', err.message);
         reply = '🧪 V2: this turn hit an error (logged server-side). Switch to V1 for real answers.';
         send(res, { type: 'token', content: reply });
+    }
+
+    // ── Usage true-up (parity with v1 ~1774 + ~3429): correct the pre-stream
+    //    token ESTIMATE with the narrator's real counts (positive corrections
+    //    only — crossing the cap here gates the NEXT request, never this
+    //    already-streamed reply: the v1 prod lesson of 2026-08-20), and consume
+    //    the places actually carded. Pure bookkeeping — never user-facing. ──
+    try {
+        if (req.userLimit) {
+            const correction = Math.max(0, actualTokens - estimatedTokens);
+            const uniquePlaces = new Set(recommendations.map(r => r.name).filter(Boolean));
+            if (correction > 0 || uniquePlaces.size > 0) {
+                await req.userLimit.checkAndUpdateUsage(correction, uniquePlaces.size, 0);
+            }
+            console.log(`[v2][limits] tok est=${estimatedTokens} actual=${actualTokens || 'n/a'} charged=${estimatedTokens + correction} places+${uniquePlaces.size}`);
+        }
+    } catch (e) {
+        console.warn(`[v2][limits] post-stream usage true-up skipped: ${e.message}`);
     }
 
     send(res, {
