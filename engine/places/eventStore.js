@@ -39,6 +39,10 @@ const _RE_TODAY = /\b(today|tonight|this evening|ce soir|aujourd'hui)\b|сего
 const _RE_TOMORROW = /\b(tomorrow|demain)\b|завтра|明天|غدا|غداً|վաղը/i;
 const _RE_WEEKEND = /\b(weekend|week-end)\b|выходн|уик-?энд|周末|نهاية الأسبوع|ուիքենդ|հանգստյան օր/i;
 const _RE_NEXT_WEEK = /\bnext week\b|\bla semaine prochaine\b|следующ\S* недел|на той неделе|下周|下星期|الأسبوع القادم|հաջորդ շաբաթ/i;
+// Numeric spans — "next 3 days", "ближайшие 3 дня", "未来3天", "les 3
+// prochains jours", "الأيام الـ3 القادمة", "առաջիկա 3 օրը" (Arsen 2026-08-23:
+// "what if user asks for next 3 days?"). Capture the number, cap at 30.
+const _RE_N_DAYS = /(?:next|coming|следующие|ближайшие|prochains?|القادمة|առաջիկա|未来|接下来)\D{0,6}?(\d{1,2})\s*(?:days?|дня|дней|день|jours?|أيام|يوم|օր|天)|(\d{1,2})\s*(?:days?|дня|дней|jours?|أيام|օր|天)/i;
 
 /** What period does the message ask about? → {start, end, label} (UTC). */
 function parseEventWindow(message, now = Date.now()) {
@@ -64,6 +68,13 @@ function parseEventWindow(message, now = Date.now()) {
         const daysToNextMon = ((8 - dow) % 7) || 7;
         const mon = new Date(today.getTime() + daysToNextMon * DAY_MS);
         return { start: mon, end: endOfDay(new Date(mon.getTime() + 6 * DAY_MS)), label: 'next-week' };
+    }
+    const nd = msg.match(_RE_N_DAYS);
+    if (nd) {
+        const n = Math.min(30, Math.max(1, Number(nd[1] || nd[2])));
+        // "next 3 days" = today, tomorrow, the day after — now through the
+        // end of day (n-1) ahead.
+        return { start: new Date(now), end: endOfDay(new Date(today.getTime() + (n - 1) * DAY_MS)), label: `next-${n}-days` };
     }
     return { start: new Date(now), end: new Date(now + EVENT_HORIZON_DAYS * DAY_MS), label: 'default' };
 }

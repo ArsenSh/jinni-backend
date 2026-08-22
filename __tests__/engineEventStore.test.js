@@ -93,6 +93,16 @@ describe('parseEventWindow (the asked period rules)', () => {
         expect(w2.start.getUTCDay()).toBe(6);                                 // next Saturday
         expect(w2.end.getUTCDay()).toBe(0);
     });
+    test('numeric spans — "next 3 days" and friends get an exact window', () => {
+        const w = parseEventWindow('events for the next 3 days', NOW);
+        expect(w.label).toBe('next-3-days');
+        expect(w.start.getTime()).toBe(NOW);
+        expect(w.end.getUTCDate()).toBe(24);                                  // Aug 22+2, end of day
+        expect(parseEventWindow('ближайшие 5 дней', NOW).label).toBe('next-5-days');
+        expect(parseEventWindow('未来3天有什么活动', NOW).label).toBe('next-3-days');
+        expect(parseEventWindow('events for the next 99 days', NOW).label).toBe('next-30-days');   // capped
+    });
+
     test('tonight / tomorrow / next week / default', () => {
         expect(parseEventWindow('concerts tonight', NOW).label).toBe('today');
         expect(parseEventWindow('что завтра?', NOW).label).toBe('tomorrow');
