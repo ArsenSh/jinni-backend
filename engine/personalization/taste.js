@@ -27,20 +27,22 @@ const SEEN_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const VIEW_TTL_MS = SEEN_WINDOW_MS;
 
 // Rank nudges, in positions on the fused order. Liked beats saved (an explicit
-// vote beats a bookmark); they stack for a place that is both. The seen-sink
-// GROWS with repeat shows and is strong on purpose (Arsen 2026-08-22, twice:
-// "each time nothing new, same 6 results ... in new session it recommends
-// exactly same things, but 28 candidates it has") — a place seen and not
-// acted on should genuinely LEAVE the front row while unseen candidates wait.
-// Guardrails that keep this a nudge, not a hijack: liked/saved places are
-// immune, the demand-seat guarantee (specific asks) runs after taste, and the
-// sink caps at 10 positions so nothing is ever hidden — just deprioritized.
-// The epsilon makes any fatigue sink STRICTLY — without it a fresh-watched
-// place ties the next rank and stability keeps it up.
+// vote beats a bookmark); they stack for a place that is both.
+//
+// Seen policy = FRESH-FIRST (Arsen's rule, 2026-08-22, after positional
+// sinking still replayed decks: "everytime new things will show but if there
+// is not new things old things can show"): places the user has seen and not
+// acted on move BEHIND every fresh candidate — least-fatigued returning
+// first — so identical asks keep discovering until the corpus is exhausted,
+// then gracefully replay. Liked/saved places are EXEMPT (their boost stands:
+// the user's own picks are never demoted for being familiar), a nearly
+// decayed sighting (~90-day window) counts as fresh again, and nothing is
+// ever hidden — seen places fill whatever fresh can't. The demand-seat
+// guarantee (specific asks like "sushi") still runs after taste.
 const LIKED_BOOST = 2.5;
 const SAVED_BOOST = 1.5;
-const SEEN_SINK_MAX = 10.0;
 const SEEN_PENALTY_MAX = 8.0;   // clamp: watched(3) + repeat-show bonus (cap +5)
+const FRESH_AGAIN_BELOW = 0.3;  // decayed penalty under this ⇒ treated as unseen
 
 /**
  * Load the user's complete taste profile in one parallel pass.
@@ -62,7 +64,7 @@ async function loadTaste(userId, deps = {}) {
             .catch(err => { console.warn('[taste] feedback load failed:', err.message); return []; }),
         SavedPlace.find({ userId }).select('verifiedId googlePlaceId name').lean()
             .catch(err => { console.warn('[taste] saved load failed:', err.message); return []; }),
-        PlaceView.find({ userId }).select('placeId status shownCount lastShownAt').lean()
+        PlaceView.find({ userId }).select('placeId status shownCount lastShownAt action').lean()
             .catch(err => { console.warn('[taste] views load failed:', err.message); return []; }),
     ]);
 
@@ -93,7 +95,9 @@ async function loadTaste(userId, deps = {}) {
         // is forgiven.
         const repeats = Math.min(5, Math.max(0, (v.shownCount || 1) - 1));
         const pen = (base + repeats) * freshness;
-        if (pen > 0) seen.set(v.placeId, Math.min(SEEN_PENALTY_MAX, pen));
+        // Context rides along (Arsen: "it should save the context too") —
+        // fatigue is judged against the CURRENT ask's category in tasteAdjust.
+        if (pen > 0) seen.set(v.placeId, { pen: Math.min(SEEN_PENALTY_MAX, pen), action: v.action || null });
     }
 
     return { liked, disliked, saved, seen };
@@ -136,10 +140,12 @@ function _matchByKeys(map, keys, byName) {
 /**
  * Reorder a fused ranking by the user's taste — pure, stable, bounded.
  * Annotates matched candidates (_tasteLiked/_tasteSaved) so the narrator can
- * honestly say "you saved this one". Seen-fatigue never applies to a place the
- * user liked or saved (they've seen it BECAUSE they love it).
+ * honestly say "you saved this one". Fresh-first partition (see header):
+ * [liked/saved/unseen, by boosted fused order] then [seen, least-fatigued
+ * first]. Seen-fatigue never applies to a place the user liked or saved
+ * (they've seen it BECAUSE they love it).
  */
-function tasteAdjust(ordered, taste) {
+function tasteAdjust(ordered, taste, { category = null } = {}) {
     if (!taste || !Array.isArray(ordered) || ordered.length < 2) return ordered || [];
     const likedNames = new Set([...(taste.liked?.values() || [])].map(normalizePlaceName).filter(Boolean));
     const savedNames = new Set([...(taste.saved?.values() || [])].map(normalizePlaceName).filter(Boolean));
@@ -152,16 +158,30 @@ function tasteAdjust(ordered, taste) {
         let score = i;
         if (isLiked) score -= LIKED_BOOST;
         if (isSaved) score -= SAVED_BOOST;
+        let pen = 0;
         if (!isLiked && !isSaved && taste.seen?.size) {
             for (const k of keys) {
-                const pen = taste.seen.get(k);
-                if (pen) { score += Math.min(SEEN_SINK_MAX, pen * 2) + 1e-3; break; }
+                const entry = taste.seen.get(k);
+                if (entry) {
+                    const raw = typeof entry === 'number' ? entry : entry.pen;
+                    const act = typeof entry === 'number' ? null : entry.action;
+                    // Context-scoped fatigue: seen under THIS category counts
+                    // fully; seen under a different one counts half — a place
+                    // shown as 'historical' stays mostly fresh for a
+                    // 'photo_spots' ask, but doesn't replay instantly either.
+                    pen = (act && category && act !== category) ? raw * 0.5 : raw;
+                    break;
+                }
             }
         }
-        return { c, score, i };
+        const isSeen = pen >= FRESH_AGAIN_BELOW;   // nearly decayed ⇒ fresh again
+        return { c, score, i, pen, isSeen };
     });
-    scored.sort((a, b) => a.score - b.score || a.i - b.i);   // stable: ties keep fused order
-    return scored.map(s => s.c);
+    const byScore = (a, b) => a.score - b.score || a.i - b.i;      // stable
+    const fresh = scored.filter(s => !s.isSeen).sort(byScore);
+    // Backfill order: least-fatigued (oldest / fewest shows) returns first.
+    const seen = scored.filter(s => s.isSeen).sort((a, b) => a.pen - b.pen || byScore(a, b));
+    return [...fresh, ...seen].map(s => s.c);
 }
 
 /**

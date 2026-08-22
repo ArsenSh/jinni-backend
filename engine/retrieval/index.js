@@ -174,7 +174,7 @@ async function findPlaces(params = {}, deps = {}) {
     //    and annotates _tasteLiked/_tasteSaved for the narrator. ──
     if (params.taste) {
         const { tasteAdjust } = require('../personalization/taste');
-        ordered = tasteAdjust(ordered, params.taste);
+        ordered = tasteAdjust(ordered, params.taste, { category });
         provenance.taste = true;
     }
 

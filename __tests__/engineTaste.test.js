@@ -51,9 +51,9 @@ describe('loadTaste', () => {
                 { placeId: 'old', status: 'watched', lastShownAt: new Date(NOW - 89 * DAY) },
             ]),
         }));
-        expect(t.seen.get('w')).toBeCloseTo(3.0, 1);
-        expect(t.seen.get('s')).toBeCloseTo(1.5, 1);
-        expect(t.seen.get('old')).toBeLessThan(0.1);
+        expect(t.seen.get('w').pen).toBeCloseTo(3.0, 1);
+        expect(t.seen.get('s').pen).toBeCloseTo(1.5, 1);
+        expect(t.seen.get('old').pen).toBeLessThan(0.1);
     });
 
     test('repeat shows compound the penalty (deck rotation), capped at 6', async () => {
@@ -64,9 +64,9 @@ describe('loadTaste', () => {
                 { placeId: 'many', status: 'watched', shownCount: 50, lastShownAt: new Date(NOW) },
             ]),
         }));
-        expect(t.seen.get('once')).toBeCloseTo(1.5, 1);
-        expect(t.seen.get('five')).toBeCloseTo(5.5, 1);   // 1.5 + 4×1
-        expect(t.seen.get('many')).toBe(8);               // clamped
+        expect(t.seen.get('once').pen).toBeCloseTo(1.5, 1);
+        expect(t.seen.get('five').pen).toBeCloseTo(5.5, 1);   // 1.5 + 4×1
+        expect(t.seen.get('many').pen).toBe(8);               // clamped
     });
 
     test('fail-open: one broken source still yields the others', async () => {
@@ -118,12 +118,29 @@ describe('tasteAdjust', () => {
         expect(savedOnly.find(c => c.placeId === 'p5')._tasteSaved).toBe(true);
     });
 
-    test('oft-seen-unacted sinks below ALL unseen peers; liked never sinks', () => {
-        const seen = new Map([['p0', 3.0], ['p1', 3.0]]);   // watched-fresh → sink 6
+    test('fresh-first: seen-unacted goes behind ALL fresh; liked never demoted', () => {
+        const seen = new Map([['p0', 3.0], ['p1', 3.0]]);
         const sunk = tasteAdjust(mk(4), { liked: new Map(), saved: new Map(), seen });
-        expect(sunk.map(c => c.placeId)).toEqual(['p2', 'p3', 'p0', 'p1']);   // fresh first, seen to the back
+        expect(sunk.map(c => c.placeId)).toEqual(['p2', 'p3', 'p0', 'p1']);   // fresh lead, seen backfill
         const loved = tasteAdjust(mk(4), { liked: new Map([['p0', '']]), saved: new Map(), seen });
         expect(loved[0].placeId).toBe('p0');   // liked → boost, no fatigue
+    });
+
+    test("Arsen's rule: new things always show; old return least-fatigued-first when new runs out", () => {
+        const seen = new Map([['p0', 5.0], ['p1', 1.0], ['p2', 0.2]]);   // p2 nearly decayed → fresh again
+        const out = tasteAdjust(mk(5), { liked: new Map(), saved: new Map(), seen });
+        expect(out.map(c => c.placeId)).toEqual(['p2', 'p3', 'p4', 'p1', 'p0']);
+    });
+
+    test('context-scoped fatigue: seen under ANOTHER category counts half', () => {
+        const seen = new Map([
+            ['p0', { pen: 3.0, action: 'historical' }],   // other context → 1.5 effective, still seen
+            ['p1', { pen: 0.5, action: 'historical' }],   // other context → 0.25 → fresh again
+        ]);
+        const cross = tasteAdjust(mk(3), { liked: new Map(), saved: new Map(), seen }, { category: 'restaurants' });
+        expect(cross.map(c => c.placeId)).toEqual(['p1', 'p2', 'p0']);
+        const same = tasteAdjust(mk(3), { liked: new Map(), saved: new Map(), seen }, { category: 'historical' });
+        expect(same.map(c => c.placeId)).toEqual(['p2', 'p1', 'p0']);   // both seen, least-fatigued first
     });
 
     test('matches by verifiedId and by normalized-name fallback', () => {
