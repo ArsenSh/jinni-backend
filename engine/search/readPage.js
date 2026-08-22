@@ -81,12 +81,22 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
     if (!page || !page.text || !win) return [];
     try {
         const narrator = deps.narrator || require('../narrator');
+        // Event pages rarely print a year ("Sat, 30 Aug") — the asked window
+        // supplies it. The model may resolve the YEAR from the window; the day
+        // and month must still be printed on the page (live lesson 2026-08-23:
+        // the old "never infer" wording made the model drop every yearless
+        // date, so allevents.in read as empty).
+        const winFrom = new Date(win.start).toISOString().slice(0, 10);
+        const winTo = new Date(win.end).toISOString().slice(0, 10);
         const out = await narrator.stream({
             messages: [{
                 role: 'user',
                 content:
-                    `Below is the text of a web page. List ONLY events that the page EXPLICITLY dates`
-                    + ` (a concrete calendar date${city ? `, in or near ${city}` : ''}). Never guess or infer dates.\n`
+                    `Below is the text of a web page. The user asked about events between ${winFrom} and ${winTo}`
+                    + `${city ? ` in or near ${city}` : ''}.\n`
+                    + `List ONLY events whose DAY and MONTH the page explicitly prints (e.g. "30 Aug", "August 30").`
+                    + ` If the page omits the year, resolve it so the date falls in or nearest to ${winFrom}..${winTo}.`
+                    + ` Never invent a day or month the page does not print.\n`
                     + `Reply with ONLY a JSON array: [{"name":"…","startDate":"YYYY-MM-DD","time":"HH:MM or null","venueName":"… or null"}]\n`
                     + `Empty array [] if the page dates no events.\n\nPAGE TITLE: ${page.title || ''}\n\nPAGE TEXT:\n${page.text}`,
             }],
