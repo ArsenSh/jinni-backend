@@ -235,6 +235,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 mode,
                 radiusKm,
                 count: deckCount,
+                // Specific asks shrink the deck to match + alternatives
+                // (battery fix #2) — but never a refill, where the traveler
+                // asked for a number and gets it.
+                adaptiveDeck: !refillActive,
                 timeContext,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /

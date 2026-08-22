@@ -205,6 +205,7 @@ async function findPlaces(params = {}, deps = {}) {
     //    high-prior regulars: the fallback may have just PAID to fetch them,
     //    and the narrator then honestly says "no sushi here" while sushi sits
     //    in the pool. Up to 3 guaranteed seats, best-fused-first. ──
+    let effectiveWanted = wanted;
     if (params.coreQuery) {
         const { uncoveredQueryTokens } = require('../places/canonicalStore');
         const rare = uncoveredQueryTokens(params.coreQuery, ordered, 0.25);
@@ -213,10 +214,22 @@ async function findPlaces(params = {}, deps = {}) {
                 const t = String(c.text || c.name || '').toLowerCase();
                 return rare.some(d => t.includes(d));
             }).slice(0, 3);
-            if (seats.length) ordered = [...seats, ...ordered.filter(c => !seats.includes(c))];
+            if (seats.length) {
+                ordered = [...seats, ...ordered.filter(c => !seats.includes(c))];
+                // ── Adaptive deck (battery fix #2): a SPECIFIC ask — the
+                //    query demands something rare in the pool (sushi, uzbek,
+                //    vegan) — answers with the match(es) + 1-2 honest
+                //    alternatives, not six padded cards (the padding cost
+                //    battery rows 1/4/5). Broad asks keep the full deck;
+                //    refill asks (adaptiveDeck:false) honor the asked count. ──
+                if (params.adaptiveDeck) {
+                    effectiveWanted = Math.min(wanted, 3);
+                    provenance.adaptive = 'specific';
+                }
+            }
         }
     }
-    const places = ordered.slice(0, wanted);
+    const places = ordered.slice(0, effectiveWanted);
     return { places, degraded: false, provenance };
 }
 

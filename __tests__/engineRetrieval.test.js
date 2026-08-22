@@ -275,6 +275,31 @@ describe('findPlaces orchestration (injected deps)', () => {
     });
 });
 
+describe('adaptive deck size (battery fix #2 — the padding lesson)', () => {
+    const pool = () => [
+        ...Array.from({ length: 9 }, (_, i) => ({ placeId: `r${i}`, name: `Rest ${i}`, text: `Rest ${i} armenian food`, source: 'cache' })),
+        { placeId: 'sushi1', name: 'Tokyo House', text: 'Tokyo House sushi japanese', source: 'cache' },
+    ];
+    test('specific ask (rare demanded term) → match leads, deck shrinks to 3', async () => {
+        const r = await findPlaces(
+            { count: 6, coreQuery: 'sushi restaurant', query: 'sushi restaurant', adaptiveDeck: true },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(r.places[0].placeId).toBe('sushi1');       // demand seat
+        expect(r.places).toHaveLength(3);                 // match + 2 honest alternatives
+        expect(r.provenance.adaptive).toBe('specific');
+    });
+    test('broad ask → full deck; refill (adaptiveDeck:false) honors the asked count', async () => {
+        const broad = await findPlaces(
+            { count: 6, coreQuery: 'restaurants', query: 'restaurants', adaptiveDeck: true },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(broad.places).toHaveLength(6);
+        const refill = await findPlaces(
+            { count: 6, coreQuery: 'sushi restaurant', query: 'sushi restaurant', adaptiveDeck: false },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(refill.places).toHaveLength(6);
+    });
+});
+
 describe('curated-first nudge (the moat rule)', () => {
     test('first two curated candidates climb ~3 positions; cache leader keeps #1', async () => {
         const mk = (n) => Array.from({ length: n }, (_, i) => ({
