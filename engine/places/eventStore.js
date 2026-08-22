@@ -79,6 +79,9 @@ function destEventToCandidate(d, center) {
         rating: d.rating || null,
         website: d.contact?.website || null,
         phone: d.contact?.phone || null,
+        // Same backfill covers event Destinations → semantic ranking works
+        // over curated events too (vec=true once embedded).
+        vector: Array.isArray(d.embedding) ? d.embedding : undefined,
         eventSchedule: d.eventSchedule || null,
     };
 }

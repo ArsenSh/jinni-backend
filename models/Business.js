@@ -241,7 +241,15 @@ const businessSchema = new mongoose.Schema({
             timezone: { type: String, default: 'UTC' }
         },
         default: undefined
-    }
+    },
+
+    // ── Semantic embedding (v2 retrieval; mirrors PlaceCache — battery fix #3:
+    // curated rows were INVISIBLE to semantic ranking, the Sirelis/Mamma Mia
+    // finding). Written ONLY by scripts/embedPlaceCache.js; no default so docs
+    // without one carry no empty array. embeddingModel names the model so a
+    // future model change knows which rows to re-embed. ──
+    embedding: { type: [Number], default: undefined },
+    embeddingModel: { type: String, default: null }
 }, { timestamps: true });
 
 businessSchema.index({ 'location.geoPoint': '2dsphere' });

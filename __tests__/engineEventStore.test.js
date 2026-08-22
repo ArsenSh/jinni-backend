@@ -38,6 +38,7 @@ describe('loadEventCandidates', () => {
         expect(out.map(c => c.name)).toEqual(['Wine Days Festival', 'Jazz Night']);   // +1d before +2d
         expect(out[0].source).toBe('destination');
         expect(out[0].verifiedId).toBe('dst1');
+        expect(out[0].vector).toBeUndefined();   // no embedding on fixture → no vector claim
         expect(out[1].source).toBe('event');
         expect(out[1].image).toBe('https://cdn/poster.jpg');                          // poster survives
     });

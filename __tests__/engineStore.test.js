@@ -67,12 +67,18 @@ describe('candidate mapping', () => {
             _id: 'abc', name: 'Tashir Arena', type: ['events'],
             location: { coordinates: { lat: CENTER.lat, lng: CENTER.lng }, city: 'Yerevan' },
             partnership: { isPartner: true, tier: 'signature' },   // the REAL schema field (subscription.tier never existed)
+            // Business.description is an OBJECT — must become words, not "[object Object]"
+            description: { short: 'Grand arena', detailed: 'Concerts and sports' },
+            embedding: [0.1, 0.2],                                  // battery fix #3: curated rows carry vectors now
         }, 'business', CENTER);
         expect(d.source).toBe('business');
         expect(d.verifiedId).toBe('abc');
         expect(d.tier).toBe('signature');
         expect(d.isPartner).toBe(true);
         expect(d.opening_hours).toBe(null);               // day-name schedule → unknown, kept
+        expect(d.vector).toEqual([0.1, 0.2]);
+        expect(d.text).toContain('Grand arena');
+        expect(d.text).not.toContain('object Object');
         expect(dbDocToCandidate({ type: [] }, 'business', CENTER)).toBe(null);   // no name → skip
     });
 });

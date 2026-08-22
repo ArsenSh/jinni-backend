@@ -158,9 +158,21 @@ function dbDocToCandidate(d, source, center) {
             if (first && typeof first.url === 'string') return first.url;
             return null;
         })(),
-        text: [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, d.description]
+        // Semantic vector (battery fix #3 — curated rows used to carry none
+        // and systematically LOST to cache rows under vector ranking).
+        vector: Array.isArray(d.embedding) ? d.embedding : undefined,
+        // Business.description is an OBJECT ({short, detailed}) — joining it
+        // raw put "[object Object]" into the BM25 text (found 2026-08-22).
+        text: [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, _descText(d.description)]
             .filter(Boolean).join(' ').slice(0, 300),
     };
+}
+
+/** Description → plain words, whatever shape the collection stores. */
+function _descText(desc) {
+    if (!desc) return null;
+    if (typeof desc === 'string') return desc;
+    return [desc.short, desc.detailed].filter(Boolean).join(' ') || null;
 }
 
 /** First occurrence wins (validator word beats cache duplicate). A candidate

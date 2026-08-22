@@ -136,7 +136,15 @@ const destinationSchema = new mongoose.Schema({
     // Set once when an admin creates the destination through the dashboard.
     // Populated as { name, email, role } in admin views so the table / edit
     // panel can show "added by …".
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // ── Semantic embedding (v2 retrieval; mirrors PlaceCache — battery fix #3:
+    // curated rows were INVISIBLE to semantic ranking, the Sirelis/Mamma Mia
+    // finding). Written ONLY by scripts/embedPlaceCache.js; no default so docs
+    // without one carry no empty array. embeddingModel names the model so a
+    // future model change knows which rows to re-embed. ──
+    embedding: { type: [Number], default: undefined },
+    embeddingModel: { type: String, default: null }
 }, { timestamps: true });
 
 // ── Event expiry detection ───────────────────────────────────────────────────
