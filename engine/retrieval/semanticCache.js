@@ -26,11 +26,15 @@ class SemanticCache {
         this._size = 0;
     }
 
-    /** The non-linguistic identity of a request. Same bucket = comparable asks. */
-    paramsKey({ category = null, subType = null, mode = null, tapState = null, center = null } = {}) {
+    /** The non-linguistic identity of a request. Same bucket = comparable asks.
+     *  `win` (2026-08-23): the asked TIME WINDOW label — "events next week"
+     *  must never be served the this-week pool however similar the wording
+     *  (caught live: win=next-week hit the default-window cache and Claude
+     *  had to apologize for a deck that contradicted the ask). */
+    paramsKey({ category = null, subType = null, mode = null, tapState = null, center = null, win = null } = {}) {
         const lat = Number.isFinite(center?.lat) ? Math.round(center.lat * 20) / 20 : null;   // ~5 km buckets
         const lng = Number.isFinite(center?.lng) ? Math.round(center.lng * 20) / 20 : null;
-        return JSON.stringify([category, subType, mode, tapState, lat, lng]);
+        return JSON.stringify([category, subType, mode, tapState, lat, lng, win]);
     }
 
     /** @returns cached result or null. Never throws. */

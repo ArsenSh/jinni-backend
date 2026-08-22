@@ -365,6 +365,20 @@ describe('demand-match seats (the Uzbechka spelling lesson)', () => {
     });
 });
 
+describe('cache buckets are window-scoped (the "next week served this-week" live bug)', () => {
+    test('same query, different eventWindow label → separate pools, no cross-hit', async () => {
+        let loads = 0;
+        const d = { loadCandidates: async () => { loads++; return [{ placeId: `p${loads}`, name: `Ev ${loads}`, text: 'event' }]; }, embedder: null };
+        const a = await findPlaces({ query: 'events', eventWindow: { label: 'default' } }, d);
+        const b = await findPlaces({ query: 'events', eventWindow: { label: 'next-week' } }, d);
+        expect(loads).toBe(2);                                    // second window loaded fresh
+        expect(b.provenance.cacheHit).toBeFalsy();
+        expect(b.places[0].placeId).not.toBe(a.places[0].placeId);
+        const c = await findPlaces({ query: 'events', eventWindow: { label: 'next-week' } }, d);
+        expect(c.provenance.cacheHit).toBe(true);                 // same window still caches
+    });
+});
+
 describe('parseRefillAsk (the "10 other results" lesson)', () => {
     const { parseRefillAsk } = require('../engine/retrieval/tuning');
     test('detects refill asks with and without a count', () => {

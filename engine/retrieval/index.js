@@ -56,7 +56,9 @@ async function findPlaces(params = {}, deps = {}) {
     }
     const cache = deps.cache || _defaultCache;
     const wanted = Math.min(Math.max(Number(count) || 8, 1), 20);
-    const cacheParams = { category, subType, mode, tapState, center };
+    // win: the asked time window's label — different windows must never share
+    // a cached pool (the "next week served this-week events" live bug).
+    const cacheParams = { category, subType, mode, tapState, center, win: params.eventWindow?.label || null };
     const provenance = { candidateCount: 0, lexical: 0, vector: false, cacheHit: false, openNowDropped: 0 };
 
     // ── Query embedding (fail-open: an embedder problem only costs ranking) ──
