@@ -21,7 +21,7 @@ const deepseek = require('./providers/deepseek');
 // admin's web-search knobs. Lazy require — no SDK load unless selected.
 const PROVIDERS = { deepseek, get claude() { return require('./providers/claude'); } };
 
-async function stream({ messages, tools = null, model = 'deepseek', onToken = null, maxTokens = 600, temperature = 0.5, realStream = false, webSearch = null } = {}, deps = {}) {
+async function stream({ messages, tools = null, model = 'deepseek', modelName = null, onToken = null, maxTokens = 600, temperature = 0.5, realStream = false, webSearch = null } = {}, deps = {}) {
     if (tools && tools.length) {
         throw new Error('[engine/narrator] tool-use loop not implemented yet — see engine/ENGINE.md build state');
     }
@@ -29,9 +29,9 @@ async function stream({ messages, tools = null, model = 'deepseek', onToken = nu
     // TRUE streaming when requested and the provider can (tokens reach onToken
     // as the model produces them). Falls back to complete+pseudo-stream.
     if (realStream && typeof provider.streamText === 'function') {
-        return provider.streamText({ messages, maxTokens, temperature, onDelta: onToken, webSearch });
+        return provider.streamText({ messages, maxTokens, temperature, onDelta: onToken, webSearch, modelName });
     }
-    const result = await provider.complete({ messages, maxTokens, temperature, webSearch });
+    const result = await provider.complete({ messages, maxTokens, temperature, webSearch, modelName });
     if (typeof onToken === 'function' && result.text) {
         // Pseudo-stream: the reply arrives whole, the client still sees it flow.
         for (const chunk of result.text.match(/.{1,60}(\s|$)/gs) || [result.text]) {

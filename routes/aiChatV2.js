@@ -158,7 +158,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    the narrator, claudeWebSearch + claudeWebSearchActionsChat gate
         //    paid web search (a Claude-only server tool; DeepSeek has none),
         //    with the admin's max-uses cap and domain lists. ──
-        const providerName = appCfg.aiProviderChat === 'claude' ? 'claude' : 'deepseek';
+        //    v1's FULL selection rule (aiRoutes ~1595), not just the master
+        //    switch: per-category Claude routing + the events override (events
+        //    need web search, which DeepSeek lacks). claudeModel honors the
+        //    admin's model name.
+        const providerName = (appCfg.aiProviderChat === 'claude'
+            || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
+            || (appCfg.aiEventsUseClaude && intent.actionType === 'events'))
+            ? 'claude' : 'deepseek';
+        const modelName = providerName === 'claude' ? (appCfg.claudeModel || null) : null;
         const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
             ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
         const webSearch = (providerName === 'claude' && appCfg.claudeWebSearch && wsActions.includes(intent.actionType))
@@ -218,6 +226,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 maxTokens: 200,
                 realStream: true,
                 model: providerName,
+                modelName,
             });
             reply = out.text;
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
@@ -315,6 +324,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         realStream: true,
                         onToken: (d) => splitter.feed(d),
                         model: providerName,
+                        modelName,
                         webSearch,
                     });
                     actualTokens += (streamOut.usage?.in || 0) + (streamOut.usage?.out || 0);
@@ -327,7 +337,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);
                 }
                 if (!streamedOk) {
-                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, webSearch });
+                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, modelName, webSearch });
                     actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
@@ -335,7 +345,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         blurbs = parsed.blurbs;
                         meta.followUpQuestion = parsed.question;
                     } else {
-                        const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400, model: providerName });
+                        const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400, model: providerName, modelName });
                         actualTokens += (fb.usage?.in || 0) + (fb.usage?.out || 0);
                         intro = fb.text;
                     }

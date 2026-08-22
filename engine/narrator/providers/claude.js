@@ -31,14 +31,17 @@ const _wsOpts = (webSearch) => webSearch ? {
     blockedDomains: webSearch.blockedDomains,
 } : {};
 
-async function complete({ messages, maxTokens = 600, temperature = 0.5, webSearch = null } = {}) {
-    const r = await claudeService.complete({ messages, maxTokens, temperature, ..._wsOpts(webSearch) });
+// modelName: the admin's claudeModel (AppConfig) — omitted ⇒ service default.
+const _modelOpt = (modelName) => modelName ? { model: modelName } : {};
+
+async function complete({ messages, maxTokens = 600, temperature = 0.5, webSearch = null, modelName = null } = {}) {
+    const r = await claudeService.complete({ messages, maxTokens, temperature, ..._wsOpts(webSearch), ..._modelOpt(modelName) });
     return { text: r.text || '', usage: _usage(r.usage), searches: r.searches || [], searchCount: r.searchCount || 0 };
 }
 
-async function streamText({ messages, maxTokens = 600, temperature = 0.5, onDelta = null, webSearch = null } = {}) {
+async function streamText({ messages, maxTokens = 600, temperature = 0.5, onDelta = null, webSearch = null, modelName = null } = {}) {
     let text = '', usage = {}, searchCount = 0;
-    for await (const ev of claudeService.streamChat({ messages, maxTokens, temperature, ..._wsOpts(webSearch) })) {
+    for await (const ev of claudeService.streamChat({ messages, maxTokens, temperature, ..._wsOpts(webSearch), ..._modelOpt(modelName) })) {
         if (ev.type === 'text' && ev.content) {
             text += ev.content;
             if (onDelta) onDelta(ev.content);
