@@ -274,8 +274,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 eventWindow,
                 // Hunt permission rides the SAME admin gate as narration web
                 // search: events category enabled + master switch on. The
-                // store decides WHEN (thin shelf for the asked window).
-                eventsHunt: (category === 'events' && webSearch) ? { webSearch } : null,
+                // store decides WHEN (unseen shelf thin for the asked window)
+                // — unless the user EXPLICITLY ordered a search ("see in
+                // internet…", 2026-08-23: that order was ignored). Brain
+                // decides (intent.wantsSearch); tiny regex = timeout fallback.
+                eventsHunt: (category === 'events' && webSearch) ? {
+                    webSearch,
+                    force: intent.wantsSearch === true
+                        || /\b(internet|web|google|search online)\b|интернет|погугл|поищи в сети|上网|ابحث في الإنترنت|համացանց/i.test(message),
+                } : null,
                 // Clean intent query only — drives the fallback's "demanded term
                 // with zero owned matches" check (the Uzbek lesson); enriched
                 // chat tokens must never trigger paid searches.

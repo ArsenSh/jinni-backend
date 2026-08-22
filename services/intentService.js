@@ -157,6 +157,7 @@ Return ONLY this JSON object:
 "when":"<now, planned, or unspecified — 'now' when the user wants something for RIGHT NOW or tonight (going out immediately, 'where can I eat', late-hour context); 'planned' when clearly for another day (tomorrow, next week, a trip); 'unspecified' otherwise>",
 "period":"<the TIME PERIOD the message asks about (events/activities): one of today, tomorrow, weekend, next_week, Ndays (e.g. 3days for 'the next 3 days'), or explicit dates as YYYY-MM-DD..YYYY-MM-DD (resolve phrases like 'on September 5' or 'when my parents visit early September' using today's date). Follow-ups INHERIT the conversation's period ('other ones' after a next-week ask is still next_week). Empty string when no period is asked.>",
 "refill":<true or false — true when the CURRENT message asks for MORE or OTHER results of the previous ask ("other ones", "another suggestions", "ещё", "d'autres") rather than a new topic>,
+"wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "needs_weather":<true or false>}
 
 Rules:
@@ -239,6 +240,7 @@ function validateIntent(raw, message) {
         ? raw.period.trim().toLowerCase()
         : null;
     const refill = raw.refill === true;
+    const wantsSearch = raw.wants_search === true;
 
     return {
         source: 'llm',
@@ -251,6 +253,7 @@ function validateIntent(raw, message) {
         when,
         period,
         refill,
+        wantsSearch,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
         searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),

@@ -117,6 +117,34 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
         coverage: async () => false,     // fallback off unless a test enables it
     });
 
+    test('events hunt triggers on UNSEEN-thin shelves and on explicit force', async () => {
+        const huntEvents = jest.fn(async () => [{ name: 'Hunted Show', placeId: null, city: 'Yerevan', eventSchedule: { startDate: new Date() } }]);
+        const evDeps = {
+            ...fakes([], {}),
+            huntEvents,
+            Destination: { find: () => ({ lean: () => Promise.resolve([]) }) },
+            AiFoundEvent: { find: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) },
+        };
+        const base = { category: 'events', center: { ...CENTER, city: 'Yerevan' }, eventWindow: { start: new Date(), end: new Date(Date.now() + 86400000), label: 'today' }, eventsHunt: { webSearch: null } };
+        // Shelf empty for this user → hunt fires and its finds are served.
+        const out = await loadCandidates({ ...base, excludes: { placeIds: [], names: [] } }, evDeps);
+        expect(huntEvents).toHaveBeenCalledTimes(1);
+        expect(out.map(c => c.name)).toContain('Hunted Show');
+        // Explicit force hunts even when the raw shelf looks fine.
+        huntEvents.mockClear();
+        const evDeps2 = { ...evDeps, AiFoundEvent: { find: () => ({ limit: () => ({ lean: () => Promise.resolve([
+            { name: 'A', placeId: 'a', startDate: new Date(), status: 'new' },
+            { name: 'B', placeId: 'b', startDate: new Date(), status: 'new' },
+            { name: 'C', placeId: 'c', startDate: new Date(), status: 'new' },
+        ]) }) }) } };
+        await loadCandidates({ ...base, eventsHunt: { webSearch: null, force: true } }, evDeps2);
+        expect(huntEvents).toHaveBeenCalledTimes(1);
+        // No permission → no hunt.
+        huntEvents.mockClear();
+        await loadCandidates({ ...base, eventsHunt: null }, evDeps);
+        expect(huntEvents).not.toHaveBeenCalled();
+    });
+
     test('no center → []; events delegate to the events tier, never the cache', async () => {
         expect(await loadCandidates({}, fakes([], {}))).toEqual([]);
         // Events branch (2026-08-22): served by eventStore (owned event data),

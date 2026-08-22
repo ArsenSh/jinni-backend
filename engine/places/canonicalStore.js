@@ -221,10 +221,19 @@ async function loadCandidates(params = {}, deps = {}) {
         //    extract JSON-LD-verified events, STORE them (AiFoundEvent, 'new',
         //    validator-moderatable), serve as honest cards. One hunt fills
         //    the shelf for every later asker — cost amortizes toward zero. ──
-        if (evs.length < 3 && params.eventsHunt && params.eventWindow) {
+        // Thin means thin FOR THIS USER: count events they haven't already
+        // seen (2026-08-23 live: a refill excluded all 3 shelf events and the
+        // hunt never fired because the raw count looked healthy). An explicit
+        // user order to search (eventsHunt.force) overrides the threshold.
+        const _exIds = new Set((params.excludes?.placeIds || []).filter(Boolean));
+        const _exNames = new Set((params.excludes?.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
+        const unseenEvents = evs.filter(c => c
+            && !_exIds.has(c.placeId) && !_exIds.has(c.verifiedId)
+            && !_exNames.has(normalizePlaceName(c.name || ''))).length;
+        if ((unseenEvents < 3 || params.eventsHunt?.force) && params.eventsHunt && params.eventWindow) {
             try {
                 const city = params.center?.city || evs[0]?.city || null;
-                const extra = await require('../events/hunt').huntEvents({
+                const extra = await (deps.huntEvents || require('../events/hunt').huntEvents)({
                     city,
                     country: params.center?.country || null,
                     center: params.center,
