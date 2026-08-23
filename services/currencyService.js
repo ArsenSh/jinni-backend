@@ -35,14 +35,24 @@ async function fetchLatestRates() {
             url: 'https://open.er-api.com/v6/latest/USD',
             parse: (data) => data.rates
         },
-        // Option 2: exchangerate.host (backup)
+        // Option 2: fawazahmed0 currency-api via jsDelivr (CC0, no key, 341
+        // currencies INCLUDING AMD). Replaced api.exchangerate.host, which
+        // moved to APILayer and now answers every keyless call with
+        // {"success":false,"code":101,"missing_access_key"} — verified dead
+        // 2026-08-23. Keys are lowercase here, so they are upper-cased to
+        // match the shape every other source returns.
         {
-            url: 'https://api.exchangerate.host/latest?base=USD',
-            parse: (data) => data.rates
+            url: 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+            parse: (data) => Object.fromEntries(
+                Object.entries(data?.usd || {}).map(([k, v]) => [k.toUpperCase(), v])
+            )
         },
-        // Option 3: frankfurter.app (backup, no keys needed)
+        // Option 3: frankfurter (api.frankfurter.app now 301s to .dev/v1).
+        // LAST resort on purpose: it carries only the ~30 ECB currencies and
+        // has NO AMD, GEL or RUB — it cannot serve Jinni's home currency, so
+        // AMD would fall back to the stale constant below.
         {
-            url: 'https://api.frankfurter.app/latest?from=USD',
+            url: 'https://api.frankfurter.dev/v1/latest?from=USD',
             parse: (data) => data.rates
         }
     ];
