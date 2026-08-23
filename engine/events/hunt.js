@@ -119,15 +119,40 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     // picture as og:image on the event page. So a
                     // thumbnail-looking URL counts as "no good image yet".
                     const looksThumbnail = (u) => /thumbnail|\/thumb|_thumb|\b\d{2,4}[x_]\d{2,4}\b|small|preview/i.test(String(u || ''));
+                    const { _structuredFromHtml } = require('../search/readPage');
+                    // FOLLOW THE EVENT TO ITS OWN PAGE. Listing pages carry
+                    // teasers; the event page carries the machine-readable
+                    // truth — start time, ticket price, venue, full poster.
+                    // Proven live 2026-08-24: tomsarkgh's listing exposes NO
+                    // structured data, its event page exposes all of it. This
+                    // is site-agnostic: it is where publishers put it.
                     let detailBudget = 6;
                     for (const e of extracted) {
-                        if ((!e.image || looksThumbnail(e.image)) && e.url && e.url !== page.url && detailBudget > 0) {
+                        const wantPoster = !e.image || looksThumbnail(e.image);
+                        const wantFacts = !e.price || !e.startDate
+                            || (e.startDate.getUTCHours() === 0 && e.startDate.getUTCMinutes() === 0);
+                        if ((wantPoster || wantFacts) && e.url && e.url !== page.url && detailBudget > 0) {
                             detailBudget--;
                             try {
                                 const dHtml = await fetchHtml(e.url, { timeoutMs: deps.timeoutMs || 10000 });
-                                const og = dHtml && (dHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1];
-                                if (og && /^https:\/\//i.test(og)) e.image = og;
-                            } catch { /* poster is optional */ }
+                                if (dHtml) {
+                                    if (wantPoster) {
+                                        const og = (dHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1];
+                                        if (og && /^https:\/\//i.test(og)) e.image = og;
+                                    }
+                                    const day = e.startDate.toISOString().slice(0, 10);
+                                    const hit = _structuredFromHtml(dHtml).find(o => o.day === day)
+                                        || _structuredFromHtml(dHtml)[0];
+                                    if (hit) {
+                                        if (hit.time && wantFacts) {
+                                            e.startDate = new Date(`${day}T${hit.time}:00Z`);
+                                            console.log(`[hunt] detail page gave "${String(e.name).slice(0, 40)}" an exact start ${hit.time}`);
+                                        }
+                                        if (hit.price && !e.price) e.price = hit.price;
+                                        if (hit.venue && !e.venueName) e.venueName = hit.venue;
+                                    }
+                                }
+                            } catch { /* the listing data still stands */ }
                         }
                         found.push({ ...e, sourceUrl: e.url || u.url });
                     }

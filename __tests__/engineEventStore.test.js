@@ -281,6 +281,47 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(jazzOp.sourceUrl).toBe('https://afisha.am/e/jazz-night'); // Check listing → the event's own page
     });
 
+    // Publishers annotate events in three interchangeable standards and which
+    // one a site picked is arbitrary — so the reader must understand all three
+    // (Arsen 2026-08-24: "i want code that can understand almost every type of
+    // website it enters"). tomsarkgh's real markup is the microdata case.
+    test('structured data: microdata, RDFa and JSON-LD normalise to one shape', () => {
+        const { _structuredFromHtml } = require('../engine/search/readPage');
+        const microdata = '<meta itemprop="startDate" content="2026-08-30 20:00">'
+            + '<span itemprop="location" itemscope><span itemprop="name">Bohem theatre</span></span>'
+            + '<span itemprop="offers" itemscope><meta itemprop="price" content="3000.00">'
+            + '<meta itemprop="priceCurrency" content="AMD"></span>';
+        expect(_structuredFromHtml(microdata)).toEqual([
+            { day: '2026-08-30', time: '20:00', price: '3000 AMD', venue: 'Bohem theatre' },
+        ]);
+
+        const rdfa = '<div property="startDate" content="2026-09-04T21:30"></div>'
+            + '<meta property="price" content="150.00"><meta property="priceCurrency" content="AED">';
+        expect(_structuredFromHtml(rdfa)[0]).toMatchObject({ day: '2026-09-04', time: '21:30', price: '150 AED' });
+
+        const jsonld = '<script type="application/ld+json">'
+            + '{"@type":"Event","name":"Desert Gig","startDate":"2026-09-05T19:00:00Z",'
+            + '"location":{"@type":"Place","name":"Coca-Cola Arena"}}</script>';
+        expect(_structuredFromHtml(jsonld)[0]).toMatchObject({ day: '2026-09-05', time: '19:00', venue: 'Coca-Cola Arena' });
+
+        expect(_structuredFromHtml('<p>no structured data here</p>')).toEqual([]);
+    });
+
+    test('structured data OVERRULES the model — the "All day" that should be 20:00', async () => {
+        const win = parseEventWindow('next week', NOW);
+        const page = {
+            url: 'https://a.am', title: 'T',
+            text: 'Super Grig on 30 August at Bohem theatre',            // no time in the prose
+            microdata: [{ day: '2026-08-30', time: '20:00', price: '3000 AMD', venue: 'Bohem theatre' }],
+        };
+        const narrator = { stream: async () => ({ text: JSON.stringify([
+            { name: 'Super Grig', startDate: '2026-08-30', time: null, price: null },
+        ]) }) };
+        const evs = await extractEventsFromPage(page, { city: 'Yerevan', window: win }, { narrator });
+        expect(evs[0].startDate.toISOString()).toContain('T20:00');      // was "All day"
+        expect(evs[0].price).toBe('3000 AMD');
+    });
+
     // A number the page does not print is not a fact (Arsen 2026-08-24: "jinni
     // said at 19:00 but in the soucre i found 20:00", plus tomsarkgh's prices).
     test('times and prices must be FINDABLE on the page, or they are dropped', async () => {

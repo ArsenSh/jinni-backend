@@ -159,6 +159,93 @@ function _findAssetsNear(html, baseUrl, name) {
     return out;
 }
 
+// ── schema.org MICRODATA (itemprop attributes) ──────────────────────────────
+// Arsen 2026-08-24 pasted tomsarkgh's markup and it changed the design: the site
+// publishes machine-readable microdata, NOT JSON-LD, so the JSON-LD extractor
+// skipped it and the model was left guessing times from prose:
+//
+//   <meta itemprop="startDate" content="2026-08-30 20:00">
+//   <meta itemprop="price" content="3000.00"> <meta itemprop="priceCurrency" content="AMD">
+//
+// An exact machine-readable fact beats a model reading every time, so when the
+// page carries microdata it OVERRULES the model for time and price. Matching is
+// by calendar day, which is what both sides agree on.
+const _MD_WINDOW_BEFORE = 2500;
+const _MD_WINDOW_AFTER = 3500;
+
+function _microdataOccurrences(html) {
+    const out = [];
+    if (!html) return out;
+    const re = /itemprop=["']startDate["'][^>]*content=["'](\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/gi;
+    let m;
+    while ((m = re.exec(html)) && out.length < 60) {
+        const near = html.slice(Math.max(0, m.index - _MD_WINDOW_BEFORE), m.index + _MD_WINDOW_AFTER);
+        const price = (near.match(/itemprop=["']price["'][^>]*content=["']([\d.,]+)["']/i) || [])[1] || null;
+        const currency = (near.match(/itemprop=["']priceCurrency["'][^>]*content=["']([A-Za-z]{3})["']/i) || [])[1] || null;
+        const venue = (near.match(/itemprop=["']location["'][\s\S]{0,400}?itemprop=["']name["'][^>]*>([^<]{2,80})</i) || [])[1]
+            || (near.match(/itemprop=["']location["'][\s\S]{0,400}?itemprop=["']name["'][^>]*content=["']([^"']{2,80})["']/i) || [])[1]
+            || null;
+        out.push({
+            day: m[1],
+            time: m[2],
+            // "3000.00" + "AMD" → "3000 AMD"; trailing .00 is noise on a card.
+            price: price ? `${String(price).replace(/[.,]00$/, '')}${currency ? ` ${currency.toUpperCase()}` : ''}` : null,
+            venue: venue ? venue.trim() : null,
+        });
+    }
+    return out;
+}
+
+/**
+ * STRUCTURED DATA LADDER — the generic way to understand an unknown site
+ * (Arsen 2026-08-24: "there may be other websites, like in dubai, and i want
+ * code that can understand almost every type of website it enters").
+ *
+ * Publishers annotate events in one of three interchangeable standards, and
+ * which one a site picked is arbitrary. So we read ALL of them and normalise:
+ *   1. JSON-LD      <script type="application/ld+json"> {"@type":"Event"…}
+ *   2. Microdata    itemprop="startDate" content="2026-08-30 20:00"   ← tomsarkgh
+ *   3. RDFa         property="startDate" content="…"
+ * Anything found here is EXACT and outranks the model's reading of the prose.
+ *
+ * Proven on the live site 2026-08-24: the tomsarkgh LISTING page carries none of
+ * this, its EVENT page carries all of it — which is why the reader follows an
+ * event to its own page before giving up on a fact.
+ */
+function _structuredFromHtml(html) {
+    const out = _microdataOccurrences(html);
+    // RDFa uses property= instead of itemprop=; same shape, same window logic.
+    const rdfa = /property=["'](?:schema:)?startDate["'][^>]*content=["'](\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/gi;
+    let m;
+    while ((m = rdfa.exec(html)) && out.length < 60) {
+        const near = html.slice(Math.max(0, m.index - _MD_WINDOW_BEFORE), m.index + _MD_WINDOW_AFTER);
+        const price = (near.match(/property=["'](?:schema:)?price["'][^>]*content=["']([\d.,]+)["']/i) || [])[1] || null;
+        const currency = (near.match(/property=["'](?:schema:)?priceCurrency["'][^>]*content=["']([A-Za-z]{3})["']/i) || [])[1] || null;
+        out.push({
+            day: m[1], time: m[2], venue: null,
+            price: price ? `${String(price).replace(/[.,]00$/, '')}${currency ? ` ${currency.toUpperCase()}` : ''}` : null,
+        });
+    }
+    // JSON-LD last: the existing events extractor already normalises it.
+    try {
+        const { _extractLdEvents, _normalizeLdEvent } = require('../events/listing');
+        for (const raw of (_extractLdEvents(html) || [])) {
+            const n = _normalizeLdEvent(raw);
+            if (!n?.startDate) continue;
+            const d = new Date(n.startDate);
+            if (Number.isNaN(d.getTime())) continue;
+            const iso = d.toISOString();
+            out.push({
+                day: iso.slice(0, 10),
+                time: /T\d{2}:\d{2}/.test(String(n.startDate)) ? iso.slice(11, 16) : null,
+                price: n.price || null,
+                venue: n.venueName || null,
+            });
+        }
+    } catch { /* listing module optional */ }
+    return out.filter(o => o.day);
+}
+
 // A number the page does not print is not a fact. Live 2026-08-23: Jinni showed
 // an event at 19:00 while the source said 20:00 — the model's time was never
 // checked against the page. Times and prices must now be FINDABLE in the text,
@@ -196,7 +283,13 @@ function _reducePage(html, url, maxChars = DEFAULT_MAX_CHARS) {
     if (!text.trim() && !title) return null;
     // `html` rides along so per-event asset matching can read the card markup
     // around each title. It is NEVER sent to the model — only page.text is.
-    return { url, title, description, image: images[0] || null, images, imagePairs: _imagePairs(html, url), linkPairs: _linkPairs(html, url), html, text };
+    return {
+        url, title, description, image: images[0] || null, images,
+        imagePairs: _imagePairs(html, url), linkPairs: _linkPairs(html, url),
+        // Exact machine-readable facts, when the site publishes them.
+        microdata: _structuredFromHtml(html),
+        html, text,
+    };
 }
 
 /**
@@ -283,8 +376,23 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
             // the source said 20:00).
             const claimed = (typeof e.time === 'string' && /^\d{1,2}:\d{2}$/.test(e.time))
                 ? e.time.padStart(5, '0') : null;
-            const time = (claimed && _timeOnPage(page.text, claimed)) ? claimed : '00:00';
-            const price = _priceOnPage(page.text, e.price) ? String(e.price).trim().slice(0, 40) : null;
+            let time = (claimed && _timeOnPage(page.text, claimed)) ? claimed : '00:00';
+            let price = _priceOnPage(page.text, e.price) ? String(e.price).trim().slice(0, 40) : null;
+
+            // MICRODATA WINS. The site stated this in machine-readable form, so
+            // it outranks anything the model read out of the prose — this is
+            // what turns tomsarkgh's "All day" into a real 20:00 and gives the
+            // card an exact "3000 AMD".
+            const md = (Array.isArray(page.microdata) ? page.microdata : [])
+                .filter(o => o.day === e.startDate);
+            const exact = md.find(o => o.venue && e.venueName && o.venue === e.venueName) || md[0];
+            if (exact) {
+                if (exact.time && exact.time !== time) {
+                    if (time !== '00:00') console.log(`[read] microdata corrected "${name}" ${time} → ${exact.time}`);
+                    time = exact.time;
+                }
+                if (exact.price) price = exact.price;
+            }
             const start = new Date(`${e.startDate}T${time}:00Z`);
             if (Number.isNaN(start.getTime())) continue;
             if (start > wEnd || start < new Date(wStart.getTime() - 12 * 3600 * 1000)) continue;   // window brake
@@ -323,4 +431,4 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
     }
 }
 
-module.exports = { readPage, extractEventsFromPage, _reducePage, _findAssetsNear, _timeOnPage, _priceOnPage, DEFAULT_TIMEOUT_MS };
+module.exports = { readPage, extractEventsFromPage, _reducePage, _findAssetsNear, _timeOnPage, _priceOnPage, _microdataOccurrences, _structuredFromHtml, DEFAULT_TIMEOUT_MS };
