@@ -739,11 +739,19 @@ const runKnowledgeSync = async () => {
     try {
         const { syncKnowledge } = require('./engine/knowledge/sync');
         const EventSource = require('./models/EventSource');
-        const rows = await EventSource.find({ enabled: true }).lean();
+        const LocalFact = require('./models/LocalFact');
+        // Registered event-source cities PLUS anything already in the store —
+        // so a place synced once by hand (a script run for another city) keeps
+        // refreshing forever instead of ageing out silently.
+        const [srcRows, factRows] = await Promise.all([
+            EventSource.find({ enabled: true }).select('city country').lean(),
+            LocalFact.aggregate([{ $group: { _id: { city: '$city', country: '$country' } } }]),
+        ]);
+        const rows = [...srcRows, ...factRows.map(r => r._id)];
         const seen = new Set();
         let places = 0, facts = 0;
         for (const r of rows) {
-            const k = `${r.city}|${r.country}`.toLowerCase();
+            const k = `${r.city || ''}|${r.country || ''}`.toLowerCase();
             if (seen.has(k) || !(r.city || r.country)) continue;
             seen.add(k);
             const out = await syncKnowledge({ city: r.city, country: r.country });
