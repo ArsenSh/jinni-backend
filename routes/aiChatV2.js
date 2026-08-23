@@ -30,7 +30,7 @@ const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
-const { lookupFacts, topicFor } = require('../engine/knowledge/sync');
+const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
@@ -451,7 +451,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    stays private via the splitter. Failure modes degrade in
                 //    order: no tail → fact-line cards; stream error → the older
                 //    one-shot JSON call; that too → plain grounded prose. ──
-                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns };
+                // Owned notes on a PLACES turn: "where can I buy a SIM card"
+                // should answer with the operators AND card the shops, instead
+                // of claiming a phone-repair shop sells tourist SIMs.
+                const askTopic = topicFor(intent.infoTopic) || topicForQuery(retrievalQuery);
+                const placeFacts = askTopic
+                    ? await lookupFacts({
+                        ...(await resolveRegion({ center, placeNames: intent.placeNames })),
+                        topic: askTopic, limit: 1,
+                    })
+                    : [];
+                if (placeFacts.length) meta.localFacts = placeFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
+                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns, localFacts: placeFacts };
                 let intro = '', blurbs = [], streamedOk = false;
                 try {
                     const splitter = new DelimitedSplitter((text) => send(res, { type: 'token', content: text }));

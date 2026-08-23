@@ -92,6 +92,36 @@ describe('sync + lookup: owned, ranked, and refused when stale', () => {
             expect(topicFor(l)).toBeNull();
     });
 
+    // A PLACES turn can still need owned knowledge (Arsen 2026-08-24: "where can
+    // I buy a SIM card" carded phone-repair shops and Jinni claimed one sold
+    // tourist SIMs). Whole-token matching only — "rent an apartment" must not
+    // load bus notes.
+    test('topicForQuery grounds a places ask, without false positives', () => {
+        const { topicForQuery } = require('../engine/knowledge/sync');
+        expect(topicForQuery('where can I buy a SIM card')).toBe('connect');
+        expect(topicForQuery('currency exchange')).toBe('money');
+        expect(topicForQuery('is it safe at night')).toBe('safety');
+        // Car hire is both a place and transport knowledge — two tokens needed.
+        expect(topicForQuery('where can I rent a car')).toBe('get_around');
+        expect(topicForQuery('scooter rental')).toBe('get_around');
+        expect(topicForQuery('аренда авто')).toBe('get_around');
+        for (const q of ['rent an apartment', 'rooftop bars', 'vegan restaurants', 'carpet shop', ''])
+            expect(topicForQuery(q)).toBeNull();
+    });
+
+    test('the places prompt carries owned notes, capped, without touching the card contract', () => {
+        const { buildStreamedNarrationMessages } = require('../engine/narrator/prompts/grounded');
+        const facts = [{ sourceName: 'Jinni staff', title: 'Yerevan — SIM cards', body: 'X'.repeat(3000) }];
+        const withFacts = buildStreamedNarrationMessages({ query: 'sim card', places: [{ name: 'Viva' }], localFacts: facts });
+        expect(withFacts[0].content).toContain('VERIFIED LOCAL NOTES');
+        expect(withFacts[0].content).toContain('never claim a listed place offers something no fact states');
+        expect(withFacts[1].content).toContain('[Jinni staff]');
+        expect(withFacts[1].content).not.toContain('X'.repeat(1300));      // capped at 1200
+        const plain = buildStreamedNarrationMessages({ query: 'rooftop bars', places: [{ name: 'Liftup' }] });
+        expect(plain[1].content).not.toContain('VERIFIED LOCAL NOTES');
+        expect(plain[0].content).toContain('<<<CARDS>>>');                 // contract intact
+    });
+
     test('validateIntent keeps the RAW label beside the folded one', () => {
         const { validateIntent } = require('../services/intentService');
         const base = { is_travel: true, action_type: 'general', language: 'en', place_search_query: '' };

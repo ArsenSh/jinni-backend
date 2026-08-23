@@ -844,6 +844,58 @@ router.delete('/event-sources/:id', aiEventGate, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── LOCAL FACTS — staff-written answers, the TOP trust tier ─────────────────
+// Wikivoyage and FCDO rows are fetched and refreshed automatically; a row
+// written here is `validator` tier, outranks both, and the daily sync never
+// overwrites it. This is how a human corrects the machine — e.g. 2026-08-24,
+// Jinni told a traveler a phone-repair shop sold tourist SIMs, when the real
+// answer is Team/Ucom/Viva and the airport desks.
+const LocalFact = require('../models/LocalFact');
+
+router.get('/local-facts', aiEventGate, async (req, res) => {
+    try {
+        const rows = await LocalFact.find({}).sort({ country: 1, city: 1, topic: 1 }).limit(500).lean();
+        res.json({ success: true, data: rows.filter(f => isWithinScope(req.user, { country: f.country, city: f.city })) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/local-facts', aiEventGate, async (req, res) => {
+    try {
+        const { city, country, topic, title, body, sourceName, sourceUrl } = req.body || {};
+        if (!topic?.trim() || !body?.trim()) return res.status(400).json({ error: 'topic and body are required' });
+        if (!city?.trim() && !country?.trim()) return res.status(400).json({ error: 'city or country is required' });
+        if (!isWithinScope(req.user, { country: country?.trim() || null, city: city?.trim() || null })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        const key = `${[city?.trim(), country?.trim()].filter(Boolean).join('|').toLowerCase()}|${topic.trim()}`;
+        const row = await LocalFact.findOneAndUpdate({ key }, {
+            $set: {
+                key, city: city?.trim() || null, country: country?.trim() || null,
+                topic: topic.trim(), title: title?.trim() || null, body: body.trim(),
+                sourceName: sourceName?.trim() || 'Jinni staff',
+                sourceUrl: sourceUrl?.trim() || 'https://jinni.travel',
+                tier: 'validator', status: 'approved',
+                fetchedAt: new Date(), reviewedAt: new Date(),
+                // Staff notes do not expire on a fetch schedule; a human owns them.
+                staleAfter: null, caveat: null, license: null,
+            },
+        }, { upsert: true, new: true });
+        res.json({ success: true, data: row });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.delete('/local-facts/:id', aiEventGate, async (req, res) => {
+    try {
+        const row = await LocalFact.findById(req.params.id);
+        if (!row) return res.status(404).json({ error: 'Fact not found' });
+        if (!isWithinScope(req.user, { country: row.country, city: row.city })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        await row.deleteOne();
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/staff/ai-events?status=new|approved|hidden|all
 router.get('/ai-events', aiEventGate, async (req, res) => {
     try {

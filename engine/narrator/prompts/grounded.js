@@ -105,12 +105,12 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
 /** Owned, sourced knowledge → prompt block. Facts outrank model memory, and
  *  the source is named so the answer can attribute it (a licence duty for
  *  Wikivoyage's CC BY-SA and the FCDO's Open Government Licence alike). */
-function localFactsBlock(facts = []) {
+function localFactsBlock(facts = [], maxChars = 4000) {
     if (!Array.isArray(facts) || !facts.length) return '';
     return '\nVERIFIED LOCAL NOTES — prefer these over your own knowledge, and name the source in your reply:\n'
         + facts.map(f => {
             const age = f.reviewedAt ? ` (source reviewed ${new Date(f.reviewedAt).toISOString().slice(0, 10)})` : '';
-            return `[${f.sourceName}${age}] ${f.title || ''}\n${f.body}`
+            return `[${f.sourceName}${age}] ${f.title || ''}\n${String(f.body || '').slice(0, maxChars)}`
                 + (f.caveat ? `\nCAVEAT you must pass on: ${f.caveat}` : '');
         }).join('\n\n') + '\n';
 }
@@ -227,7 +227,7 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [] }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [] }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -242,6 +242,13 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
+              // Owned notes on a PLACES turn (Arsen 2026-08-24, after "where can
+              // I buy a SIM card" returned phone-repair shops and a blurb
+              // claimed one sold tourist SIMs). The notes say what a local
+              // knows; the cards stay whatever search found.
+              + (localFacts.length
+                  ? '- You also hold VERIFIED LOCAL NOTES below. Open the prose with what they say when it answers the ask better than the cards do (which operators/companies actually serve travellers, what documents are needed), then present the cards as where to go. Never contradict the notes from memory, and never claim a listed place offers something no fact states.\n'
+                  : '')
               + '- The card deck is already FIXED by search — your tail only LABELS it. So ALWAYS emit the <<<CARDS>>> line with one blurb per index: when the places fit poorly, when the traveler seems to have changed subject, and even when you want to ask something first. Put the caveat in the prose, the question in "question", and still describe every card. Omitting the tail, or returning an empty "cards" array, leaves the traveler staring at unlabelled cards (live 2026-08-23: five event cards each read only "Event").',
         },
         ...historyTurns(history),
@@ -250,6 +257,8 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
             content:
                 `Traveler asks: "${query}"\n`
               + (timeNote ? `Right now: ${timeNote}.\n` : '')
+              // Capped hard: a places turn must not pay full-length notes.
+              + localFactsBlock(localFacts, 1200)
               + `Verified places:\n${facts}`,
         },
     ];

@@ -39,6 +39,39 @@ function topicFor(infoAskLabel) {
     return null;
 }
 
+// The same mapping, driven by the ASK itself rather than an intent label — so a
+// PLACES turn can still be grounded in owned notes. Live 2026-08-24: "where can
+// I buy a SIM card" returned phone-repair shops and Jinni claimed one of them
+// sold tourist SIMs; the real answer (Team / Ucom / Viva, airport desks,
+// passport required) is knowledge, not a card.
+//
+// Whole-token matching only: "sim" must be a word, never a fragment inside
+// another, or every "carpet" ask would load transport notes.
+const _QUERY_TOPICS = [
+    ['connect', ['sim', 'esim', 'simcard', 'wifi', 'internet', 'roaming', 'mobile', 'data']],
+    ['money', ['exchange', 'currency', 'atm', 'tipping', 'tip', 'cash', 'dram', 'money']],
+    ['entry_requirements', ['visa', 'passport', 'border', 'customs', 'immigration']],
+    ['safety', ['safe', 'safety', 'dangerous', 'scam', 'crime']],
+    ['health', ['pharmacy', 'vaccine', 'vaccination', 'hospital', 'insurance']],
+    ['get_around', ['metro', 'marshrutka', 'taxi', 'tram', 'trolleybus']],
+];
+function topicForQuery(text) {
+    const tokens = new Set(String(text || '').toLowerCase().split(/[^a-zа-яա-ֆ0-9]+/).filter(Boolean));
+    if (!tokens.size) return null;
+    // Car/scooter/bike hire is BOTH a place to walk into and transport
+    // knowledge (licence, insurance, road conditions live in "Get around").
+    // Two tokens required so an apartment "rent" never loads bus notes.
+    const rentish = tokens.has('rent') || tokens.has('rental') || tokens.has('hire')
+        || tokens.has('аренда') || tokens.has('прокат');
+    const vehicle = tokens.has('car') || tokens.has('scooter') || tokens.has('bike')
+        || tokens.has('bicycle') || tokens.has('машину') || tokens.has('авто');
+    if (rentish && vehicle) return 'get_around';
+    for (const [topic, words] of _QUERY_TOPICS) {
+        if (words.some(w => tokens.has(w))) return topic;
+    }
+    return null;
+}
+
 function _esc(s) { return String(s).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 function _row(f, { city, country, tier, now }) {
@@ -122,4 +155,4 @@ async function lookupFacts({ city = null, country = null, place = null, topic = 
     }
 }
 
-module.exports = { syncKnowledge, lookupFacts, topicFor, STALE_DAYS };
+module.exports = { syncKnowledge, lookupFacts, topicFor, topicForQuery, STALE_DAYS };
