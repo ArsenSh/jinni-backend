@@ -31,6 +31,7 @@ const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
 const { lookupFacts, topicFor } = require('../engine/knowledge/sync');
+const { resolveRegion } = require('../engine/context/region');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -226,10 +227,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Owned knowledge first (Wikivoyage "Get around" etc.). For a city
             // like Yerevan no transit feed exists anywhere, so these notes are
             // the only real source there is — they outrank model memory.
-            const gaFacts = await lookupFacts({
-                city: center?.city, country: center?.country,
-                topic: topicFor(intent.infoAsk || 'transport'),
-            });
+            const region = await resolveRegion({ center, placeNames: intent.placeNames });
+            const gaFacts = await lookupFacts({ ...region, topic: topicFor(intent.infoAsk || 'transport') });
             const gaMessages = buildGettingAroundMessages({
                 message, langName, cityLabel, history: recentTurns,
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
@@ -270,7 +269,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             }
             meta.answerType = 'getting_around';
-            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'}`);
+            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
         } else if (namedCard) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),
@@ -293,7 +292,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // this country, it grounds the reply — the model never generates
             // entry rules from memory (the highest-harm question we get).
             const infoFacts = intent.infoAsk
-                ? await lookupFacts({ city: center?.city, country: center?.country, topic: topicFor(intent.infoAsk) })
+                ? await lookupFacts({
+                    ...(await resolveRegion({ center, placeNames: intent.placeNames })),
+                    topic: topicFor(intent.infoAsk),
+                })
                 : [];
             if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             const out = await narrator.stream({

@@ -17,7 +17,9 @@ const APPLY = process.argv.includes('--apply');
 const SOURCES = [
     { name: 'Tomsarkgh',         url: 'https://www.tomsarkgh.am/en',      city: 'Yerevan', country: 'Armenia' },
     { name: 'AllEvents Yerevan', url: 'https://allevents.in/yerevan/all', city: 'Yerevan', country: 'Armenia' },
-    { name: 'Ticketing.am',      url: 'https://ticketing.am/en',          city: 'Yerevan', country: 'Armenia' },
+    // ticketing.am does not resolve (live 2026-08-23: "[hunt] … fetch failed");
+    // ticket.am is the working host.
+    { name: 'Ticket.am',         url: 'https://ticket.am',                city: 'Yerevan', country: 'Armenia' },
 ];
 
 (async () => {

@@ -88,13 +88,19 @@ async function syncKnowledge({ city = null, country = null } = {}, deps = {}) {
  * country-wide rows; hidden and STALE rows are never served — a stale entry
  * requirement must be re-read, not repeated.
  */
-async function lookupFacts({ city = null, country = null, topic = null, limit = 2 } = {}, deps = {}) {
+async function lookupFacts({ city = null, country = null, place = null, topic = null, limit = 2 } = {}, deps = {}) {
     if (!topic) return [];
     const LocalFact = deps.LocalFact || require('../../models/LocalFact');
     const now = deps.nowFn ? new Date(deps.nowFn()) : new Date();
     const scopes = [];
     if (city) scopes.push({ city: new RegExp(`^${_esc(city)}$`, 'i') });
     if (country) scopes.push({ city: null, country: new RegExp(`^${_esc(country)}$`, 'i') });
+    // A place NAMED in the message — could be a city or a country, we don't
+    // know which, so match either ("do I need a visa for Armenia").
+    if (place) {
+        const re = new RegExp(`^${_esc(place)}$`, 'i');
+        scopes.push({ city: re }, { city: null, country: re });
+    }
     if (!scopes.length) return [];
     try {
         const rows = await LocalFact.find({

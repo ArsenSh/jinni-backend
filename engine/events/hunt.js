@@ -113,9 +113,15 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     // thumbnails — spend a few extra fetches on events whose
                     // own link the model matched but whose image it couldn't
                     // (allevents.in live 2026-08-23: 7 events, 0 posters).
-                    let detailBudget = 4;
+                    // A listing thumbnail makes a poor card image (Arsen
+                    // 2026-08-23: "images little bad quality than in that web")
+                    // — tomsarkgh serves 260x146 crops in the list and the full
+                    // picture as og:image on the event page. So a
+                    // thumbnail-looking URL counts as "no good image yet".
+                    const looksThumbnail = (u) => /thumbnail|\/thumb|_thumb|\b\d{2,4}[x_]\d{2,4}\b|small|preview/i.test(String(u || ''));
+                    let detailBudget = 6;
                     for (const e of extracted) {
-                        if (!e.image && e.url && e.url !== page.url && detailBudget > 0) {
+                        if ((!e.image || looksThumbnail(e.image)) && e.url && e.url !== page.url && detailBudget > 0) {
                             detailBudget--;
                             try {
                                 const dHtml = await fetchHtml(e.url, { timeoutMs: deps.timeoutMs || 10000 });

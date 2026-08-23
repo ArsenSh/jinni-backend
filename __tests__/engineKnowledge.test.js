@@ -116,6 +116,32 @@ describe('sync + lookup: owned, ranked, and refused when stale', () => {
         expect(stale).toEqual([]);                                     // re-read, never repeat
     });
 
+    // The live bug: the answer paths skip retrieval, so city/country were never
+    // resolved and every lookup came back empty — Jinni answered Yerevan
+    // transport from memory and named Uber and Bolt, which don't operate there.
+    test('region resolves from GPS (cached) and from a place named in the message', async () => {
+        const { resolveRegion, _CACHE } = require('../engine/context/region');
+        _CACHE.clear();
+        const detectUserRegion = jest.fn(async () => ({ city: 'Yerevan', country: 'Armenia' }));
+        const a = await resolveRegion({ center: { lat: 40.1866, lng: 44.5157 } }, { detectUserRegion });
+        expect(a).toEqual({ city: 'Yerevan', country: 'Armenia', place: null });
+        // Same ~1 km cell → served from cache. (Points either side of a cell
+        // boundary do pay a second lookup; that is the cost of a simple grid
+        // and it is one geocode, not a per-turn charge.)
+        await resolveRegion({ center: { lat: 40.1871, lng: 44.5152 } }, { detectUserRegion });
+        expect(detectUserRegion).toHaveBeenCalledTimes(1);
+        const b = await resolveRegion({ center: null, placeNames: ['Armenia'] }, { detectUserRegion });
+        expect(b.place).toBe('Armenia');
+    });
+
+    test('a named place finds country rows even with no GPS scope', async () => {
+        const rows = [{ topic: 'entry_requirements', city: null, country: 'Armenia', tier: 'fcdo', body: 'visa-free', staleAfter: new Date(NOW + 1e9) }];
+        const got = await lookupFacts({ place: 'Armenia', topic: 'entry_requirements' },
+            { LocalFact: factsFor(rows), nowFn: () => NOW });
+        expect(got).toHaveLength(1);
+        expect(await lookupFacts({ topic: 'entry_requirements' }, { LocalFact: factsFor(rows), nowFn: () => NOW })).toEqual([]);
+    });
+
     test('the prompt block names the source, its review date and the caveat', () => {
         const block = localFactsBlock([{
             sourceName: 'UK FCDO', title: 'Armenia — Entry requirements', body: 'Visa-free 180 days.',
