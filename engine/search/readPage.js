@@ -249,7 +249,11 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
         for (const e of arr.slice(0, 20)) {
             if (!e || typeof e.name !== 'string' || !e.name.trim()) continue;
             if (typeof e.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.startDate)) continue;
-            const time = (typeof e.time === 'string' && /^\d{2}:\d{2}$/.test(e.time)) ? e.time : '12:00';
+            // No time on the page ⇒ MIDNIGHT, which the card renders as "All
+            // day". The old 12:00 default invented a start time and the card
+            // showed it as fact (live 2026-08-23: every tomsarkgh event read
+            // "12:00"). An unknown time must look unknown.
+            const time = (typeof e.time === 'string' && /^\d{2}:\d{2}$/.test(e.time)) ? e.time : '00:00';
             const start = new Date(`${e.startDate}T${time}:00Z`);
             if (Number.isNaN(start.getTime())) continue;
             if (start > wEnd || start < new Date(wStart.getTime() - 12 * 3600 * 1000)) continue;   // window brake

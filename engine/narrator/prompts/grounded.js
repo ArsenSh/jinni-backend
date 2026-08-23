@@ -238,7 +238,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
-              + '- If nothing genuinely fits, say so honestly in the prose and return "cards": [].',
+              + '- The card deck is already FIXED by search — your tail only LABELS it. So ALWAYS emit the <<<CARDS>>> line with one blurb per index: when the places fit poorly, when the traveler seems to have changed subject, and even when you want to ask something first. Put the caveat in the prose, the question in "question", and still describe every card. Omitting the tail, or returning an empty "cards" array, leaves the traveler staring at unlabelled cards (live 2026-08-23: five event cards each read only "Event").',
         },
         ...historyTurns(history),
         {

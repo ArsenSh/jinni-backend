@@ -118,3 +118,30 @@ describe('narrator blurbs + address on cards', () => {
         expect(toRecommendation(CAND, 0, { action: 'hotels' }).location).toBe('Yerevan, Armenia');
     });
 });
+
+// Blurb-less event cards (Arsen 2026-08-23: "lets fix blurbs too"). Five
+// tomsarkgh cards each read only "Event" because the model asked a clarifying
+// question instead of emitting the <<<CARDS>>> tail — so the FALLBACK has to
+// carry real facts.
+describe('factDescription: events describe themselves without a blurb', () => {
+    const { toRecommendation } = require('../engine/narrator/cards');
+    const descOf = (startDate, venueName = null) => toRecommendation(
+        { name: 'X', eventSchedule: { startDate }, venueName, distanceKm: 6.5 }, 0, { action: 'events' }).description;
+
+    test('date + venue, and midnight stays time-less (an unknown time is not 12:00)', () => {
+        expect(descOf(new Date('2026-08-30T00:00:00Z'), 'Bohem theatre')).toBe('Sunday, Aug 30 — Bohem theatre');
+        expect(descOf(new Date('2026-08-25T19:30:00Z'), 'Adana Complex')).toBe('Tuesday, Aug 25 at 19:30 — Adana Complex');
+        expect(descOf(new Date('2026-08-24T00:00:00Z'))).toBe('Monday, Aug 24');
+    });
+
+    test('non-events keep the category fact line', () => {
+        expect(toRecommendation({ name: 'Y', rating: 4.6, distanceKm: 1.2 }, 0, { action: 'restaurants' }).description)
+            .toBe('Restaurant · 1.2 km away · rated 4.6');
+    });
+
+    test('a narrator blurb still wins over the fallback', () => {
+        const r = toRecommendation({ name: 'X', eventSchedule: { startDate: new Date('2026-08-30T00:00:00Z') } }, 0,
+            { action: 'events', description: 'An Armenian dance celebration.' });
+        expect(r.description).toBe('An Armenian dance celebration.');
+    });
+});

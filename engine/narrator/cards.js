@@ -26,6 +26,20 @@ function categoryFor(place, action) {
 
 /** Factual one-liner card description — only facts the candidate carries. */
 function factDescription(place, category) {
+    // Events carry facts worth reading even when narration gives no blurb —
+    // live 2026-08-23 five tomsarkgh cards all read just "Event" because the
+    // model asked a clarifying question instead of emitting the card tail.
+    const start = place.eventSchedule?.startDate;
+    if (start) {
+        const d = new Date(start);
+        if (!Number.isNaN(d.getTime())) {
+            const when = d.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' });
+            const timed = d.getUTCHours() || d.getUTCMinutes();
+            const at = timed ? ` at ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}` : '';
+            const venue = place.venueName || place.address || null;
+            return `${when}${at}${venue ? ` — ${venue}` : ''}`;
+        }
+    }
     return [
         category,
         place.distanceKm != null ? `${place.distanceKm.toFixed(1)} km away` : null,
