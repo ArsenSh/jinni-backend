@@ -32,6 +32,16 @@ function placeFactLine(p) {
 }
 
 /** Session turns ({sender:'user'|'ai', text}) → provider messages, oldest first. */
+// Every prose path shares this. Live 2026-08-24: asked "where can I buy a SIM
+// card", Jinni answered Russian events + visas + which AI it runs on + SIMs, in
+// four bold sections. The history is there for CONTEXT, not as a to-do list —
+// earlier questions already got their own replies.
+const ANSWER_ONLY_CURRENT =
+    'Answer ONLY the traveler\'s CURRENT message. Earlier questions in this conversation have already '
+  + 'been answered — never answer them again, never summarise them, and never open with a correction or '
+  + 'apology about an earlier turn unless the current message asks about it. '
+  + 'Plain sentences only: no headers, no bullet lists, no bold section titles.\n';
+
 function historyTurns(history) {
     return (history || [])
         .filter(t => t && t.text)
@@ -51,6 +61,7 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
               + 'You are given a VERIFIED list of real places. Rules:\n'
               + '- Recommend ONLY from the list, by exact name. NEVER mention any place not on it — including places from earlier in the conversation.\n'
               + '- Only assert the facts given per place (distance, rating, open state). No prices, no hours, no dishes unless given.\n'
@@ -75,6 +86,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
               + (localFacts.length
                   ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
                   + 'answer from them, attribute the source, and never contradict them from memory. '
@@ -121,6 +133,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
@@ -155,6 +168,7 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
               + 'You searched your verified data' + (cityLabel ? ` for ${cityLabel}` : '')
               + ' and found NOTHING matching what the traveler asked'
               + (unmatched.length ? ` (nothing for: ${unmatched.slice(0, 4).join(', ')})` : '') + '.\n'
@@ -326,6 +340,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [] }
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
               + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'

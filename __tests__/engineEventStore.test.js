@@ -307,6 +307,19 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(_structuredFromHtml('<p>no structured data here</p>')).toEqual([]);
     });
 
+    // allevents.in publishes no schema.org at all — it hands the browser an
+    // epoch attribute (Arsen pasted the markup 2026-08-24). VERIFIED against the
+    // live page: data-stime is the LOCAL wall clock encoded as if UTC, so the
+    // data-tz offset must NOT be applied or every event shifts four hours.
+    test('epoch data attributes (allevents) parse to the visible local time', () => {
+        const { _structuredFromHtml } = require('../engine/search/readPage');
+        const html = '<p class="event-time-label" data-stime="1788555600" data-etime="1788555600" '
+            + 'data-tz="+04:00">Fri, 4 Sep 2026 • 9:00 PM (+04)</p>';
+        expect(_structuredFromHtml(html)[0]).toMatchObject({ day: '2026-09-04', time: '21:00' });
+        expect(_structuredFromHtml('<i data-stime="1788555600000"></i>')[0].time).toBe('21:00');  // ms epoch
+        expect(_structuredFromHtml('<i data-stime="not-a-number"></i>')).toEqual([]);
+    });
+
     test('structured data OVERRULES the model — the "All day" that should be 20:00', async () => {
         const win = parseEventWindow('next week', NOW);
         const page = {

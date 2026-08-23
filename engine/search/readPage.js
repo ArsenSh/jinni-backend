@@ -226,6 +226,26 @@ function _structuredFromHtml(html) {
             price: price ? `${String(price).replace(/[.,]00$/, '')}${currency ? ` ${currency.toUpperCase()}` : ''}` : null,
         });
     }
+    // EPOCH DATA ATTRIBUTES — allevents.in and many JS-driven listings publish
+    // no schema.org at all, but hand the browser an exact unix timestamp plus a
+    // timezone offset (Arsen 2026-08-24 pasted the markup):
+    //   <p class="event-time-label" data-stime="1788555600" data-tz="+04:00">
+    // Stored as LOCAL wall-clock (the card renders it as given), which is what
+    // "doors at 9pm" means to a traveler standing in that city.
+    const epochRe = /data-(?:stime|start|starttime|start-time|timestamp)=["'](\d{9,13})["']/gi;
+    while ((m = epochRe.exec(html)) && out.length < 60) {
+        // VERIFIED against the real page 2026-08-24: data-stime 1788555600 is
+        // 2026-09-04T21:00Z while the visible label reads "9:00 PM (+04)" — the
+        // site encodes the LOCAL wall clock as if it were UTC. Applying the
+        // data-tz offset on top would shift every event by four hours. Read it
+        // as-is, which is also exactly how we store event times.
+        const ms = Number(m[1]) * (m[1].length > 10 ? 1 : 1000);
+        const local = new Date(ms);
+        if (Number.isNaN(local.getTime())) continue;
+        const iso = local.toISOString();
+        out.push({ day: iso.slice(0, 10), time: iso.slice(11, 16), price: null, venue: null });
+    }
+
     // JSON-LD last: the existing events extractor already normalises it.
     try {
         const { _extractLdEvents, _normalizeLdEvent } = require('../events/listing');
