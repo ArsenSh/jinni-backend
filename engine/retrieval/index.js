@@ -220,6 +220,16 @@ async function findPlaces(params = {}, deps = {}) {
                 const t = String(c.text || c.name || '').toLowerCase();
                 return rare.some(d => t.includes(d));
             }).slice(0, 3);
+            // NOTHING matched what the ask demands. The deck is then merely
+            // "places near you", which is not an answer — live 2026-08-23:
+            // "I want to book a taxi. How can I do it" returned six sightseeing
+            // cards. The route reads this and answers honestly instead.
+            if (!seats.length) provenance.unmatched = rare;
+            // NOTHING in the pool matches what the ask demands. The deck is
+            // then merely "places near you", which is not an answer — live
+            // 2026-08-23: "I want to book a taxi. How can I do it" returned six
+            // sightseeing cards. The route reads this and answers honestly.
+            if (!seats.length) provenance.unmatched = rare;
             if (seats.length) {
                 ordered = [...seats, ...ordered.filter(c => !seats.includes(c))];
                 // ── Adaptive deck (battery fix #2): a SPECIFIC ask — the

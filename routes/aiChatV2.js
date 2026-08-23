@@ -16,10 +16,10 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, parseRefillAsk } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -185,6 +185,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const msgLower = String(message).toLowerCase();
         const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
 
+        // ── "How do I get there / get around" (Arsen 2026-08-23, after his
+        //    brother asked "I want to book a taxi. How can I do it" and got six
+        //    sightseeing cards). Transport is a QUESTION, not a deck: answer it
+        //    in prose and skip retrieval entirely — no Google spend, no cards.
+        //    The BRAIN decides (intent.infoAsk); the regex is the LLM-timeout
+        //    fallback, in all six app languages. ──
+        const transportAsk = intent.infoAsk === 'transport'
+            || (intent.infoAsk === undefined && isTransportAsk(msgLower));
+
         // ── Refill follow-up ("can you give 10 other results?", "ещё") —
         //    caught live 2026-08-22: the intent LLM timed out, the keyword
         //    fallback saw no travel words → chit-chat, no cards. The SESSION
@@ -208,7 +217,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         }
         const deckCount = refillActive && refill.count ? Math.min(12, Math.max(3, refill.count)) : 6;
 
-        if (namedCard) {
+        if (transportAsk) {
+            const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
+            const tz = buildTimeContext({ timezone: userTimezone, lng: center?.lng });
+            const weather = center ? await getWeather(center.lat, center.lng).catch(() => null) : null;
+            const out = await narrator.stream({
+                messages: buildGettingAroundMessages({
+                    message, langName, cityLabel, history: recentTurns,
+                    timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
+                        weatherNote(weather) || null].filter(Boolean).join('; ') || null,
+                }),
+                onToken: (c) => send(res, { type: 'token', content: c }),
+                maxTokens: 260,
+                realStream: true,
+                model: providerName,
+                modelName,
+            });
+            reply = out.text;
+            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            meta.answerType = 'getting_around';
+            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok) src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'}`);
+        } else if (namedCard) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),
                 tools: [PLACE_DETAILS_TOOL],
@@ -222,8 +251,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
-        } else if (!intent.isTravel) {
-            // ── Chit-chat: no retrieval, no place names — just Jinni. ──
+        } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
+            // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
+            //    tipping): the traveler wants an answer, not a deck. Same
+            //    voice, same no-invented-venues rule. ──
             const out = await narrator.stream({
                 messages: buildChitchatMessages({ message, langName, history: recentTurns }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
@@ -331,6 +362,34 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         ? '🧪 V2: You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
                         : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
                 send(res, { type: 'token', content: reply });
+            } else if (
+                // ── RELEVANCE BRAKE (Arsen 2026-08-23). The deck matches
+                //    NOTHING the ask demands, nothing matched lexically, the
+                //    ask carries no category, and the brain produced no place
+                //    query — i.e. this was never a "show me places" turn. Six
+                //    nearby attractions would answer a question nobody asked
+                //    ("book a taxi" → museums), so Jinni says so instead.
+                //    All four conditions together: a normal place ask always
+                //    breaks at least one of them. ──
+                result.provenance.unmatched?.length && result.provenance.lexical === 0
+                && !category && !intent.searchQuery && !refillActive
+            ) {
+                const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
+                const out = await narrator.stream({
+                    messages: buildNoMatchMessages({
+                        message, langName, cityLabel, history: recentTurns,
+                        unmatched: result.provenance.unmatched,
+                    }),
+                    onToken: (c) => send(res, { type: 'token', content: c }),
+                    maxTokens: 220,
+                    realStream: true,
+                    model: providerName,
+                    modelName,
+                });
+                reply = out.text;
+                actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+                meta.answerType = 'no_match';
+                console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
             } else {
                 const weather = await weatherPromise;   // resolved long ago or null
                 const timeNote = [

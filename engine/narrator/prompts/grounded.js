@@ -84,6 +84,63 @@ function buildChitchatMessages({ message, langName = 'English', history = [] }) 
 }
 
 /**
+ * "How do I get around / get there" turns (Arsen 2026-08-23, after his brother
+ * asked "I want to book a taxi. How can I do it" and got six sightseeing
+ * cards). Transport is the traveler's second question after "where do I eat",
+ * and it is answered in PROSE — no cards, no retrieval, no Google spend.
+ * Ride-hailing apps and metro lines are services, not venues, so naming them
+ * breaks no honesty rule; invented fares and phone numbers would, and are
+ * forbidden.
+ */
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [] }) {
+    return [
+        {
+            role: 'system',
+            content:
+                'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + 'The traveler is asking how to GET AROUND or reach somewhere'
+              + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
+              + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
+              + 'Name the options a local would name: the ride-hailing apps that actually operate there, '
+              + 'the official taxi service or street hail, metro/tram/bus when it genuinely serves the route, '
+              + 'and airport transfer if that is what was asked.\n'
+              + 'NEVER invent fares, phone numbers, journey times, or app names you are not sure operate in that city — '
+              + 'say "roughly" or leave the number out instead.\n'
+              + 'Do not name specific venues (none are verified on this turn). '
+              + 'If knowing their destination would let you answer better, end by asking where they are heading.',
+        },
+        ...historyTurns(history),
+        { role: 'user', content: String(message || '') },
+    ];
+}
+
+/**
+ * The RELEVANCE BRAKE's voice: the traveler asked for something specific and
+ * NOTHING in the pool matches it. Padding the deck with whatever is nearby is
+ * how "book a taxi" became six museums — so we say so instead, in prose, with
+ * no cards attached.
+ */
+function buildNoMatchMessages({ message, langName = 'English', unmatched = [], cityLabel = null, history = [] }) {
+    return [
+        {
+            role: 'system',
+            content:
+                'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + 'You searched your verified data' + (cityLabel ? ` for ${cityLabel}` : '')
+              + ' and found NOTHING matching what the traveler asked'
+              + (unmatched.length ? ` (nothing for: ${unmatched.slice(0, 4).join(', ')})` : '') + '.\n'
+              + 'Say that plainly in 1–2 sentences — no apology spiral — then be useful: '
+              + 'if the question has a real-world answer you are confident about, give it briefly; '
+              + 'otherwise offer the nearest thing you COULD look up and invite them to ask for it.\n'
+              + 'Never name a specific venue, address or business in this reply — none are verified on this turn. '
+              + 'Never suggest external websites or search engines.',
+        },
+        ...historyTurns(history),
+        { role: 'user', content: String(message || '') },
+    ];
+}
+
+/**
  * Structured narration: ONE call returns intro prose + a short blurb per card +
  * an optional follow-up question (v1's habit, kept). Card blurbs are flavor
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
@@ -241,4 +298,4 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [] }
     ];
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };
+module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };

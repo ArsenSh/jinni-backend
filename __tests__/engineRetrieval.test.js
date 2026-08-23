@@ -7,7 +7,7 @@ const { rankLexical, tokenize } = require('../engine/retrieval/lexical');
 const { cosineSimilarity, rankByVector } = require('../engine/retrieval/vector');
 const { SemanticCache } = require('../engine/retrieval/semanticCache');
 const { findPlaces } = require('../engine/retrieval/index');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, LOCAL_DISCOVERY_CAP_KM } = require('../engine/retrieval/tuning');
 
 describe('fuseRankings (RRF)', () => {
     test('agreement across lists wins; k=60 math', () => {
@@ -155,6 +155,29 @@ describe('tuning: rankingWeights (intent-conditioned fusion)', () => {
     });
 });
 
+describe('tuning: isTransportAsk (the taxi lesson, six languages)', () => {
+    test('fires on how-do-I-get-around asks in every app language', () => {
+        for (const m of [
+            'I want to book a taxi. How can I do it',
+            'how do i get to the marina',
+            'is there a metro to downtown',
+            'как добраться до центра',
+            'ինչպես հասնել կենտրոն',
+            'comment aller à la plage',
+            '怎么去机场',
+            'كيف أصل إلى المطار',
+        ]) expect(isTransportAsk(m)).toBe(true);
+    });
+    test('does not fire on ordinary place asks — "bus" must not match "business"', () => {
+        for (const m of [
+            'best business lunch nearby',
+            'romantic dinner for two',
+            'suggest historical places',
+            'events next week',
+        ]) expect(isTransportAsk(m)).toBe(false);
+    });
+});
+
 describe('proximity-aware fusion', () => {
     test('a near candidate climbs past far higher-prior ones (no hard cutoff)', async () => {
         // 12 candidates: prior order c0..c11; c10 is 0.5 km away, everything else 30+ km.
@@ -191,6 +214,27 @@ describe('findPlaces orchestration (injected deps)', () => {
         loadCandidates: async () => CANDS.map(c => ({ ...c })),
         cache: new SemanticCache({}),
         embedder: null,                       // lexical-only unless a test injects one
+    });
+
+    // The relevance brake's signal (Arsen 2026-08-23, after "I want to book a
+    // taxi. How can I do it" was answered with six sightseeing cards).
+    test('provenance.unmatched marks an ask nothing in the pool answers', async () => {
+        const r = await findPlaces({ category: null, coreQuery: 'book taxi', count: 6 }, deps());
+        expect(r.provenance.unmatched).toEqual(['book', 'taxi']);
+        expect(r.provenance.lexical).toBe(0);                  // and nothing matched lexically
+    });
+    test('a satisfied demand leaves unmatched unset — the brake must not fire', async () => {
+        const r = await findPlaces({ category: 'restaurants', query: 'uzbek plov', coreQuery: 'uzbek plov', count: 6 }, deps());
+        expect(r.provenance.unmatched).toBeUndefined();
+        expect(r.places[0].placeId).toBe('p2');                // Uzbechka takes its seat
+    });
+    // Time words must never read as demands: they would buy Google fetches and
+    // could brake a perfectly good events turn. (An events pool legitimately
+    // reports 'events' as unmatched — no candidate's text spells the word — so
+    // the route ALSO requires that the ask carry no category before braking.)
+    test('time words are not demands — only "events" survives from "events next week"', async () => {
+        const r = await findPlaces({ category: 'events', coreQuery: 'events next week', count: 6 }, deps());
+        expect(r.provenance.unmatched).toEqual(['events']);
     });
 
     test('deps.loadCandidates is required', async () => {

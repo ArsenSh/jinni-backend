@@ -66,6 +66,19 @@ function isRightNowAsk(message) {
     return RIGHT_NOW_LATIN_RE.test(m) || RIGHT_NOW_NONLATIN_RE.test(m);
 }
 
+/* 3b. "How do I get there / get around" — transport asks (Arsen 2026-08-23,
+ * after his brother asked "I want to book a taxi. How can I do it" and got six
+ * sightseeing cards). This is the LLM-timeout fallback for intent.infoAsk —
+ * the brain decides first. Latin terms take word boundaries so "bus" cannot
+ * fire inside "business"; non-Latin scripts go boundary-free (the Cyrillic
+ * lesson again). Pure. */
+const TRANSPORT_LATIN_RE = /\b(taxi|cab|uber|careem|bolt|shuttle|metro|subway|tram|bus|car rental|rent a car|how (do|can) i get|get (there|around)|directions?|comment (aller|se rendre)|louer une voiture)\b/i;
+const TRANSPORT_NONLATIN_RE = /(такси|убер|метро|автобус|маршрутк|как добраться|как доехать|տաքսի|մետրո|ավտոբուս|ինչպես հասնել|métro|出租车|打车|地铁|公交|怎么去|怎么走|تاكسي|مترو|حافلة|كيف أصل)/i;
+function isTransportAsk(message) {
+    const m = String(message || '');
+    return TRANSPORT_LATIN_RE.test(m) || TRANSPORT_NONLATIN_RE.test(m);
+}
+
 /* 4. Intent-conditioned fusion weights (the ChatGPT-essay §5 idea, adopted
  * 2026-08-22): the ask's NATURE shifts what evidence matters. A "right now"
  * ask cares where you ARE (proximity up); a romantic/special-occasion ask
@@ -101,4 +114,4 @@ function parseRefillAsk(message) {
     return { isRefill, count: m ? Number(m[1]) : null };
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, rankingWeights, parseRefillAsk, LOCAL_DISCOVERY_CAP_KM };
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, LOCAL_DISCOVERY_CAP_KM };

@@ -167,6 +167,8 @@ Rules:
 - action_type is "shopping" for any shop, store, boutique, mall, market or bazaar request. shopping_subtype maps: souvenirs & gifts -> souvenirs; clothing, boutiques, fashion, shoes -> clothing; markets & bazaars -> market; malls & department stores -> mall; jewelry, watches, gold (a Rolex store, a jeweler) -> jewelry; gourmet/food/grocery/wine/sweets shops -> food. Use "" only when no sub-type clearly fits.
 - action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). This INCLUDES elliptical follow-ups whose whole point is the place — "in Dubai", "what about Paris?", "and for Tbilisi?" after a search all mean the CURRENT ask targets that destination, so include it. NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
+- info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi" is transport; "where can I eat" is not info_ask). A message can be travel-related AND info_ask — that is normal. Use "" whenever the traveler is asking to be shown places.
+- info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi" is transport; "where can I eat" is not info_ask). A message can be travel-related AND info_ask — that is normal. Use "" whenever the traveler is asking to be shown places.
 - needs_weather is true only if answering requires current weather or forecast data (weather, temperature, rain, what to pack, what to wear). It STAYS true for elliptical follow-ups that shift a weather exchange to another place ("what about Dubai?" right after a weather answer) — and put that place in place_names.`;
 }
 
@@ -241,6 +243,13 @@ function validateIntent(raw, message) {
         : null;
     const refill = raw.refill === true;
     const wantsSearch = raw.wants_search === true;
+    // A question that wants an ANSWER, not place cards (additive 2026-08-23,
+    // after "I want to book a taxi. How can I do it" was answered with six
+    // sightseeing cards). Enum-checked here; the route decides what to do.
+    const infoAsk = (typeof raw.info_ask === 'string'
+        && ['transport', 'how_to'].includes(raw.info_ask.trim().toLowerCase()))
+        ? raw.info_ask.trim().toLowerCase()
+        : null;
 
     return {
         source: 'llm',
@@ -254,6 +263,7 @@ function validateIntent(raw, message) {
         period,
         refill,
         wantsSearch,
+        infoAsk,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
         searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),

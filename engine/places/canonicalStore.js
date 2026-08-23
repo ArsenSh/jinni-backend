@@ -387,6 +387,12 @@ const VIBE_TOKENS = new Set([
     'result', 'show', 'give', 'find', 'want', 'need', 'please', 'other',
     'another', 'internet', 'check', 'look', 'tell', 'list', 'recommend',
     'recommendation', 'recommendations', 'sources', 'searched', 'options',
+    // Time and filler words (2026-08-23): "events next week" must not read as
+    // a demand for places whose NAME contains "week" — no paid fetch for it,
+    // and no false "nothing matches your ask" from the relevance brake.
+    'next', 'week', 'weeks', 'weekend', 'tomorrow', 'days', 'time', 'times',
+    'when', 'morning', 'afternoon', 'later', 'soon', 'this', 'that', 'with',
+    'from', 'about', 'around', 'also', 'just', 'like', 'some', 'they',
 ]);
 function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
     const tokens = String(coreQuery || '').toLowerCase().split(/[^a-zЀ-ӿ԰-֏]+/)
