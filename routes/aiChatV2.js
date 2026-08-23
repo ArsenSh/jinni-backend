@@ -28,7 +28,8 @@ const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French',
 
 const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
-const { PLACE_DETAILS_TOOL, makeExecutors } = require('../engine/narrator/tools');
+const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
+const { flightsEnabled } = require('../engine/travel/flights');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -221,22 +222,45 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
             const tz = buildTimeContext({ timezone: userTimezone, lng: center?.lng });
             const weather = center ? await getWeather(center.lat, center.lng).catch(() => null) : null;
-            const out = await narrator.stream({
-                messages: buildGettingAroundMessages({
-                    message, langName, cityLabel, history: recentTurns,
-                    timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
-                        weatherNote(weather) || null].filter(Boolean).join('; ') || null,
-                }),
-                onToken: (c) => send(res, { type: 'token', content: c }),
-                maxTokens: 260,
-                realStream: true,
-                model: providerName,
-                modelName,
+            const gaMessages = buildGettingAroundMessages({
+                message, langName, cityLabel, history: recentTurns,
+                timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
+                    weatherNote(weather) || null].filter(Boolean).join('; ') || null,
+                canQuoteFares: flightsEnabled(),
             });
-            reply = out.text;
-            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            let toolCalls = 0;
+            if (flightsEnabled()) {
+                // Flights configured → the model may fetch REAL fares. It
+                // decides whether the question needs them; prices in the reply
+                // can then only be ones the API returned.
+                const loop = await runToolLoop({
+                    messages: gaMessages,
+                    tools: [FIND_FLIGHTS_TOOL],
+                    execute: makeExecutors({ center, requestId: `v2f-${Date.now()}` }),
+                    maxTokens: 320,
+                }, { provider: deepseekProvider });
+                reply = loop.text || '';
+                toolCalls = loop.toolCalls.length;
+                actualTokens += (loop.usage?.in || 0) + (loop.usage?.out || 0);
+                for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
+                    send(res, { type: 'token', content: chunk });
+                }
+                if (toolCalls) meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+            }
+            if (!reply) {
+                const out = await narrator.stream({
+                    messages: gaMessages,
+                    onToken: (c) => send(res, { type: 'token', content: c }),
+                    maxTokens: 260,
+                    realStream: true,
+                    model: providerName,
+                    modelName,
+                });
+                reply = out.text;
+                actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            }
             meta.answerType = 'getting_around';
-            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok) src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'}`);
+            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'}`);
         } else if (namedCard) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),

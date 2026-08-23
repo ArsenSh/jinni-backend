@@ -130,3 +130,53 @@ describe('buildToolAnswerMessages + shownPlaces', () => {
         ]);
     });
 });
+
+// ── Flights (Travelpayouts): built ready for the token, Arsen 2026-08-23 ──
+describe('find_flights: real fares or none, never remembered prices', () => {
+    const { searchFlights, resolveIata, flightsEnabled, _bookUrl } = require('../engine/travel/flights');
+    const { makeExecutors } = require('../engine/narrator/tools');
+    const ENV = { TRAVELPAYOUTS_TOKEN: 'tok', TRAVELPAYOUTS_MARKER: '12345' };
+    const API = {
+        success: true,
+        data: [{
+            origin: 'DXB', destination: 'EVN', price: 210, airline: 'FZ', flight_number: '1751',
+            departure_at: '2026-09-04T07:15:00+04:00', transfers: 0, duration: 195,
+            link: '/search/DXB0409EVN1?t=abc',
+        }],
+    };
+    const fetchOk = async (url) => ({
+        ok: true,
+        json: async () => (url.includes('autocomplete')
+            ? [{ code: url.includes('Dubai') ? 'DXB' : 'EVN', name: 'City', type: 'city' }]
+            : API),
+    });
+
+    test('off without a token — the feature simply is not offered', async () => {
+        expect(flightsEnabled({})).toBe(false);
+        expect(await searchFlights({ origin: 'Dubai', destination: 'Yerevan' }, { env: {}, fetch: fetchOk })).toBeNull();
+    });
+
+    test('city names resolve to IATA; offers normalize with an affiliate link', async () => {
+        const r = await searchFlights({ origin: 'Dubai', destination: 'Yerevan', departDate: '2026-09' },
+            { env: ENV, fetch: fetchOk });
+        expect(r.origin).toBe('DXB');
+        expect(r.destination).toBe('EVN');
+        expect(r.offers[0]).toMatchObject({ price: 210, airline: 'FZ', transfers: 0, flightNumber: 'FZ1751' });
+        expect(r.offers[0].bookUrl).toBe('https://www.aviasales.com/search/DXB0409EVN1?t=abc&marker=12345');
+        expect(await resolveIata('evn', { env: ENV, fetch: fetchOk })).toBe('EVN');   // already a code
+    });
+
+    test('API failure returns null, and the executor forbids quoting a price', async () => {
+        const dead = async () => ({ ok: false });
+        expect(await searchFlights({ origin: 'Dubai', destination: 'Yerevan' }, { env: ENV, fetch: dead })).toBeNull();
+        const exec = makeExecutors({}, { searchFlights: async () => null });
+        const out = await exec.find_flights({ origin: 'Dubai', destination: 'Yerevan' });
+        expect(out.offers).toEqual([]);
+        expect(out.note).toMatch(/do not state any price/);
+        expect((await exec.find_flights({ origin: 'Dubai' })).error).toBe('origin_and_destination_required');
+    });
+
+    test('no marker configured → plain booking link, still a real one', () => {
+        expect(_bookUrl('/search/x', {})).toBe('https://www.aviasales.com/search/x');
+    });
+});

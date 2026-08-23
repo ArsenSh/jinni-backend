@@ -25,6 +25,33 @@ const PLACE_DETAILS_TOOL = {
     },
 };
 
+// Flights (Arsen 2026-08-23: "can it check airport or trips?"). Prices are
+// FACTS — they may only come from the API, never from the model's memory,
+// which is the same rule that keeps cards honest. The tool is offered to the
+// model only when Travelpayouts is configured; otherwise transport questions
+// are answered in prose exactly as before.
+const FIND_FLIGHTS_TOOL = {
+    type: 'function',
+    function: {
+        name: 'find_flights',
+        description:
+            'Real cheapest-fare data for a flight route, with a booking link. '
+          + 'Use whenever the traveler asks about flying between cities, flight prices, or when to fly. '
+          + 'Returns an empty list when no fares are known — say so honestly and NEVER state a price the tool did not return.',
+        parameters: {
+            type: 'object',
+            properties: {
+                origin: { type: 'string', description: 'Departure city name or IATA code (e.g. "Dubai" or "DXB").' },
+                destination: { type: 'string', description: 'Arrival city name or IATA code (e.g. "Yerevan" or "EVN").' },
+                depart_date: { type: 'string', description: 'YYYY-MM-DD for a specific day, or YYYY-MM for the cheapest day that month. Omit if the traveler gave no date.' },
+                return_date: { type: 'string', description: 'YYYY-MM-DD for a round trip. Omit for one-way.' },
+                currency: { type: 'string', description: 'ISO currency the traveler thinks in, e.g. usd, eur, amd, aed. Default usd.' },
+            },
+            required: ['origin', 'destination'],
+        },
+    },
+};
+
 /**
  * Build the executor map for one request.
  * @param {object} ctx  { center, sessionPlaces: [{name, placeId}], requestId }
@@ -62,7 +89,22 @@ function makeExecutors(ctx = {}, deps = {}) {
                 placeId: d.place_id || null,
             };
         },
+
+        find_flights: async ({ origin, destination, depart_date: departDate, return_date: returnDate, currency } = {}) => {
+            if (!origin || !destination) return { error: 'origin_and_destination_required' };
+            const search = deps.searchFlights || require('../travel/flights').searchFlights;
+            let r;
+            try {
+                r = await search({ origin, destination, departDate, returnDate, currency: currency || 'usd' });
+            } catch (err) {
+                return { error: `flight_search_failed: ${err.message}` };
+            }
+            // No data is an ANSWER ("I don't have fares for that route"), not a
+            // licence to quote a remembered price.
+            if (!r || !r.offers?.length) return { offers: [], note: 'no fares returned — do not state any price' };
+            return r;
+        },
     };
 }
 
-module.exports = { PLACE_DETAILS_TOOL, makeExecutors };
+module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors };

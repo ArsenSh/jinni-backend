@@ -92,7 +92,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [] }) 
  * breaks no honesty rule; invented fares and phone numbers would, and are
  * forbidden.
  */
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [] }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false }) {
     return [
         {
             role: 'system',
@@ -107,6 +107,10 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + 'If they only asked "how do I get there", say which mode you would take and why.\n'
               + 'NEVER invent fares, phone numbers, timetables, journey times, or app names you are not sure '
               + 'operate in that city — say "roughly" or leave the number out instead.\n'
+              + (canQuoteFares
+                  ? 'For flights between cities you have a find_flights tool: call it and quote ONLY the fares it '
+                  + 'returns, with its booking link. If it returns nothing, say you have no fares for that route.\n'
+                  : '')
               + 'Do not name specific venues (none are verified on this turn). '
               + 'If knowing their destination would let you answer better, end by asking where they are heading.',
         },
