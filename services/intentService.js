@@ -254,10 +254,15 @@ function validateIntent(raw, message) {
     // conversationally. An unforeseen label therefore degrades to "answer the
     // question", never back to "show six random places", which is the failure
     // this whole change exists to prevent.
-    const rawInfo = typeof raw.info_ask === 'string' ? raw.info_ask.trim().toLowerCase() : '';
-    const infoAsk = (!rawInfo || ['none', 'null', 'false', 'places'].includes(rawInfo))
-        ? null
+    const rawInfo = typeof raw.info_ask === 'string' ? raw.info_ask.trim().toLowerCase().slice(0, 40) : '';
+    const isInfo = !!rawInfo && !['none', 'null', 'false', 'places'].includes(rawInfo);
+    const infoAsk = !isInfo ? null
         : (/transport|taxi|metro|bus|drive|walk|fly|flight|ferry|ride|getting_around/.test(rawInfo) ? 'transport' : 'how_to');
+    // The RAW label survives alongside the folded one. Folding 'visa' into
+    // 'how_to' and keeping only that destroyed the one word saying WHICH stored
+    // notes answer the question — live 2026-08-23, visa questions were served
+    // Yerevan transport notes because the topic was unrecoverable.
+    const infoTopic = isInfo ? rawInfo : null;
 
     return {
         source: 'llm',
@@ -272,6 +277,7 @@ function validateIntent(raw, message) {
         refill,
         wantsSearch,
         infoAsk,
+        infoTopic,
         // Clean Google-ready search string for the proactive grounding — the LLM
         // resolves follow-ups, so no fragile filler-stripping downstream.
         searchQuery: (typeof raw.place_search_query === 'string' ? raw.place_search_query.trim().slice(0, 120) : ''),

@@ -29,9 +29,14 @@ function topicFor(infoAskLabel) {
     if (/safe|danger|crime|scam|protest|risk/.test(l)) return 'safety';
     if (/health|vaccin|medic|hospital|water/.test(l)) return 'health';
     if (/sim|internet|wifi|phone|connect/.test(l)) return 'connect';
-    if (/money|currency|cash|atm|tip|exchange/.test(l)) return 'money';
+    if (/money|currency|cash|atm|tip|exchange|price|cost/.test(l)) return 'money';
     if (/arriv|airport|get_in/.test(l)) return 'get_in';
-    return 'get_around';           // transport and anything movement-shaped
+    if (/transport|taxi|metro|bus|tram|walk|drive|car|ferry|train|flight|fly|ride|route|around/.test(l)) return 'get_around';
+    // NO DEFAULT. Live 2026-08-23: defaulting to get_around loaded Yerevan
+    // TRANSPORT notes into every unrelated question — visa answers, "do I have
+    // limits", "what AI works under you" — at ~1,300 wasted input tokens each.
+    // A topic we don't stock is answered without notes, which is correct.
+    return null;
 }
 
 function _esc(s) { return String(s).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

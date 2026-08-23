@@ -76,10 +76,31 @@ describe('sync + lookup: owned, ranked, and refused when stale', () => {
     test('topicFor maps the open info_ask vocabulary onto stored topics', () => {
         expect(topicFor('transport')).toBe('get_around');
         expect(topicFor('taxi')).toBe('get_around');
+        expect(topicFor('which metro')).toBe('get_around');
         expect(topicFor('visa')).toBe('entry_requirements');
         expect(topicFor('sim_card')).toBe('connect');
         expect(topicFor('tipping')).toBe('money');
         expect(topicFor('')).toBeNull();
+    });
+
+    // Live 2026-08-23: topicFor defaulted every unknown label to get_around, so
+    // "do I need a visa", "do I have limits" and "what AI works under you" were
+    // all answered with Yerevan TRANSPORT notes — wrong, and ~1,300 wasted
+    // input tokens per turn.
+    test('a topic we do not stock returns null — never the nearest notes', () => {
+        for (const l of ['how_to', 'app_internals', 'why_created', 'pricing_model'])
+            expect(topicFor(l)).toBeNull();
+    });
+
+    test('validateIntent keeps the RAW label beside the folded one', () => {
+        const { validateIntent } = require('../services/intentService');
+        const base = { is_travel: true, action_type: 'general', language: 'en', place_search_query: '' };
+        const visa = validateIntent({ ...base, info_ask: 'visa' }, 'x');
+        expect(visa.infoAsk).toBe('how_to');          // folded: answer, do not card
+        expect(visa.infoTopic).toBe('visa');          // raw: which notes to load
+        expect(topicFor(visa.infoTopic)).toBe('entry_requirements');
+        const none = validateIntent(base, 'x');
+        expect(none.infoTopic).toBeNull();
     });
 
     test('sync stores city + country rows and never overwrites validator work', async () => {

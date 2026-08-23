@@ -228,7 +228,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // like Yerevan no transit feed exists anywhere, so these notes are
             // the only real source there is — they outrank model memory.
             const region = await resolveRegion({ center, placeNames: intent.placeNames });
-            const gaFacts = await lookupFacts({ ...region, topic: topicFor(intent.infoAsk || 'transport') });
+            // The RAW topic decides which notes answer this ("which metro" →
+            // get_around); this branch falls back to get_around because that
+            // is exactly what the branch is for.
+            const gaFacts = await lookupFacts({ ...region, topic: topicFor(intent.infoTopic) || 'get_around' });
             const gaMessages = buildGettingAroundMessages({
                 message, langName, cityLabel, history: recentTurns,
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
@@ -291,10 +294,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Visa, safety, SIM cards, tipping: if we OWN a sourced answer for
             // this country, it grounds the reply — the model never generates
             // entry rules from memory (the highest-harm question we get).
-            const infoFacts = intent.infoAsk
+            // Only when we actually stock notes for THIS topic — an unstocked
+            // question ("what AI works under you") gets no notes rather than
+            // whatever happened to be nearest.
+            const infoTopicWanted = topicFor(intent.infoTopic);
+            const infoFacts = infoTopicWanted
                 ? await lookupFacts({
                     ...(await resolveRegion({ center, placeNames: intent.placeNames })),
-                    topic: topicFor(intent.infoAsk),
+                    topic: infoTopicWanted,
                 })
                 : [];
             if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
