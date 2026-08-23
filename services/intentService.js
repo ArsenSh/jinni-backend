@@ -158,6 +158,7 @@ Return ONLY this JSON object:
 "period":"<the TIME PERIOD the message asks about (events/activities): one of today, tomorrow, weekend, next_week, Ndays (e.g. 3days for 'the next 3 days'), or explicit dates as YYYY-MM-DD..YYYY-MM-DD (resolve phrases like 'on September 5' or 'when my parents visit early September' using today's date). Follow-ups INHERIT the conversation's period ('other ones' after a next-week ask is still next_week). Empty string when no period is asked.>",
 "refill":<true or false — true when the CURRENT message asks for MORE or OTHER results of the previous ask ("other ones", "another suggestions", "ещё", "d'autres") rather than a new topic>,
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
+"info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'), or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>}
 
 Rules:
@@ -167,8 +168,7 @@ Rules:
 - action_type is "shopping" for any shop, store, boutique, mall, market or bazaar request. shopping_subtype maps: souvenirs & gifts -> souvenirs; clothing, boutiques, fashion, shoes -> clothing; markets & bazaars -> market; malls & department stores -> mall; jewelry, watches, gold (a Rolex store, a jeweler) -> jewelry; gourmet/food/grocery/wine/sweets shops -> food. Use "" only when no sub-type clearly fits.
 - action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). This INCLUDES elliptical follow-ups whose whole point is the place — "in Dubai", "what about Paris?", "and for Tbilisi?" after a search all mean the CURRENT ask targets that destination, so include it. NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
-- info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi" is transport; "where can I eat" is not info_ask). A message can be travel-related AND info_ask — that is normal. Use "" whenever the traveler is asking to be shown places.
-- info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi" is transport; "where can I eat" is not info_ask). A message can be travel-related AND info_ask — that is normal. Use "" whenever the traveler is asking to be shown places.
+- info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi", "can I walk there", "which metro line", "do I need a visa" all want answers; "where can I eat", "suggest rooftop bars" want places). A message can be travel-related AND info_ask — that is normal. Judge by what a GOOD answer looks like: prose, or a list of places? You are not limited to the example labels — name the topic yourself when none fits.
 - needs_weather is true only if answering requires current weather or forecast data (weather, temperature, rain, what to pack, what to wear). It STAYS true for elliptical follow-ups that shift a weather exchange to another place ("what about Dubai?" right after a weather answer) — and put that place in place_names.`;
 }
 
@@ -245,11 +245,19 @@ function validateIntent(raw, message) {
     const wantsSearch = raw.wants_search === true;
     // A question that wants an ANSWER, not place cards (additive 2026-08-23,
     // after "I want to book a taxi. How can I do it" was answered with six
-    // sightseeing cards). Enum-checked here; the route decides what to do.
-    const infoAsk = (typeof raw.info_ask === 'string'
-        && ['transport', 'how_to'].includes(raw.info_ask.trim().toLowerCase()))
-        ? raw.info_ask.trim().toLowerCase()
-        : null;
+    // sightseeing cards).
+    //
+    // OPEN vocabulary on purpose (Arsen: "maybe it can ask another question we
+    // have not imagined yet"). The model may name ANY topic — visa, tipping,
+    // safety, sim_card, packing — and code makes exactly one distinction:
+    // transport gets the getting-around voice, everything else gets answered
+    // conversationally. An unforeseen label therefore degrades to "answer the
+    // question", never back to "show six random places", which is the failure
+    // this whole change exists to prevent.
+    const rawInfo = typeof raw.info_ask === 'string' ? raw.info_ask.trim().toLowerCase() : '';
+    const infoAsk = (!rawInfo || ['none', 'null', 'false', 'places'].includes(rawInfo))
+        ? null
+        : (/transport|taxi|metro|bus|drive|walk|fly|flight|ferry|ride|getting_around/.test(rawInfo) ? 'transport' : 'how_to');
 
     return {
         source: 'llm',
@@ -406,4 +414,6 @@ async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg
     return result;
 }
 
-module.exports = { classify };
+// validateIntent exported for tests only — it is the deterministic BRAKE on
+// the model's JSON (enum/format checks, open-vocabulary info_ask folding).
+module.exports = { classify, validateIntent };

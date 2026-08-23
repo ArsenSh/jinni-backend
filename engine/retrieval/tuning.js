@@ -72,8 +72,8 @@ function isRightNowAsk(message) {
  * the brain decides first. Latin terms take word boundaries so "bus" cannot
  * fire inside "business"; non-Latin scripts go boundary-free (the Cyrillic
  * lesson again). Pure. */
-const TRANSPORT_LATIN_RE = /\b(taxi|cab|uber|careem|bolt|shuttle|metro|subway|tram|bus|car rental|rent a car|how (do|can) i get|get (there|around)|directions?|comment (aller|se rendre)|louer une voiture)\b/i;
-const TRANSPORT_NONLATIN_RE = /(такси|убер|метро|автобус|маршрутк|как добраться|как доехать|տաքսի|մետրո|ավտոբուս|ինչպես հասնել|métro|出租车|打车|地铁|公交|怎么去|怎么走|تاكسي|مترو|حافلة|كيف أصل)/i;
+const TRANSPORT_LATIN_RE = /\b(taxi|cab|uber|careem|bolt|shuttle|metro|subway|underground|tram|bus|ferry|boat|train|flight|flights|fly|airport|scooter|bicycle|car rental|rent a (car|scooter|bike)|how (do|can|should) i (get|reach|travel)|get (there|around)|walk (there|to)|drive (there|to)|directions?|how (far|long)( is| does)?|comment (aller|se rendre)|louer une voiture)\b/i;
+const TRANSPORT_NONLATIN_RE = /(такси|убер|метро|автобус|маршрутк|как добраться|как доехать|как дойти|пешком|паром|электричк|տաքսի|մետրո|ավտոբուս|ինչպես հասնել|ոտքով|métro|出租车|打车|地铁|公交|渡轮|步行|怎么去|怎么走|怎么到|تاكسي|مترو|حافلة|عبّارة|سيرا|كيف أصل|كيف اذهب)/i;
 function isTransportAsk(message) {
     const m = String(message || '');
     return TRANSPORT_LATIN_RE.test(m) || TRANSPORT_NONLATIN_RE.test(m);

@@ -156,12 +156,21 @@ describe('tuning: rankingWeights (intent-conditioned fusion)', () => {
 });
 
 describe('tuning: isTransportAsk (the taxi lesson, six languages)', () => {
-    test('fires on how-do-I-get-around asks in every app language', () => {
+    // Every MODE, not just taxis (Arsen: "what if user asks just taxi, or how
+    // to walk there or how to fly, or which metro to take").
+    test('fires on how-do-I-get-around asks in every app language and every mode', () => {
         for (const m of [
             'I want to book a taxi. How can I do it',
+            'taxi',
             'how do i get to the marina',
-            'is there a metro to downtown',
+            'can i walk there',
+            'which metro should i take',
+            'how to fly to Baku',
+            'is the ferry running',
+            'how far is the airport',
+            'rent a scooter',
             'как добраться до центра',
+            'можно дойти пешком?',
             'ինչպես հասնել կենտրոն',
             'comment aller à la plage',
             '怎么去机场',
@@ -175,6 +184,27 @@ describe('tuning: isTransportAsk (the taxi lesson, six languages)', () => {
             'suggest historical places',
             'events next week',
         ]) expect(isTransportAsk(m)).toBe(false);
+    });
+});
+
+// The brain names the topic; code makes ONE distinction (Arsen 2026-08-23:
+// "maybe it can ask another question we have not imagined yet").
+describe('intent info_ask: open vocabulary, safe folding', () => {
+    const { validateIntent } = require('../services/intentService');
+    const base = { is_travel: true, action_type: 'general', language: 'en', place_search_query: '' };
+    const infoAskOf = (label) => validateIntent({ ...base, info_ask: label }, 'x').infoAsk;
+
+    test('wanting places stays null', () => {
+        for (const l of ['', '   ', 'none', 'null', 'places']) expect(infoAskOf(l)).toBeNull();
+        expect(validateIntent(base, 'x').infoAsk).toBeNull();          // field absent entirely
+    });
+    test('any way of naming movement folds to transport', () => {
+        for (const l of ['transport', 'taxi', 'metro', 'walking', 'flight', 'ferry', 'getting_around'])
+            expect(infoAskOf(l)).toBe('transport');
+    });
+    test('a topic nobody planned for still gets ANSWERED, never carded', () => {
+        for (const l of ['visa', 'tipping', 'safety', 'sim_card', 'currency', 'wedding_paperwork'])
+            expect(infoAskOf(l)).toBe('how_to');
     });
 });
 

@@ -101,11 +101,12 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
-              + 'Name the options a local would name: the ride-hailing apps that actually operate there, '
-              + 'the official taxi service or street hail, metro/tram/bus when it genuinely serves the route, '
-              + 'and airport transfer if that is what was asked.\n'
-              + 'NEVER invent fares, phone numbers, journey times, or app names you are not sure operate in that city — '
-              + 'say "roughly" or leave the number out instead.\n'
+              + 'Answer the MODE they actually asked about — walking, taxi or ride-hailing, metro or bus, '
+              + 'driving or renting, ferry, or flying between cities — and name what a local would name: '
+              + 'the apps that genuinely operate there, the official taxi, the line or route that serves the trip. '
+              + 'If they only asked "how do I get there", say which mode you would take and why.\n'
+              + 'NEVER invent fares, phone numbers, timetables, journey times, or app names you are not sure '
+              + 'operate in that city — say "roughly" or leave the number out instead.\n'
               + 'Do not name specific venues (none are verified on this turn). '
               + 'If knowing their destination would let you answer better, end by asking where they are heading.',
         },
