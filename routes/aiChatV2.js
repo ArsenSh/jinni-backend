@@ -30,6 +30,7 @@ const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
+const { lookupFacts, topicFor } = require('../engine/knowledge/sync');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -222,12 +223,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
             const tz = buildTimeContext({ timezone: userTimezone, lng: center?.lng });
             const weather = center ? await getWeather(center.lat, center.lng).catch(() => null) : null;
+            // Owned knowledge first (Wikivoyage "Get around" etc.). For a city
+            // like Yerevan no transit feed exists anywhere, so these notes are
+            // the only real source there is — they outrank model memory.
+            const gaFacts = await lookupFacts({
+                city: center?.city, country: center?.country,
+                topic: topicFor(intent.infoAsk || 'transport'),
+            });
             const gaMessages = buildGettingAroundMessages({
                 message, langName, cityLabel, history: recentTurns,
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
                     weatherNote(weather) || null].filter(Boolean).join('; ') || null,
                 canQuoteFares: flightsEnabled(),
+                localFacts: gaFacts,
             });
+            if (gaFacts.length) meta.localFacts = gaFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             let toolCalls = 0;
             if (flightsEnabled()) {
                 // Flights configured → the model may fetch REAL fares. It
@@ -279,8 +289,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same
             //    voice, same no-invented-venues rule. ──
+            // Visa, safety, SIM cards, tipping: if we OWN a sourced answer for
+            // this country, it grounds the reply — the model never generates
+            // entry rules from memory (the highest-harm question we get).
+            const infoFacts = intent.infoAsk
+                ? await lookupFacts({ city: center?.city, country: center?.country, topic: topicFor(intent.infoAsk) })
+                : [];
+            if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             const out = await narrator.stream({
-                messages: buildChitchatMessages({ message, langName, history: recentTurns }),
+                messages: buildChitchatMessages({ message, langName, history: recentTurns, localFacts: infoFacts }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 200,
                 realStream: true,
@@ -289,7 +306,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             });
             reply = out.text;
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
-            console.log(`[v2] chit-chat narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)`);
+            console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
         } else if (!center) {
             reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
             send(res, { type: 'token', content: reply });

@@ -727,6 +727,34 @@ const runSourceSweep = async () => {
 setTimeout(runSourceSweep, 4 * 60 * 1000);  // post-boot (after Mongo + embedder)
 setInterval(runSourceSweep, SOURCE_SWEEP_MS);
 
+// ── Local knowledge refresh (Wikivoyage + UK FCDO) ───────────────────────────
+// Both sources maintain themselves — FCDO republishes advice continuously with
+// its own review date, Wikivoyage is edited daily — so answers must age WITH
+// them, never freeze on first fetch. Entry-requirement and safety rows go stale
+// in 30 days and are refused by the serving path until re-read; this sweep is
+// what re-reads them. Cities come from the event-source registry, so one
+// curation effort feeds both pipelines.
+const KNOWLEDGE_SYNC_MS = 24 * 60 * 60 * 1000;
+const runKnowledgeSync = async () => {
+    try {
+        const { syncKnowledge } = require('./engine/knowledge/sync');
+        const EventSource = require('./models/EventSource');
+        const rows = await EventSource.find({ enabled: true }).lean();
+        const seen = new Set();
+        let places = 0, facts = 0;
+        for (const r of rows) {
+            const k = `${r.city}|${r.country}`.toLowerCase();
+            if (seen.has(k) || !(r.city || r.country)) continue;
+            seen.add(k);
+            const out = await syncKnowledge({ city: r.city, country: r.country });
+            places++; facts += out.stored;
+        }
+        if (places) logger.info(`[knowledge] refreshed ${places} place(s) → ${facts} fact(s)`);
+    } catch (err) { logger.warn(`[knowledge] sync failed: ${err.message}`); }
+};
+setTimeout(runKnowledgeSync, 6 * 60 * 1000);
+setInterval(runKnowledgeSync, KNOWLEDGE_SYNC_MS);
+
 // ── Crash visibility & survival ──────────────────────────────────────────────
 // Previous version had two problems that made crashes invisible AND fatal:
 //   1. `logger.error('…:', err)` — winston often swallows an Error passed as

@@ -65,18 +65,24 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
 }
 
 /** Non-place turns: just be Jinni — and never name specific venues (none are verified). */
-function buildChitchatMessages({ message, langName = 'English', history = [] }) {
+function buildChitchatMessages({ message, langName = 'English', history = [], localFacts = [] }) {
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + (localFacts.length
+                  ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
+                  + 'answer from them, attribute the source, and never contradict them from memory. '
+                  + 'For entry rules and safety, tell them to confirm with the official authority.\n'
+                  : '')
               + 'This is a casual/meta message — answer naturally in 1–3 sentences.\n'
               + 'You DO see the recent conversation above — reference it naturally; never claim you cannot see or remember it.\n'
               + 'Do not invent or name any specific real venue in THIS reply (none are verified on this turn). '
               + 'If the traveler wants places, hotels or recommendations, warmly invite them to ask directly '
               + '(e.g. "ask me for cozy bars nearby") — you WILL fetch real verified places with photo cards then. '
-              + 'Never describe yourself as unable to name places, and never point the traveler to external sites or searches.',
+              + 'Never describe yourself as unable to name places, and never point the traveler to external sites or searches.'
+              + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
         { role: 'user', content: String(message || '') },
@@ -92,7 +98,20 @@ function buildChitchatMessages({ message, langName = 'English', history = [] }) 
  * breaks no honesty rule; invented fares and phone numbers would, and are
  * forbidden.
  */
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false }) {
+/** Owned, sourced knowledge → prompt block. Facts outrank model memory, and
+ *  the source is named so the answer can attribute it (a licence duty for
+ *  Wikivoyage's CC BY-SA and the FCDO's Open Government Licence alike). */
+function localFactsBlock(facts = []) {
+    if (!Array.isArray(facts) || !facts.length) return '';
+    return '\nVERIFIED LOCAL NOTES — prefer these over your own knowledge, and name the source in your reply:\n'
+        + facts.map(f => {
+            const age = f.reviewedAt ? ` (source reviewed ${new Date(f.reviewedAt).toISOString().slice(0, 10)})` : '';
+            return `[${f.sourceName}${age}] ${f.title || ''}\n${f.body}`
+                + (f.caveat ? `\nCAVEAT you must pass on: ${f.caveat}` : '');
+        }).join('\n\n') + '\n';
+}
+
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [] }) {
     return [
         {
             role: 'system',
@@ -112,7 +131,8 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                   + 'returns, with its booking link. If it returns nothing, say you have no fares for that route.\n'
                   : '')
               + 'Do not name specific venues (none are verified on this turn). '
-              + 'If knowing their destination would let you answer better, end by asking where they are heading.',
+              + 'If knowing their destination would let you answer better, end by asking where they are heading.'
+              + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
         { role: 'user', content: String(message || '') },
@@ -303,4 +323,4 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [] }
     ];
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };
+module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };
