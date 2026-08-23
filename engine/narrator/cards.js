@@ -37,7 +37,8 @@ function factDescription(place, category) {
             const timed = d.getUTCHours() || d.getUTCMinutes();
             const at = timed ? ` at ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}` : '';
             const venue = place.venueName || place.address || null;
-            return `${when}${at}${venue ? ` — ${venue}` : ''}`;
+            const price = place.price ? ` · ${place.price}` : '';
+            return `${when}${at}${venue ? ` — ${venue}` : ''}${price}`;
         }
     }
     return [

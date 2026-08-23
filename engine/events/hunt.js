@@ -186,6 +186,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 endDate: e.endDate,
                 isRecurring: false,
                 image: e.image || null,
+                price: e.price || null,
                 sourceUrl: e.sourceUrl || null,
                 sourceTier: e._tier === 'extracted' ? 'extracted' : 'listing',
                 status: 'new',
@@ -207,7 +208,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     return rows.map(({ e }) => aiEventToCandidate({
         name: e.name, placeId: null, lat: null, lng: null,
         venueName: e.venueName || null, address: e.venueAddress || null,
-        city, country, image: e.image || null, sourceUrl: e.sourceUrl || null,
+        city, country, image: e.image || null, price: e.price || null, sourceUrl: e.sourceUrl || null,
         startDate: e.startDate, endDate: e.endDate, isRecurring: false, description: null,
     }, center));
 }

@@ -52,6 +52,11 @@ const aiFoundEventSchema = new mongoose.Schema({
     // The image the card actually showed: the event's own poster (feed CDN
     // URL) when the source had one, else the venue photo proxy path.
     image:      { type: String, default: null },
+    // Ticket price EXACTLY as the source printed it ("5000 AMD", "3000-10000
+    // AMD", "Free") — verified to appear in that page's text before storing.
+    // A price is a fact, so it may never come from model memory; null means the
+    // page printed none (2026-08-24: tomsarkgh lists fixed and min/max prices).
+    price:      { type: String, default: null },
     sourceUrl:  { type: String, default: null },
     // Provenance of the date, i.e. the trust tier it entered through.
     sourceTier: { type: String, enum: ['feed', 'listing', 'extracted', 'model', 'unknown'], default: 'unknown' },

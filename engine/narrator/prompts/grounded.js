@@ -14,6 +14,10 @@ function placeFactLine(p) {
         // Event date — the ONE fact that makes an event an event. English
         // weekday/month; the narrator renders it in the reply language.
         p.eventSchedule?.startDate ? `event on ${new Date(p.eventSchedule.startDate).toUTCString().slice(0, 16)}` : null,
+        // Ticket price VERBATIM from the source page. It is here so the blurb
+        // may quote it — and because it is here, the model never has to invent
+        // one. Absent ⇒ the page printed no price ⇒ the blurb says nothing.
+        p.price ? `ticket price ${p.price}` : null,
         // Personal-taste facts (personalization/taste.js annotations): honest,
         // user-visible memory — "you saved this one" is delight, not ads.
         // One line max: an explicit like outranks the bookmark mention.

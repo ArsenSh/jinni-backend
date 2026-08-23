@@ -149,6 +149,8 @@ function aiEventToCandidate(e, center) {
         // link below the card (Arsen 2026-08-23: "source it can show below
         // card, i already have in front").
         sourceUrl: e.sourceUrl || null,
+        // Ticket price as the SOURCE printed it; null when it printed none.
+        price: e.price || null,
     };
 }
 

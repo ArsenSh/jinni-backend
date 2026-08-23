@@ -281,6 +281,31 @@ describe('readPage + extracted tier (the "enter any web and read" tool)', () => 
         expect(jazzOp.sourceUrl).toBe('https://afisha.am/e/jazz-night'); // Check listing → the event's own page
     });
 
+    // A number the page does not print is not a fact (Arsen 2026-08-24: "jinni
+    // said at 19:00 but in the soucre i found 20:00", plus tomsarkgh's prices).
+    test('times and prices must be FINDABLE on the page, or they are dropped', async () => {
+        const { _timeOnPage, _priceOnPage } = require('../engine/search/readPage');
+        const text = 'Jazz Night starts at 20:00. Tickets 5000-15000 AMD. Doors 19\u058930.';
+        expect(_timeOnPage(text, '20:00')).toBe(true);
+        expect(_timeOnPage(text, '19:00')).toBe(false);          // the live bug
+        expect(_timeOnPage(text, '19:30')).toBe(true);           // Armenian separator
+        expect(_priceOnPage(text, '5000-15000 AMD')).toBe(true);
+        expect(_priceOnPage(text, '9999 AMD')).toBe(false);
+        expect(_priceOnPage(text, null)).toBe(false);
+
+        const win = parseEventWindow('next week', NOW);
+        const narrator = { stream: async () => ({ text: JSON.stringify([
+            { name: 'Jazz Night', startDate: '2026-08-25', time: '20:00', price: '5000-15000 AMD' },
+            { name: 'Rock Fest', startDate: '2026-08-26', time: '19:00', price: '9999 AMD' },
+        ]) }) };
+        const evs = await extractEventsFromPage(
+            { url: 'https://a.am', title: 'T', text }, { city: 'Yerevan', window: win }, { narrator });
+        expect(evs[0].startDate.toISOString()).toContain('T20:00');   // verified time kept
+        expect(evs[0].price).toBe('5000-15000 AMD');                  // verified price kept
+        expect(evs[1].startDate.toISOString()).toContain('T00:00');   // unverified → All day
+        expect(evs[1].price).toBeNull();                              // unverified → no price
+    });
+
     test('hunt falls back to the extracted tier on JSON-LD-free pages', async () => {
         const bulkWrite = jest.fn(() => Promise.resolve());
         const narrator = { stream: async () => ({ text: '[{"name":"Jazz Night","startDate":"2026-08-25","time":"20:00"}]' }) };

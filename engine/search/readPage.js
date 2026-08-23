@@ -159,6 +159,31 @@ function _findAssetsNear(html, baseUrl, name) {
     return out;
 }
 
+// A number the page does not print is not a fact. Live 2026-08-23: Jinni showed
+// an event at 19:00 while the source said 20:00 — the model's time was never
+// checked against the page. Times and prices must now be FINDABLE in the text,
+// the same rule that already governs images and links.
+function _normNums(s) {
+    // Armenian full stop (։), periods and NBSP all appear as time separators.
+    return String(s || '').replace(/[։. ]/g, ':').replace(/\s+/g, ' ').toLowerCase();
+}
+function _timeOnPage(text, hhmm) {
+    if (!hhmm) return false;
+    const hay = _normNums(text);
+    const [h, m] = hhmm.split(':');
+    return hay.includes(`${h}:${m}`) || hay.includes(`${String(Number(h))}:${m}`);
+}
+function _priceOnPage(text, price) {
+    const p = String(price || '').trim();
+    if (!p || p.length > 40) return false;
+    if (/^(free|անվճար|бесплатно)$/i.test(p)) return /free|անվճար|бесплатно/i.test(String(text));
+    // Every digit group in the claimed price must appear in the page text.
+    const groups = p.match(/\d[\d\s,]*/g) || [];
+    if (!groups.length) return false;
+    const hay = String(text).replace(/[\s, ]/g, '');
+    return groups.every(g => hay.includes(g.replace(/[\s,]/g, '')));
+}
+
 /** Reduce already-fetched HTML to the page shape. null when nothing readable. */
 function _reducePage(html, url, maxChars = DEFAULT_MAX_CHARS) {
     if (!html) return null;
@@ -227,7 +252,8 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
                     + `List ONLY events whose DAY and MONTH the page explicitly prints (e.g. "30 Aug", "August 30").`
                     + ` If the page omits the year, resolve it so the date falls in or nearest to ${winFrom}..${winTo}.`
                     + ` Never invent a day or month the page does not print.\n`
-                    + `Reply with ONLY a JSON array: [{"name":"…","startDate":"YYYY-MM-DD","time":"HH:MM or null","venueName":"… or null","image":"URL or null","url":"URL or null"}]\n`
+                    + `Reply with ONLY a JSON array: [{"name":"…","startDate":"YYYY-MM-DD","time":"HH:MM or null","venueName":"… or null","price":"exactly as printed, e.g. 5000 AMD or 3000-10000 AMD or Free, else null","image":"URL or null","url":"URL or null"}]\n`
+                    + `"time" and "price" must be COPIED from the page for that event — never inferred, never carried over from a neighbouring event. Use null when the page does not print one.\n`
                     + (pairs.length
                         ? `For "image", pick the URL from IMAGES ON THE PAGE whose caption or filename clearly belongs to that event; null if none matches. Never reuse one image for several events.\n`
                         : `Set "image" to null.\n`)
@@ -252,8 +278,13 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
             // No time on the page ⇒ MIDNIGHT, which the card renders as "All
             // day". The old 12:00 default invented a start time and the card
             // showed it as fact (live 2026-08-23: every tomsarkgh event read
-            // "12:00"). An unknown time must look unknown.
-            const time = (typeof e.time === 'string' && /^\d{2}:\d{2}$/.test(e.time)) ? e.time : '00:00';
+            // "12:00"). An unknown time must look unknown — and a time the page
+            // does not actually print counts as unknown (Jinni said 19:00 where
+            // the source said 20:00).
+            const claimed = (typeof e.time === 'string' && /^\d{1,2}:\d{2}$/.test(e.time))
+                ? e.time.padStart(5, '0') : null;
+            const time = (claimed && _timeOnPage(page.text, claimed)) ? claimed : '00:00';
+            const price = _priceOnPage(page.text, e.price) ? String(e.price).trim().slice(0, 40) : null;
             const start = new Date(`${e.startDate}T${time}:00Z`);
             if (Number.isNaN(start.getTime())) continue;
             if (start > wEnd || start < new Date(wStart.getTime() - 12 * 3600 * 1000)) continue;   // window brake
@@ -277,6 +308,7 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
                 name,
                 startDate: start,
                 endDate: null,
+                price,
                 image,
                 url: ownLink || page.url,
                 venueName: (typeof e.venueName === 'string' && e.venueName.trim()) ? e.venueName.trim().slice(0, 80) : null,
@@ -291,4 +323,4 @@ async function extractEventsFromPage(page, { city = null, window: win = null } =
     }
 }
 
-module.exports = { readPage, extractEventsFromPage, _reducePage, _findAssetsNear, DEFAULT_TIMEOUT_MS };
+module.exports = { readPage, extractEventsFromPage, _reducePage, _findAssetsNear, _timeOnPage, _priceOnPage, DEFAULT_TIMEOUT_MS };
