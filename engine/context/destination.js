@@ -121,7 +121,24 @@ async function resolveDestination({
             // centroid is a worse centre than the street you are standing on.
             if (currentRegion && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city))) {
                 console.log(`[destination] "${name}" is where we already are — keeping the current centre`);
-                return { center: gpsCenter, source: 'here', city: currentRegion.city || geo.name, remember: null };
+                // REMEMBER it anyway. Naming where you already are still moves
+                // the conversation there, and returning remember:null meant it
+                // did not stick: "find events in yerevan armenia" answered
+                // about Yerevan, then "another ones" fell back to the saved
+                // Dubai and replied "every upcoming event I have in Dubai"
+                // (live 2026-08-24: "armenia braked also"). What is remembered
+                // is the CURRENT position, never the country centroid — that is
+                // the whole reason this branch exists.
+                return {
+                    center: gpsCenter,
+                    source: 'here',
+                    city: currentRegion.city || geo.name,
+                    remember: gpsCenter ? {
+                        name: currentRegion.city || geo.name,
+                        latitude: gpsCenter.lat, longitude: gpsCenter.lng,
+                        placeId: null, updatedAt: new Date(),
+                    } : null,
+                };
             }
             return {
                 center: { lat: geo.lat, lng: geo.lng },

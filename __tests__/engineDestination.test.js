@@ -114,7 +114,13 @@ describe('resolveDestination: "here"', () => {
             geo({ Armenia: { name: 'Armenia', lat: 40.069, lng: 45.038, types: ['country'] } }));
         expect(d.center).toEqual(YEREVAN);          // not the centroid
         expect(d.source).toBe('here');
-        expect(d.remember).toBeNull();
+        // It DOES remember — this expectation used to be toBeNull(), and that
+        // was the bug: "find events in yerevan armenia" answered about Yerevan,
+        // then "another ones" fell back to the saved Dubai and said "every
+        // upcoming event I have in Dubai" (live 2026-08-24). Naming where you
+        // already are still moves the conversation there. What is stored is the
+        // CURRENT position, never the country centroid.
+        expect(d.remember).toMatchObject({ name: 'Yerevan', latitude: YEREVAN.lat, longitude: YEREVAN.lng });
     });
 
     test('naming the city you are in also keeps precise coordinates', async () => {

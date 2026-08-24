@@ -35,7 +35,21 @@ const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 // COST: these reads are SEQUENTIAL, so each source adds its fetch to the turn.
 // Reading them concurrently is the next thing to do here.
 const MAX_CURATED = 14;
-const MAX_STORE = 12;    // events stored per hunt
+// Events stored per hunt, and the most any ONE source may contribute.
+//
+// MAX_STORE was 12, and that quietly defeated curation entirely (Arsen
+// 2026-08-24: "we added bad website url, i dont like it, see, can you find
+// more events there?"). allevents.in/dubai/all returns 23 rows, so the first
+// source filled the shelf, `found.length >= MAX_STORE` broke the loop, and
+// Eventbrite and all six category feeds were never fetched. The log said
+// "12 dated event(s) from 9 page(s)" while having read exactly one page.
+//
+// So the shelf is bigger, AND no single feed may take all of it. A per-source
+// share is what actually answers his complaint: a big general listing will
+// always out-produce a category feed, so without a share the expo listing wins
+// every time and nothing romantic or family-shaped ever reaches the deck.
+const MAX_STORE = 60;
+const MAX_PER_SOURCE = 12;
 const DEAD_READS = 3;    // empty reads before a DISCOVERED source switches itself off
 const MAX_RENDERS = 2;   // browser renders per hunt — seconds each, so escalate, never start here
 
@@ -79,7 +93,16 @@ function _datedish(html) {
 // thumbnail-looking URL counts as "no good image yet".
 const _looksThumbnail = (u) => /thumbnail|\/thumb|_thumb|\b\d{2,4}[x_]\d{2,4}\b|small|preview/i.test(String(u || ''));
 
-async function _followDetails(rows, { fetchHtml, pageUrl, timeoutMs = 10000, budget = 6 } = {}) {
+// Budget 12, not 6. allevents' LIST HTML carries no banner for user-submitted
+// events — only a featured-star icon and the organiser's gravatar — so 36 of 43
+// Dubai rows had no image at all and the poster only exists as og:image on each
+// event's own page (Arsen 2026-08-24: "some events cannot attach picture but
+// the website contains"). Six follows covered six cards.
+//
+// It is still a budget, and deliberately: each follow is an HTTP fetch on a
+// sequential path. Full coverage belongs in the nightly source sweep, which has
+// time to spare, not in a turn a person is waiting on.
+async function _followDetails(rows, { fetchHtml, pageUrl, timeoutMs = 10000, budget = 12 } = {}) {
     const { _structuredFromHtml } = require('../search/readPage');
     for (const e of rows) {
         const wantPoster = !e.image || _looksThumbnail(e.image);
@@ -325,11 +348,13 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     const sourceYield = new Map();                    // _sourceId → events read this hunt
     const newSources = [];                            // discovered pages that actually produced events
     let renderBudget = MAX_RENDERS;
+    let pagesRead = 0;
     for (const u of urls) {
         const beforeCount = found.length;
         try {
             let html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
             if (!html) continue;
+            pagesRead++;
             // A listing with no dated events in its plain HTML is either empty
             // or JavaScript. One render tells us which — budgeted, and only
             // after the cheap read has already come back with nothing.
@@ -361,6 +386,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 for (const e of rows) {
                     if (e.startDate > wEnd) continue;
                     if ((e.endDate || e.startDate) < wStart) continue;
+                    if (found.length - beforeCount >= MAX_PER_SOURCE) break;
                     found.push({ ...e, sourceUrl: e.url || u.url, _tier: 'listing' });
                     kept++;
                 }
@@ -392,6 +418,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     for (const e of rows) {
                         if (e.startDate > wEnd) continue;
                         if ((e.endDate || e.startDate) < wStart) continue;
+                        if (found.length - beforeCount >= MAX_PER_SOURCE) break;
                         found.push({ ...e, sourceUrl: e.url || u.url, _tier: 'listing' });
                         kept++;
                     }
@@ -418,6 +445,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 if (Number.isNaN(start.getTime())) continue;
                 if (start > wEnd) continue;                          // starts after the asked window
                 if ((end || start) < wStart) continue;               // over before it
+                if (found.length - beforeCount >= MAX_PER_SOURCE) break;
                 found.push({ ...n, startDate: start, endDate: end, sourceUrl: n.url || u.url, _tier: 'listing' });
                 ldFound++;
             }
@@ -436,7 +464,10 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     // own link the model matched but whose image it couldn't
                     // (allevents.in live 2026-08-23: 7 events, 0 posters).
                     await _followDetails(extracted, { fetchHtml, pageUrl: page.url, timeoutMs: deps.timeoutMs });
-                    for (const e of extracted) found.push({ ...e, sourceUrl: e.url || u.url });
+                    for (const e of extracted) {
+                        if (found.length - beforeCount >= MAX_PER_SOURCE) break;
+                        found.push({ ...e, sourceUrl: e.url || u.url });
+                    }
                     // Log the 0 case too — silence here is indistinguishable
                     // from "reader not deployed" (live lesson 2026-08-23).
                     console.log(`[hunt] extracted-tier: +${extracted.length} model-read event(s) from ${String(u.url).slice(0, 60)} (${page.text.length} chars read)`);
@@ -527,7 +558,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     } catch (err) {
         console.warn(`[hunt] store failed: ${err.message}`);
     }
-    console.log(`[hunt] "${q}" → ${rows.length} dated event(s) stored/refreshed from ${urls.length} page(s)`);
+    console.log(`[hunt] "${q}" → ${rows.length} dated event(s) stored/refreshed from ${pagesRead} of ${urls.length} page(s)`);
 
     return rows.map(({ e }) => aiEventToCandidate({
         name: e.name, placeId: null, lat: null, lng: null,
