@@ -34,6 +34,7 @@
     "openmeteo": "^1.2.3",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "playwright": "^1.62.1",
     "sharp": "^0.34.5",
     "translate-google-api": "^1.0.4",
     "tz-lookup": "^6.1.25",

@@ -1,0 +1,30 @@
+# Build config for Coolify/Nixpacks.
+#
+# The only reason this file exists: Playwright needs a BROWSER, and a browser
+# installed by hand inside a running container disappears on the next deploy.
+# This puts it in the image (Arsen 2026-08-24: "i want app work and see dubai
+# websites normally").
+#
+# Rendering is what lets us read listing sites that build their pages in the
+# browser — platinumlist and ticketmaster.ae among them. Without it those pages
+# arrive as empty shells, we conclude the city has no readable sources, and
+# Dubai falls back to a newspaper article.
+#
+# The browser install is deliberately NON-FATAL. If it fails — no apt, no disk,
+# a bad mirror — the deploy still succeeds, the engine logs "[render] browser
+# launch failed … falling back to plain fetch", and everything works exactly as
+# it does today. A missing OPTIONAL capability must never be able to take the
+# app down.
+
+[variables]
+# Inside the app directory, so it certainly survives into the runtime image
+# rather than sitting in a home cache that may not.
+PLAYWRIGHT_BROWSERS_PATH = "/app/.playwright"
+
+[phases.install]
+# `npm ci` is what Nixpacks would have run by itself; it is repeated here
+# because naming cmds REPLACES the default rather than adding to it.
+cmds = [
+  "npm ci",
+  "PLAYWRIGHT_BROWSERS_PATH=/app/.playwright npx playwright install --with-deps chromium || echo '[build] chromium install failed — rendering stays off, app unaffected'"
+]
