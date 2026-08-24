@@ -102,29 +102,32 @@ describe('setting the destination to where you are', () => {
     const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
 
     test('code fills in every field from the reported position', () => {
-        const p = validateProposal({ field: 'destination', value: 'current' }, { currentPlace: HERE });
-        expect(p.value).toEqual({
+        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
+        expect(p.value).toMatchObject({
             country: 'AM', countryName: 'Armenia', city: 'Yerevan',
             coordinates: { lat: 40.18, lng: 44.51 },
         });
-        expect(p.label).toBe('destination to Yerevan, Armenia');
+        // settings.location carries a timestamp; preferences.destination does
+        // not, and applyProposal strips it for that path.
+        expect(p.value.lastUpdated).toBeInstanceOf(Date);
+        expect(p.label).toBe('location to Yerevan, Armenia');
     });
 
     test('a city NAME is refused — a guessed coordinate is not saveable', () => {
-        expect(validateProposal({ field: 'destination', value: 'Paris' }, { currentPlace: HERE })).toBeNull();
-        expect(validateProposal({ field: 'destination', value: { lat: 1, lng: 2 } }, { currentPlace: HERE })).toBeNull();
+        expect(validateProposal({ field: 'location', value: 'Paris' }, { currentPlace: HERE })).toBeNull();
+        expect(validateProposal({ field: 'location', value: { lat: 1, lng: 2 } }, { currentPlace: HERE })).toBeNull();
     });
 
     test('no position means no write, rather than 0,0', () => {
-        expect(validateProposal({ field: 'destination', value: 'current' }, {})).toBeNull();
-        expect(validateProposal({ field: 'destination', value: 'current' },
+        expect(validateProposal({ field: 'location', value: 'current' }, {})).toBeNull();
+        expect(validateProposal({ field: 'location', value: 'current' },
             { currentPlace: { city: 'X', lat: 0, lng: 0 } })).toBeNull();
     });
 
     test('an ISO country code is only stored when the region gave one', () => {
         // resolveRegion returns {city, country} with no code, so this field stays
         // empty rather than being guessed from the country name.
-        const p = validateProposal({ field: 'destination', value: 'current' },
+        const p = validateProposal({ field: 'location', value: 'current' },
             { currentPlace: { city: 'Dubai', country: 'United Arab Emirates', lat: 25.2, lng: 55.27 } });
         expect(p.value.country).toBe('');
         expect(p.value.countryName).toBe('United Arab Emirates');
@@ -137,12 +140,34 @@ describe('setting the destination to where you are', () => {
         expect(isExplicit(null)).toBe(false);
     });
 
-    test('an asked-for change writes exactly one path', async () => {
+    // Arsen 2026-08-24: "onboarding page works with user modal … then ai should
+    // do the same." OnboardingPage.vue PATCHes /api/auth/onboarding with BOTH
+    // preferences.destination and settings.location, plus the GPS flag. Writing
+    // only one leaves chat and the Preferences screen disagreeing, which is what
+    // made the change look imaginary.
+    test('a location change writes exactly what onboarding writes', async () => {
         const sets = [];
         const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
-        const p = validateProposal({ field: 'destination', value: 'current' }, { currentPlace: HERE });
+        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
         expect(await applyProposal('u1', p, { User })).toBe(true);
-        expect(Object.keys(sets[0].$set)).toEqual(['preferences.destination']);
+        expect(Object.keys(sets[0].$set).sort()).toEqual([
+            'preferences.destination', 'settings.location', 'settings.privacy.autoDetectLocation',
+        ]);
+        expect(sets[0].$set['settings.location'].city).toBe('Yerevan');
+        expect(sets[0].$set['preferences.destination'].city).toBe('Yerevan');
+        // The schema has no lastUpdated under preferences.destination.
+        expect(sets[0].$set['preferences.destination'].lastUpdated).toBeUndefined();
+        expect(sets[0].$set['settings.location'].lastUpdated).toBeInstanceOf(Date);
+    });
+
+    test('choosing a named city switches GPS autodetect off, as onboarding does', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(u); return { matchedCount: 1 }; } };
+        const named = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
+        await applyProposal('u1', validateProposal({ field: 'location', value: 'named' }, { namedPlace: named }), { User });
+        expect(sets[0].$set['settings.privacy.autoDetectLocation']).toBe(false);
+        await applyProposal('u1', validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE }), { User });
+        expect(sets[1].$set['settings.privacy.autoDetectLocation']).toBe(true);
     });
 });
 
@@ -209,7 +234,7 @@ describe('search radii and what Jinni admits to seeing', () => {
 
 // The bug this exists to prevent, live 2026-08-24: "change my location, choose
 // Dubai" → "Your location is now set to Dubai — done." while the log read
-// "[prefs] destination to Yerevan, Armenia — set on request". The vocabulary
+// "[prefs] location to Yerevan, Armenia — set on request". The vocabulary
 // only had 'current', so a named city was silently turned into the GPS. The
 // prose and the database disagreed, which is worse than refusing outright.
 describe('a named destination is saved as the city that was named', () => {
@@ -218,28 +243,28 @@ describe('a named destination is saved as the city that was named', () => {
     const NAMED = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
 
     test('"named" saves the named city, not where they are standing', () => {
-        const p = validateProposal({ field: 'destination', value: 'named' },
+        const p = validateProposal({ field: 'location', value: 'named' },
             { currentPlace: GPS, namedPlace: NAMED });
         expect(p.value.city).toBe('Dubai');
         expect(p.value.coordinates).toEqual({ lat: 25.205, lng: 55.271 });
-        expect(p.label).toBe('destination to Dubai, United Arab Emirates');
+        expect(p.label).toBe('location to Dubai, United Arab Emirates');
     });
 
     test('"current" still saves where they are', () => {
-        const p = validateProposal({ field: 'destination', value: 'current' },
+        const p = validateProposal({ field: 'location', value: 'current' },
             { currentPlace: GPS, namedPlace: NAMED });
         expect(p.value.city).toBe('Yerevan');
     });
 
     test('"named" with no city named writes NOTHING — it does not fall back to GPS', () => {
         // Falling back is how Yerevan got saved when Dubai was asked for.
-        expect(validateProposal({ field: 'destination', value: 'named' }, { currentPlace: GPS })).toBeNull();
+        expect(validateProposal({ field: 'location', value: 'named' }, { currentPlace: GPS })).toBeNull();
     });
 
     test('a place name or coordinates from the model are still refused', () => {
-        expect(validateProposal({ field: 'destination', value: 'Dubai' },
+        expect(validateProposal({ field: 'location', value: 'Dubai' },
             { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
-        expect(validateProposal({ field: 'destination', value: { lat: 25, lng: 55 } },
+        expect(validateProposal({ field: 'location', value: { lat: 25, lng: 55 } },
             { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
     });
 });

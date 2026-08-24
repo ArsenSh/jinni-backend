@@ -50,7 +50,7 @@ const PREF_VOCAB = {
     //
     // A model-supplied coordinate is still never accepted. It says WHICH of the
     // two, and code supplies the numbers either way.
-    destination: ['current', 'named'],
+    location: ['current', 'named'],
 };
 
 // Search radii, in km. Arsen 2026-08-24: "the jinni can have access to
@@ -73,7 +73,17 @@ const PREF_PATHS = {
     travelStyle: 'preferences.travelStyle',
     interests: 'preferences.interests',
     budget: 'preferences.budget',
-    destination: 'preferences.destination',
+    // A location change touches THREE paths, because that is what the
+    // onboarding screen writes (frontend OnboardingPage.vue → PATCH
+    // /api/auth/onboarding). Arsen 2026-08-24: "onboarding page works with user
+    // modal … then ai should do the same."
+    //
+    // Writing only one of them is why the change kept looking imaginary: chat
+    // reads preferences.destination, the Preferences screen shows
+    // settings.location, and updating either alone leaves the other stale and
+    // the two disagreeing. See LOCATION_PATHS below — this entry stays for the
+    // single-path fields only.
+    location: 'settings.location',
     nearbyRadius: RADIUS_LIMITS.nearbyRadius.path,
     discoveryRadius: RADIUS_LIMITS.discoveryRadius.path,
 };
@@ -119,7 +129,9 @@ function validateProposal(raw, ctx = {}) {
         return { field, value: { min, max, currency }, label: `budget to ${min}–${max} ${currency}` };
     }
 
-    if (field === 'destination') {
+    // 'destination' is still accepted so a proposal parked in the database
+    // before the rename still applies instead of silently doing nothing.
+    if (field === 'location' || field === 'destination') {
         // IDEMPOTENT. applyProposal re-validates as a safety net — a pending
         // proposal comes back out of the database, so re-checking it is right —
         // and it has no position context to hand. So an already-resolved
@@ -132,18 +144,23 @@ function validateProposal(raw, ctx = {}) {
             if (!Number.isFinite(lat0) || !Number.isFinite(lng0) || (lat0 === 0 && lng0 === 0)) return null;
             const where0 = [already.city, already.countryName].filter(Boolean).join(', ');
             return {
-                field,
+                field: 'location',
+                // Carried through the re-validation. Dropping it silently reset
+                // the GPS-autodetect flag to true for a named city, and lost
+                // the timestamp settings.location expects.
+                source: raw.source === 'named' ? 'named' : (raw.source === 'current' ? 'current' : null),
                 value: {
                     country: String(already.country || ''),
                     countryName: String(already.countryName || ''),
                     city: String(already.city || ''),
                     coordinates: { lat: lat0, lng: lng0 },
+                    lastUpdated: already.lastUpdated instanceof Date ? already.lastUpdated : new Date(),
                 },
-                label: where0 ? `destination to ${where0}` : 'destination to where you are now',
+                label: where0 ? `location to ${where0}` : 'location to where you are now',
             };
         }
         const v = String(raw.value || '').trim().toLowerCase();
-        if (!PREF_VOCAB.destination.includes(v)) return null;
+        if (!PREF_VOCAB.location.includes(v)) return null;
         // 'named' uses the city the resolver already geocoded this turn; nothing
         // is written when no city was named, rather than falling back to the
         // GPS and saving somewhere the traveler did not ask for.
@@ -155,14 +172,16 @@ function validateProposal(raw, ctx = {}) {
         // No position, nothing to save. Refusing beats storing 0,0.
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
         return {
-            field,
+            field: 'location',
+            source: v,                                 // 'current' | 'named'
             value: {
                 country: src.countryCode || '',
                 countryName: src.country || '',
                 city: src.city || '',
                 coordinates: { lat, lng },
+                lastUpdated: new Date(),
             },
-            label: where ? `destination to ${where}` : 'destination to where you are now',
+            label: where ? `location to ${where}` : 'location to where you are now',
         };
     }
 
@@ -212,9 +231,27 @@ async function applyProposal(userId, proposal, deps = {}) {
     if (!userId || !valid) return false;
     const User = deps.User || require('../../models/User');
     try {
-        const path = PREF_PATHS[valid.field];
-        if (!path) return false;                   // a field with no home is not writable
-        const res = await User.updateOne({ _id: userId }, { $set: { [path]: valid.value } });
+        let $set;
+        if (valid.field === 'location') {
+            // Exactly the fields the onboarding screen sets, and nothing else.
+            // preferences.destination has no lastUpdated in the schema, so it
+            // does not get one.
+            const { lastUpdated, ...place } = valid.value;
+            $set = {
+                'preferences.destination': place,
+                'settings.location': valid.value,
+                // Onboarding derives this from "use my GPS?" — choosing a named
+                // city is the same answer as unticking it.
+                // Only a deliberate 'current' turns GPS autodetect back on; an
+                // unknown source leaves the flag alone rather than guessing.
+                ...(valid.source ? { 'settings.privacy.autoDetectLocation': valid.source === 'current' } : {}),
+            };
+        } else {
+            const path = PREF_PATHS[valid.field];
+            if (!path) return false;               // a field with no home is not writable
+            $set = { [path]: valid.value };
+        }
+        const res = await User.updateOne({ _id: userId }, { $set });
         // `acknowledged` means "the server received the write", NOT "a document
         // changed" — it is true even when matchedCount is 0. Reading it first
         // meant a write that touched nothing still logged "approved by the

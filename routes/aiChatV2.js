@@ -192,6 +192,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // position was actually reported this turn — the traveler may have
             // switched location off, and claiming to see it then is a lie.
             intent._preferences._searchRadius = user?.settings?.searchRadius || null;
+            intent._savedLocation = user?.settings?.location?.city ? user.settings.location : null;
+            intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
             // An approval a moment ago is already true for this turn.
             if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
@@ -214,7 +216,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 sessionDestination: sessionPeek?.activeDestination || null,
                 // The destination chosen in Settings. Without it, choosing
                 // Dubai did nothing until the traveler typed "Dubai" out loud.
-                savedDestination: intent._preferences?.destination || null,
+                // settings.location is the field the Preferences screen shows
+                // and the one Jinni now writes; preferences.destination stays
+                // as the fallback so accounts set up before this still work.
+                savedDestination: intent._savedLocation || intent._preferences?.destination || null,
                 nearbyMode,
                 // Where we are now, so naming it is understood as "here" rather
                 // than as a move to its centroid. Same 1km grid cache the
