@@ -66,7 +66,7 @@ describe('consent', () => {
 });
 
 describe('applyProposal', () => {
-    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true }; } });
+    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
 
     test('writes ONE path, so no other setting can be lost', async () => {
         const calls = [];
@@ -139,7 +139,7 @@ describe('setting the destination to where you are', () => {
 
     test('an asked-for change writes exactly one path', async () => {
         const sets = [];
-        const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true }; } };
+        const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
         const p = validateProposal({ field: 'destination', value: 'current' }, { currentPlace: HERE });
         expect(await applyProposal('u1', p, { User })).toBe(true);
         expect(Object.keys(sets[0].$set)).toEqual(['preferences.destination']);
@@ -170,7 +170,7 @@ describe('search radii and what Jinni admits to seeing', () => {
 
     test('radii write under settings, not preferences', async () => {
         const sets = [];
-        const User = { updateOne: async (q, u) => { sets.push(Object.keys(u.$set)[0]); return { acknowledged: true }; } };
+        const User = { updateOne: async (q, u) => { sets.push(Object.keys(u.$set)[0]); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
         await applyProposal('u1', { field: 'nearbyRadius', value: 6 }, { User });
         await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User });
         expect(sets).toEqual(['settings.searchRadius.nearby', 'preferences.travelStyle']);
