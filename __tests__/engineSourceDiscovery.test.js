@@ -191,3 +191,39 @@ describe('huntCity', () => {
         expect(huntCity({ regionCity: null }, [{ city: null }, null])).toBeNull();
     });
 });
+
+// ── Venue names arrive clipped by the listing grid (Arsen 2026-08-24) ────────
+// tomsarkgh cuts long venue names in its cards; the model copies what it can
+// see, and we stored the clipping. "State theatre of musical comedy after..."
+// then went to Google as a query and onto the card as the location.
+describe('_cleanVenue', () => {
+    const { _cleanVenue } = require('../engine/events/hunt');
+
+    test('the ellipsis goes, and the word it interrupted goes with it', () => {
+        expect(_cleanVenue('State theatre of musical comedy after...'))
+            .toEqual({ name: 'State theatre of musical comedy', truncated: true });
+        expect(_cleanVenue('Drama Theatre named after Hrachya Gha…'))
+            .toEqual({ name: 'Drama Theatre named after Hrachya', truncated: true });
+    });
+
+    test('a whole name is left exactly as it is', () => {
+        for (const v of ['Bohem theatre', 'Shéné', 'Cafesjian Center for the Arts (Cascade complex)']) {
+            expect(_cleanVenue(v)).toEqual({ name: v, truncated: false });
+        }
+    });
+
+    test('a clipping too short to search becomes no venue at all', () => {
+        expect(_cleanVenue('Ab…')).toEqual({ name: null, truncated: true });
+        expect(_cleanVenue('…')).toEqual({ name: null, truncated: true });
+    });
+
+    test('empty input is not a truncation', () => {
+        for (const v of ['', '   ', null, undefined]) {
+            expect(_cleanVenue(v)).toEqual({ name: null, truncated: false });
+        }
+    });
+
+    test('a dangling connective left by the cut is trimmed too', () => {
+        expect(_cleanVenue('Yerevan Theatre, the...').name).toBe('Yerevan Theatre');
+    });
+});

@@ -40,6 +40,28 @@ function _fmtWindow(win) {
 // was an address fragment) — letters, spaces and simple punctuation only.
 const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
 
+/** A venue name as the LISTING GRID showed it — which is often cut short.
+ *
+ *  tomsarkgh clips long venue names in its cards, the model faithfully copies
+ *  what it can see, and we stored the clipping: "State theatre of musical
+ *  comedy after...", "Drama Theatre named after Hrachya Gha...". That string
+ *  then went to Google as a search query and onto the card as the location
+ *  (Arsen 2026-08-24).
+ *
+ *  The ellipsis is dropped along with the word it interrupted — a half word
+ *  hurts a search more than it helps. `truncated` tells callers the name is a
+ *  PREFIX, so a fuller one from the detail page or from Google may replace it.
+ */
+function _cleanVenue(raw) {
+    const v = String(raw || '').trim();
+    if (!v) return { name: null, truncated: false };
+    const m = v.match(/^(.*?)[\s]*(?:…|\.\.\.)$/);
+    if (!m) return { name: v, truncated: false };
+    // Drop the interrupted word, then any dangling connective it left behind.
+    const cut = m[1].replace(/\s+\S*$/, '').replace(/[\s,;:–—-]+$/, '').trim();
+    return cut.length >= 3 ? { name: cut, truncated: true } : { name: null, truncated: true };
+}
+
 /** Pin each event to its VENUE on the map, once, at storage time.
  *
  *  A hunted event stores lat/lng null, so the recommendation map had nothing to
@@ -57,16 +79,21 @@ const VENUE_PIN_MAX = 6;          // venue lookups per hunt
 const VENUE_PIN_MAX_KM = 80;      // a pin further out than this is the wrong place
 
 async function _pinVenues(rows, { city, center }, deps) {
+    const byVenue = new Map();
+    for (const { e } of rows) {
+        const { name, truncated } = _cleanVenue(e.venueName);
+        e.venueName = name;                       // never store or show an ellipsis
+        e._venueTruncated = truncated;
+        if (!name || e.lat != null) continue;
+        if (!byVenue.has(name)) byVenue.set(name, []);
+        byVenue.get(name).push(e);
+    }
+    // Cleaning happens even when we cannot geocode — an ellipsis must never be
+    // stored or shown, whatever else fails.
     const finder = deps.findPlaces
         || (() => { try { return require('../../services/googleService').findPlaces; } catch { return null; } })();
     if (typeof finder !== 'function') return;
 
-    const byVenue = new Map();
-    for (const { e } of rows) {
-        if (!e.venueName || e.lat != null) continue;
-        if (!byVenue.has(e.venueName)) byVenue.set(e.venueName, []);
-        byVenue.get(e.venueName).push(e);
-    }
     let budget = VENUE_PIN_MAX, pinned = 0;
     for (const [venue, events] of byVenue) {
         if (budget-- <= 0) break;
@@ -78,7 +105,12 @@ async function _pinVenues(rows, { city, center }, deps) {
                 console.log(`[hunt] venue "${venue}" resolved far from ${city} — leaving it unpinned`);
                 continue;
             }
-            for (const e of events) { e.lat = loc.lat; e.lng = loc.lng; e.venuePlaceId = hit.place_id || null; }
+            for (const e of events) {
+                e.lat = loc.lat; e.lng = loc.lng; e.venuePlaceId = hit.place_id || null;
+                // Our name was a prefix; Google's is the whole thing. Adopting it
+                // fixes the card's location line as well as the pin.
+                if (e._venueTruncated && hit.name) e.venueName = hit.name;
+            }
             pinned += events.length;
         } catch { /* a venue we cannot place stays unpinned, which is honest */ }
     }
@@ -256,7 +288,10 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                                             console.log(`[hunt] detail page gave "${String(e.name).slice(0, 40)}" an exact start ${hit.time}`);
                                         }
                                         if (hit.price && !e.price) e.price = hit.price;
-                                        if (hit.venue && !e.venueName) e.venueName = hit.venue;
+                                        // A truncated venue is worse than no
+                                        // venue: it blocked the full name the
+                                        // detail page was offering.
+                                        if (hit.venue && (!e.venueName || _cleanVenue(e.venueName).truncated)) e.venueName = hit.venue;
                                     }
                                 }
                             } catch { /* the listing data still stands */ }
@@ -350,4 +385,4 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     }, center));
 }
 
-module.exports = { huntEvents };
+module.exports = { huntEvents, _cleanVenue };
