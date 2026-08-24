@@ -31,8 +31,8 @@ const { EVENT_FEED_SOURCES, KNOWN_EVENT_SEARCH_DOMAINS } = require('./sources');
  */
 const DOMAIN_DISCOVERY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DOMAIN_DISCOVERY_MAX = 6;
-const _discoveredByCountry = new Map();   // country(lc) → { at, domains, feeds }
-const _discoveryInFlight = new Map();     // country(lc) → Promise (one call, not N)
+const _discoveredByCountry = new Map();   // `country|city` (lc) → { at, domains, feeds }
+const _discoveryInFlight = new Map();     // `country|city` (lc) → Promise (one call, not N)
 
 /* Two DIFFERENT questions, and conflating them threw away real sources.
  *
@@ -60,14 +60,72 @@ async function _domainResolves(host) {
     }
 }
 
-/** Can WE fetch it? Only needed to decide whether it can be a free feed. */
-async function _fetchDomainHome(host) {
-    /* `/en` WITHOUT the trailing slash matters: tomsarkgh.am/en/ 404s while
-     * tomsarkgh.am/en is the English listing page. Falling straight through to
-     * `/` served the Armenian homepage, where the Latin word "Yerevan" never
-     * appears — so the relevance test excluded a site that is the country's
-     * best event source. */
-    for (const url of [`https://${host}/en`, `https://${host}/en/`, `https://${host}/`]) {
+/** How many DATED events a page yields to the reader we actually use.
+ *
+ *  The old gate accepted a site only if it published schema.org JSON-LD. Our
+ *  reader is far stronger than that — microdata, RDFa, epoch attributes — and
+ *  neither tomsarkgh nor allevents, our two best sources, would have passed it
+ *  either. Testing the page against a proxy for our capability instead of the
+ *  capability itself is what made Dubai look unreadable when it was not.
+ */
+const MIN_DATED_EVENTS = 3;
+
+function _datedEventCount(html) {
+    let n = 0;
+    try {
+        n = _extractLdEvents(html).map(_normalizeLdEvent).filter(e => e.name && e.startDate).length;
+    } catch { /* fall through to the ladder */ }
+    if (n >= MIN_DATED_EVENTS) return n;
+    try {
+        const { _structuredFromHtml } = require('../search/readPage');
+        const days = new Set(_structuredFromHtml(html).map(o => o.day).filter(Boolean));
+        return Math.max(n, days.size);
+    } catch {
+        return n;
+    }
+}
+
+/** Where a site lists THIS CITY's events, in the order worth trying.
+ *
+ *  Probing the bare domain root is what lost Dubai: platinumlist.net has no
+ *  event list on it, so the probe found nothing and a perfectly readable
+ *  source was discarded — the city's events live at dubai.platinumlist.net
+ *  (verified 2026-08-24). The model's own answer leads, because naming the
+ *  page a city's events live on is a judgement; the patterns below are the
+ *  deterministic fallback for when it 404s, and cost no model call.
+ *
+ *  `/en` WITHOUT the trailing slash stays in the list: tomsarkgh.am/en/ 404s
+ *  while tomsarkgh.am/en is the English listing page, and falling through to
+ *  `/` served the Armenian homepage where the Latin word "Yerevan" never
+ *  appears — so the relevance test excluded the country's best source.
+ */
+function _cityListingUrls(host, city, modelUrl = null) {
+    const slug = String(city || '').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')       // Zürich → zurich
+        .replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const urls = [];
+    // The model's URL, but only if it stays on the domain it proposed — an
+    // off-domain "listing page" is a different site wearing this one's name.
+    if (modelUrl) {
+        try {
+            const u = new URL(modelUrl);
+            const h = u.hostname.replace(/^www\./, '');
+            if (h === host || h.endsWith(`.${host}`)) urls.push(u.toString());
+        } catch { /* unusable string — the patterns below still apply */ }
+    }
+    if (slug) urls.push(
+        `https://${slug}.${host}/`,
+        `https://${host}/${slug}`,
+        `https://${host}/en/${slug}`,
+        `https://${host}/events/${slug}`,
+    );
+    urls.push(`https://${host}/en`, `https://${host}/en/`, `https://${host}/`);
+    return [...new Set(urls)];
+}
+
+/** Fetch the first candidate that answers with a real page. */
+async function _fetchCityListing(host, city, modelUrl = null) {
+    for (const url of _cityListingUrls(host, city, modelUrl)) {
         try {
             const html = await _fetchListingHtml(url);
             if (html && html.length > 500) return { url, html };
@@ -104,8 +162,10 @@ async function _confirmDomainBySearch(host, place, model) {
 }
 
 async function discoverEventSources(country, city) {
-    const key = String(country || '').toLowerCase().trim();
-    if (!key || _fetchUnavailable) return { domains: [], feeds: [] };
+    // Keyed by city, not country: the listing URL is per city, so Dubai and
+    // Abu Dhabi — or Tbilisi and Batumi — must not share one cached answer.
+    const key = `${String(country || '').toLowerCase().trim()}|${String(city || '').toLowerCase().trim()}`;
+    if (!String(country || '').trim() || _fetchUnavailable) return { domains: [], feeds: [] };
 
     const hit = _discoveredByCountry.get(key);
     if (hit && (Date.now() - hit.at) < DOMAIN_DISCOVERY_TTL_MS) return hit;
@@ -138,13 +198,26 @@ async function discoverEventSources(country, city) {
                            + `not a US state or any similarly named place elsewhere. `
                            + `Prefer national ticket sellers and official city/tourism event calendars for that country. `
                            + `Exclude blogs, travel magazines, aggregators and social networks. `
-                           + `Reply with ONLY a JSON array of at most ${DOMAIN_DISCOVERY_MAX} bare hostnames, e.g. ["example.com","example.org"].`
+                           + `For each site give its bare hostname AND the URL of the page that lists `
+                           + `${city ? `${city}'s` : 'that city\'s'} upcoming events — often a subdomain or a city path, `
+                           + `not the site's front page. `
+                           + `Reply with ONLY a JSON array of at most ${DOMAIN_DISCOVERY_MAX} objects, e.g. `
+                           + `[{"host":"example.com","url":"https://city.example.com/"}].`
                 }]
             });
             const raw = String(res?.text || '');
             const arr = JSON.parse((raw.match(/\[[\s\S]*?\]/) || ['[]'])[0]);
+            // Bare strings still parse — the older answer shape, and what the
+            // model falls back to when it does not know a city page.
+            const _host = (v) => String(v || '').trim().toLowerCase()
+                .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+            const urlByHost = new Map();
             const proposed = (Array.isArray(arr) ? arr : [])
-                .map(d => String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, ''))
+                .map((row) => {
+                    const host = _host(typeof row === 'string' ? row : row?.host || row?.url);
+                    if (typeof row === 'object' && row?.url) urlByHost.set(host, String(row.url));
+                    return host;
+                })
                 .filter(d => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d))
                 .slice(0, DOMAIN_DISCOVERY_MAX);
 
@@ -156,7 +229,7 @@ async function discoverEventSources(country, city) {
                 const real = await _domainResolves(host);
                 if (!real) return { host, real: false, feed: null };
                 // Fetchable by us? → then it can also be probed for a free feed.
-                const ok = await _fetchDomainHome(host);
+                const ok = await _fetchCityListing(host, city, urlByHost.get(host));
                 // Real but we can't fetch it (bot-blocked). NOT disproven — a
                 // search-tool confirmation pass below decides. `fetchable:false`
                 // marks it for that pass; `relevant` stays undefined for now.
@@ -173,10 +246,10 @@ async function discoverEventSources(country, city) {
                 const hay = ok.html.toLowerCase();
                 const needle = String(city || country || '').toLowerCase().replace(/^t'/, '');
                 const relevant = !needle || hay.includes(needle);
-                const events = _extractLdEvents(ok.html).map(_normalizeLdEvent).filter(e => e.name && e.startDate);
+                const dated = _datedEventCount(ok.html);
                 return {
-                    host, real: true, relevant,
-                    feed: relevant && events.length >= 3
+                    host, real: true, relevant, url: ok.url, dated,
+                    feed: relevant && dated >= MIN_DATED_EVENTS
                         ? { label: host, url: ok.url, countries: [String(country).toLowerCase()] }
                         : null
                 };
@@ -258,7 +331,9 @@ module.exports = {
     discoverEventSources,
     resolveSearchDomains,
     _domainResolves,
-    _fetchDomainHome,
+    _fetchCityListing,
+    _cityListingUrls,
+    _datedEventCount,
     _confirmDomainBySearch,
     DOMAIN_DISCOVERY_TTL_MS,
     DOMAIN_DISCOVERY_MAX,

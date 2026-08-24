@@ -24,6 +24,7 @@ const { haversineKm } = require('../utils/geo');
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 const MAX_CURATED = 8;   // registered sources read per hunt
 const MAX_STORE = 12;    // events stored per hunt
+const DEAD_READS = 3;    // empty reads before a DISCOVERED source switches itself off
 
 function _fmtWindow(win) {
     const f = (d) => new Date(d).toUTCString().slice(5, 16);   // "22 Aug 2026"
@@ -117,6 +118,30 @@ async function _pinVenues(rows, { city, center }, deps) {
     if (pinned) console.log(`[hunt] pinned ${pinned} event(s) to ${byVenue.size} venue(s) — they can appear on the map now`);
 }
 
+/** Search results, confined to the domains discovery actually verified.
+ *
+ *  Left unconfined, the Dubai search returned a Gulf News article and a
+ *  government press release — so four "events" arrived with no times, no
+ *  posters and one shared source link (live 2026-08-24). A newspaper writing
+ *  ABOUT events is not an event listing. With nothing verified we cannot
+ *  filter, and unrestricted search is still better than nothing.
+ */
+function _onlyVerified(results, domains, city) {
+    const list = results || [];
+    if (!domains || !domains.length) return list;
+    const ok = new Set(domains.map(d => String(d).toLowerCase().replace(/^www\./, '')));
+    const kept = list.filter((r) => {
+        try {
+            const h = new URL(r.url).hostname.toLowerCase().replace(/^www\./, '');
+            return ok.has(h) || [...ok].some(d => h.endsWith(`.${d}`));
+        } catch { return false; }
+    });
+    if (kept.length !== list.length) {
+        console.log(`[hunt] search for ${city}: kept ${kept.length}/${list.length} result(s) on verified domains`);
+    }
+    return kept;
+}
+
 /** Drop feeds a human already disabled for this city. Discovery has no memory
  *  of a validator's decision, and re-reading a page someone switched off would
  *  quietly overrule them. */
@@ -197,12 +222,13 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     // the page actually names this city, and that it publishes schema.org
     // events. Survivors are registered below, so the city is curated from the
     // second question onward and every later hunt is a free read.
-    let discovered = [];
+    let discovered = [], verifiedDomains = [];
     if (!curated.length && country) {
         try {
             const discover = deps.discoverEventSources || require('./discovery').discoverEventSources;
-            const feeds = ((await discover(country, city)) || {}).feeds || [];
-            discovered = await _dropDisabled(feeds.slice(0, MAX_CURATED), city, deps);
+            const found = (await discover(country, city)) || {};
+            verifiedDomains = found.domains || [];
+            discovered = await _dropDisabled((found.feeds || []).slice(0, MAX_CURATED), city, deps);
             if (discovered.length) console.log(`[hunt] discovered ${discovered.length} source(s) for ${city}: ${discovered.map(f => f.label).join(', ')}`);
         } catch (err) {
             console.warn(`[hunt] discovery for ${city} failed: ${err.message} — falling back to search`);
@@ -212,7 +238,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         ? curated.map((s) => ({ url: s.url, _sourceId: s._id }))
         : (discovered.length
             ? discovered.map((f) => ({ url: f.url, _discovered: f }))
-            : (await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null })).slice(0, MAX_PAGES));
+            : _onlyVerified(await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null }), verifiedDomains, city).slice(0, MAX_PAGES));
     if (curated.length) console.log(`[hunt] curated: reading ${curated.length} registered source(s) for ${city} — no web search`);
     if (!urls.length) return [];
 
@@ -315,14 +341,27 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         if (found.length >= MAX_STORE) break;
     }
     await _registerDiscovered(newSources, city, country, deps);
-    // Yield tracking: dead sources become visible in the staff list.
+    // Yield tracking, and the pruner. A source that reads nothing is visible in
+    // the staff list; a DISCOVERED one that reads nothing DEAD_READS times in a
+    // row switches itself off. Staff-registered sources only ever get the
+    // counter — turning off a human's choice is not the machine's call.
     if (sourceYield.size) {
         try {
             const EventSource = deps.EventSource || require('../../models/EventSource');
             await EventSource.bulkWrite([...sourceYield].map(([id, n]) => ({ updateOne: {
                 filter: { _id: id },
-                update: { $set: { lastReadAt: new Date(), lastFoundCount: n } },
+                update: n > 0
+                    ? { $set: { lastReadAt: new Date(), lastFoundCount: n, zeroStreak: 0 } }
+                    : { $set: { lastReadAt: new Date(), lastFoundCount: 0 }, $inc: { zeroStreak: 1 } },
             } })), { ordered: false });
+            const dead = [...sourceYield].filter(([, n]) => n === 0).map(([id]) => id);
+            if (dead.length) {
+                const off = await EventSource.updateMany(
+                    { _id: { $in: dead }, discoveredAt: { $ne: null }, zeroStreak: { $gte: DEAD_READS } },
+                    { $set: { enabled: false, disabledReason: `no events in ${DEAD_READS} consecutive reads` } },
+                );
+                if (off?.modifiedCount) console.log(`[hunt] switched off ${off.modifiedCount} discovered source(s) that keep reading empty`);
+            }
         } catch { /* bookkeeping only */ }
     }
     if (!found.length) {
@@ -385,4 +424,4 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     }, center));
 }
 
-module.exports = { huntEvents, _cleanVenue };
+module.exports = { huntEvents, _cleanVenue, _onlyVerified };

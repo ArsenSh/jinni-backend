@@ -33,6 +33,13 @@ const eventSourceSchema = new mongoose.Schema({
     // visibly dead in the staff list instead of silently missing.
     lastReadAt: { type: Date, default: null },
     lastFoundCount: { type: Number, default: null },
+    // Consecutive reads that returned nothing. A DISCOVERED source that keeps
+    // coming back empty switches itself off (staff-registered ones never do —
+    // a human's choice is not ours to revoke). This is what makes it safe to
+    // be generous at discovery: the registry prunes itself instead of silting
+    // up with pages that looked plausible once.
+    zeroStreak: { type: Number, default: 0 },
+    disabledReason: { type: String, default: null },
 }, { timestamps: true });
 
 eventSourceSchema.index({ enabled: 1, city: 1, country: 1 });
