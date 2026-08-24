@@ -215,7 +215,17 @@ async function applyProposal(userId, proposal, deps = {}) {
         const path = PREF_PATHS[valid.field];
         if (!path) return false;                   // a field with no home is not writable
         const res = await User.updateOne({ _id: userId }, { $set: { [path]: valid.value } });
-        const ok = !!(res?.acknowledged ?? res?.modifiedCount ?? res?.matchedCount);
+        // `acknowledged` means "the server received the write", NOT "a document
+        // changed" — it is true even when matchedCount is 0. Reading it first
+        // meant a write that touched nothing still logged "approved by the
+        // traveler", so a silent no-op looked exactly like success (Arsen
+        // 2026-08-24: "it is not editing in user settings, it is editing in his
+        // mind only"). A MATCH is the proof: matched-but-unmodified just means
+        // the value was already that.
+        const matched = Number(res?.matchedCount ?? res?.n ?? 0);
+        const modified = Number(res?.modifiedCount ?? res?.nModified ?? 0);
+        const ok = matched > 0 || modified > 0;
+        if (!ok) console.warn(`[prefs] ${userId}: ${valid.label} matched no document — nothing was written`);
         if (ok) console.log(`[prefs] ${userId}: ${valid.label} (approved by the traveler)`);
         return ok;
     } catch (err) {

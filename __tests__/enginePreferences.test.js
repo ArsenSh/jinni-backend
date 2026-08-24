@@ -243,3 +243,35 @@ describe('a named destination is saved as the city that was named', () => {
             { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
     });
 });
+
+// "it reads, it says correctly but it is not editing in user settings, it is
+// editing in his mind only" (Arsen 2026-08-24). Two causes, one here:
+// `acknowledged` is true even when the write matched nothing, so a silent no-op
+// logged "approved by the traveler". (The other was the frontend never
+// reloading its copy of the user — fixed in JinniChat.vue.)
+describe('a write only counts when it matched a document', () => {
+    const { applyProposal } = require('../engine/preferences/proposal');
+    const res = (r) => ({ User: { updateOne: async () => r } });
+
+    test('matched and modified is a success', async () => {
+        expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
+            res({ acknowledged: true, matchedCount: 1, modifiedCount: 1 }))).toBe(true);
+    });
+
+    test('matched but unmodified is also fine — the value was already that', async () => {
+        expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
+            res({ acknowledged: true, matchedCount: 1, modifiedCount: 0 }))).toBe(true);
+    });
+
+    test('acknowledged with nothing matched is a FAILURE, not a success', async () => {
+        expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
+            res({ acknowledged: true, matchedCount: 0, modifiedCount: 0 }))).toBe(false);
+    });
+
+    test('the legacy driver shape still reads correctly', async () => {
+        expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
+            res({ n: 1, nModified: 1 }))).toBe(true);
+        expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
+            res({ n: 0, nModified: 0 }))).toBe(false);
+    });
+});
