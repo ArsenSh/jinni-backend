@@ -19,6 +19,7 @@ const { _extractLdEvents, _normalizeLdEvent } = require('./listing');
 const { _fetchListingHtml } = require('../utils/safeFetch');
 const { normalizePlaceName } = require('../places/matching');
 const { aiEventToCandidate } = require('../places/eventStore');
+const { haversineKm } = require('../utils/geo');
 
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 const MAX_CURATED = 8;   // registered sources read per hunt
@@ -38,6 +39,51 @@ function _fmtWindow(win) {
 // into city fields (2026-08-23 live: hunted for "events 10/9 …" — the city
 // was an address fragment) — letters, spaces and simple punctuation only.
 const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
+
+/** Pin each event to its VENUE on the map, once, at storage time.
+ *
+ *  A hunted event stores lat/lng null, so the recommendation map had nothing to
+ *  plot and simply skipped every event (Arsen 2026-08-24: "the map ... is not
+ *  showing location from jinnievents"). Get Directions still worked, because
+ *  that opens the address as TEXT — which is the tell that the address was
+ *  known and only the coordinates were missing.
+ *
+ *  Resolved per unique VENUE, not per event: one theatre hosts many nights, so
+ *  a dozen events usually cost two or three lookups. A hit is accepted only if
+ *  it lands near the city we hunted — a "Bohem theatre" somewhere else on earth
+ *  is a worse answer than no pin at all.
+ */
+const VENUE_PIN_MAX = 6;          // venue lookups per hunt
+const VENUE_PIN_MAX_KM = 80;      // a pin further out than this is the wrong place
+
+async function _pinVenues(rows, { city, center }, deps) {
+    const finder = deps.findPlaces
+        || (() => { try { return require('../../services/googleService').findPlaces; } catch { return null; } })();
+    if (typeof finder !== 'function') return;
+
+    const byVenue = new Map();
+    for (const { e } of rows) {
+        if (!e.venueName || e.lat != null) continue;
+        if (!byVenue.has(e.venueName)) byVenue.set(e.venueName, []);
+        byVenue.get(e.venueName).push(e);
+    }
+    let budget = VENUE_PIN_MAX, pinned = 0;
+    for (const [venue, events] of byVenue) {
+        if (budget-- <= 0) break;
+        try {
+            const hit = (await finder(`${venue}, ${city}`, center || null))[0];
+            const loc = hit?.geometry?.location;
+            if (!loc || loc.lat == null) continue;
+            if (center && haversineKm(center.lat, center.lng, loc.lat, loc.lng) > VENUE_PIN_MAX_KM) {
+                console.log(`[hunt] venue "${venue}" resolved far from ${city} — leaving it unpinned`);
+                continue;
+            }
+            for (const e of events) { e.lat = loc.lat; e.lng = loc.lng; e.venuePlaceId = hit.place_id || null; }
+            pinned += events.length;
+        } catch { /* a venue we cannot place stays unpinned, which is honest */ }
+    }
+    if (pinned) console.log(`[hunt] pinned ${pinned} event(s) to ${byVenue.size} venue(s) — they can appear on the map now`);
+}
 
 /** Drop feeds a human already disabled for this city. Discovery has no memory
  *  of a validator's decision, and re-reading a page someone switched off would
@@ -260,6 +306,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         seen.add(key);
         rows.push({ key, e });
     }
+    await _pinVenues(rows, { city, center }, deps);
     const now = deps.nowFn ? new Date(deps.nowFn()) : new Date();
     const ops = rows.map(({ key, e }) => ({ updateOne: {
         filter: { key },
@@ -268,7 +315,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                 key,
                 name: e.name,
                 description: null,
-                placeId: null, lat: null, lng: null,
+                placeId: e.venuePlaceId || null, lat: e.lat ?? null, lng: e.lng ?? null,
                 venueName: e.venueName || null,
                 address: e.venueAddress || null,
                 city, country,

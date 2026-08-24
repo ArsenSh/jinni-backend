@@ -109,3 +109,53 @@ describe('hunt: discovering sources for an uncurated city', () => {
         expect(searched).toBe(true);
     });
 });
+
+// ── Pinning events to their venue (Arsen 2026-08-24) ─────────────────────────
+// "the map that appears in buttom of recommendation cards is not showing
+// location from jinnievents" — hunted rows stored lat/lng null, so the map had
+// nothing to plot. Get Directions still worked, because it opens the address as
+// text: the address was known, only the coordinates were missing.
+describe('hunt: venue pinning', () => {
+    const YEREVAN = { lat: 40.18, lng: 44.51 };
+    const twoNights = `<html><script type="application/ld+json">${JSON.stringify([
+        { '@type': 'Event', name: 'Night One', startDate: '2026-09-02T19:00:00Z', location: { name: 'Bohem theatre' } },
+        { '@type': 'Event', name: 'Night Two', startDate: '2026-09-03T19:00:00Z', location: { name: 'Bohem theatre' } },
+    ])}</script></html>`;
+
+    const run = async (findPlaces) => {
+        const stored = [];
+        const d = {
+            EventSource: { find: () => ({ select: () => ({ lean: async () => [] }) }), bulkWrite: async () => {} },
+            AiFoundEvent: { bulkWrite: async (ops) => { stored.push(...ops); } },
+            discoverEventSources: async () => ({ feeds: [{ label: 'src.am', url: 'https://src.am/e' }] }),
+            searchWeb: async () => [],
+            fetchHtml: async () => twoNights,
+            findPlaces,
+        };
+        await huntEvents({ city: 'Yerevan', country: 'Armenia', center: YEREVAN, window: WINDOW }, d);
+        return stored.map(o => o.updateOne.update.$setOnInsert);
+    };
+
+    test('one lookup pins every night at the same venue', async () => {
+        let calls = 0;
+        const rows = await run(async () => { calls++; return [{ place_id: 'venue1', geometry: { location: { lat: 40.19, lng: 44.52 } } }]; });
+        expect(calls).toBe(1);
+        expect(rows).toHaveLength(2);
+        for (const r of rows) {
+            expect(r.lat).toBe(40.19);
+            expect(r.lng).toBe(44.52);
+            expect(r.placeId).toBe('venue1');
+        }
+    });
+
+    test('a venue resolved on the wrong continent is left unpinned', async () => {
+        const rows = await run(async () => [{ place_id: 'far', geometry: { location: { lat: 48.85, lng: 2.35 } } }]);
+        for (const r of rows) { expect(r.lat).toBeNull(); expect(r.placeId).toBeNull(); }
+    });
+
+    test('a geocoder failure costs the pin, not the events', async () => {
+        const rows = await run(async () => { throw new Error('quota'); });
+        expect(rows).toHaveLength(2);
+        for (const r of rows) expect(r.lat).toBeNull();
+    });
+});
