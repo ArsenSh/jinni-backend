@@ -47,6 +47,60 @@ const SOURCES = [
     // is not ours to revoke.
     { name: 'Ticketmaster UAE',  url: 'https://www.ticketmaster.ae/',     city: null,
       country: 'United Arab Emirates' },
+
+    // ── Category feeds, so the deck has something to FILTER.
+    //
+    // Arsen 2026-08-24: "add normal urls at least where app can find normal
+    // events, romantic events, family events, adventure events and so on,
+    // because all events seem production or event types that are not fitting
+    // with preferences, i think it doesnt have wide range of events so it has
+    // not filtered romantic ones".
+    //
+    // Exactly right, and it was a supply problem rather than a ranking one.
+    // /dubai/all is dominated by trade expos — one Dubai turn returned four
+    // cards for Middle East Energy — so a traveler whose preferences say
+    // luxury and romantic had nothing romantic in the deck to rank. Taste
+    // scoring cannot conjure a candle-lit concert that was never retrieved.
+    //
+    // Each URL was fetched and run through the adapter before being added; the
+    // counts below are what it actually read on 2026-08-24. They are recorded
+    // so a site redesign shows up as a drop in yield rather than a mystery.
+    //
+    // Overlap is fine and expected: Candlelight appears under music, family AND
+    // concerts, and the hunt's identity key (normalizedName|startDay|city)
+    // collapses those into one event.
+    //
+    // These are separate rows rather than one fan-out inside the adapter so a
+    // validator can see each feed's yield and disable one without touching the
+    // rest. MAX_CURATED (hunt.js) must stay above the count here, or the extra
+    // sources are silently never read — that query has no sort, so truncation
+    // is arbitrary rather than "lowest priority first".
+
+    // ── Eventbrite: the widest general source we found, and the answer to
+    //    "maybe another powerful web exists for events" (Arsen 2026-08-24).
+    //    Verified 2026-08-24: 50 dated Dubai events and 14 Yerevan ones, all
+    //    from a single JSON-LD block, so the generic ladder reads it with no
+    //    adapter and no rendering. Registered FIRST because it is the strongest
+    //    single feed either city has.
+    { name: 'Eventbrite Dubai',   url: 'https://www.eventbrite.com/d/united-arab-emirates--dubai/events/', city: 'Dubai',   country: 'United Arab Emirates' },
+    { name: 'Eventbrite Yerevan', url: 'https://www.eventbrite.com/d/armenia--yerevan/events/',            city: 'Yerevan', country: 'Armenia' },
+
+    // Dubai — the category feeds.
+    { name: 'AllEvents Dubai · Music',      url: 'https://allevents.in/dubai/music',       city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 15 — Candlelight, concerts
+    { name: 'AllEvents Dubai · Nightlife',  url: 'https://allevents.in/dubai/nightlife',   city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 14 — yacht cruises, parties
+    { name: 'AllEvents Dubai · Food',       url: 'https://allevents.in/dubai/food-drinks', city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 10 — dinner cruises, tastings
+    { name: 'AllEvents Dubai · Arts',       url: 'https://allevents.in/dubai/arts',        city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 15 — exhibitions
+    { name: 'AllEvents Dubai · Family',     url: 'https://allevents.in/dubai/family',      city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 15
+    { name: 'AllEvents Dubai · Sports',     url: 'https://allevents.in/dubai/sports',      city: 'Dubai', country: 'United Arab Emirates', adapter: 'allevents' },      // 15 — the adventure end
+
+    // Yerevan — thinner than Dubai, which is the city being smaller and not a
+    // fault in the feed. /sports read a single event, so it is left out rather
+    // than spending a fetch on it.
+    { name: 'AllEvents Yerevan · Music',    url: 'https://allevents.in/yerevan/music',       city: 'Yerevan', country: 'Armenia', adapter: 'allevents' },   // 14 — opera, Imany
+    { name: 'AllEvents Yerevan · Arts',     url: 'https://allevents.in/yerevan/arts',        city: 'Yerevan', country: 'Armenia', adapter: 'allevents' },   // 5
+    { name: 'AllEvents Yerevan · Nightlife', url: 'https://allevents.in/yerevan/nightlife',  city: 'Yerevan', country: 'Armenia', adapter: 'allevents' },   // 5
+    { name: 'AllEvents Yerevan · Family',   url: 'https://allevents.in/yerevan/family',      city: 'Yerevan', country: 'Armenia', adapter: 'allevents' },   // 3
+    { name: 'AllEvents Yerevan · Food',     url: 'https://allevents.in/yerevan/food-drinks', city: 'Yerevan', country: 'Armenia', adapter: 'allevents' },   // 3 — festivals
 ];
 
 (async () => {

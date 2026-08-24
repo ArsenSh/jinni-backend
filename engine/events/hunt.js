@@ -25,7 +25,16 @@ const { renderPage: _renderPage, renderPageFull: _renderPageFull, renderAvailabl
 const { eventsFromApi: _eventsFromApi } = require('./apiEvents');
 
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
-const MAX_CURATED = 8;   // registered sources read per hunt
+// Registered sources read per hunt. Raised from 8 when Dubai and Yerevan each
+// reached the cap: the query is find().limit(MAX_CURATED) with NO sort, so a
+// newly registered source is not "deprioritised", it is silently never read
+// (Arsen 2026-08-24, adding category feeds so the deck has romantic and family
+// events to filter). The cap must stay above the number of sources a curated
+// city actually has, or curation quietly stops taking effect.
+//
+// COST: these reads are SEQUENTIAL, so each source adds its fetch to the turn.
+// Reading them concurrently is the next thing to do here.
+const MAX_CURATED = 14;
 const MAX_STORE = 12;    // events stored per hunt
 const DEAD_READS = 3;    // empty reads before a DISCOVERED source switches itself off
 const MAX_RENDERS = 2;   // browser renders per hunt — seconds each, so escalate, never start here
