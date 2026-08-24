@@ -15,6 +15,11 @@
 const CARD_RE = /<li[^>]*class="[^"]*event-card[^"]*"[^>]*>[\s\S]*?(?=<li[^>]*class="[^"]*event-card|<\/ul>)/gi;
 const ATTR = (block, name) => (block.match(new RegExp(`${name}="([^"]*)"`, 'i')) || [])[1] || null;
 
+const _decode = (s) => String(s || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 /** "Fri, 04 Sep, 2026 - 11:00 AM" → Date, or null when the shape is unfamiliar.
@@ -60,8 +65,14 @@ function extract(html, { url = null } = {}) {
     const out = [];
     for (const m of String(html || '').matchAll(CARD_RE)) {
         const block = m[0];
-        const name = (ATTR(block, 'data-name') || '').trim();
         const link = ATTR(block, 'data-link');
+        // The <h3> inside the card holds the REAL title. data-name is
+        // allevents' own Latin-only copy of it: the Armenian event
+        // "Դանդաղ արտասահմանյան vol. 25" arrives there as " vol. 25", and that
+        // is what reached a card (live 2026-08-24). Both live in this same
+        // block, so preferring the heading borrows nothing.
+        const heading = (block.match(/class="title"[\s\S]{0,300}?<h3[^>]*>([^<]{1,160})<\/h3>/i) || [])[1];
+        const name = _decode((heading || ATTR(block, 'data-name') || '').trim());
         if (!name || !link) continue;
         const dateText = (block.match(/class="date"[^>]*>([\s\S]*?)<\/div>/i) || [])[1];
         const startDate = _parseCardDate(dateText);

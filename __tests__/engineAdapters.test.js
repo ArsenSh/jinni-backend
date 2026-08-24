@@ -14,9 +14,12 @@ const LISTING = `<ul class="event-card-parent">
     <div class="banner-cont" style="background:url(https://cdn-ip.allevents.in/s/rs:fill:500:250/${B64}.avif);background-size:cover;"></div>
     <div class="meta"><div class="date"> Fri, 04 Sep, 2026 - 11:00 AM </div></div>
   </li>
-  <li class="event-card event-card-link" data-eid="2" data-link="https://allevents.in/yerevan/dandagh/2" data-name="Դանդաղ արտասահմանյան vol. 25">
+  <li class="event-card event-card-link" data-eid="2" data-link="https://allevents.in/yerevan/dandagh/2" data-name=" vol. 25">
     <div class="banner-cont" style="background:url(https://cdn-ip.allevents.in/s/rs:fill:500:250/OTHER.avif);"></div>
-    <div class="meta"><div class="date"> Fri, 04 Sep, 2026 - 9:00 PM </div></div>
+    <div class="meta">
+      <div class="date"> Fri, 04 Sep, 2026 - 9:00 PM </div>
+      <div class="title"><a href="https://allevents.in/yerevan/dandagh/2" title=" vol. 25"><h3> Դանդաղ արտասահմանյան vol. 25 </h3></a></div>
+    </div>
   </li>
 </ul>`;
 
@@ -34,6 +37,13 @@ describe('allevents adapter', () => {
         expect(rows[1].startDate.toISOString()).toBe('2026-09-04T21:00:00.000Z');
         expect(rows[1].url).not.toBe(rows[0].url);
         expect(rows[1].image).not.toBe(rows[0].image);
+    });
+
+    // allevents strips non-Latin from data-name: the Armenian title arrived as
+    // " vol. 25" and that is what a card showed (live 2026-08-24). The <h3> in
+    // the same block holds the real one, so preferring it borrows nothing.
+    test('the heading wins over allevents own Latin-only data-name', () => {
+        expect(rows[1].name).toBe('Դանդաղ արտասահմանյան vol. 25');
     });
 
     test('the full-resolution poster is recovered from the proxy path', () => {
