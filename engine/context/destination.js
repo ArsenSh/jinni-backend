@@ -14,7 +14,13 @@
 //   2. a city named NOW  — "events in dubai" re-centres, and is remembered.
 //   3. the session's     — a Paphos conversation stays in Paphos even when the
 //      chosen destination  traveler is physically elsewhere.
-//   4. GPS               — the default when nobody said otherwise.
+//   4. the SAVED          — the destination set in Settings. Arsen 2026-08-24:
+//      destination         "destination is set dubai, it always starts from
+//                          armenia, and always same scenario". Choosing a
+//                          destination in the app has to mean something on the
+//                          very first message of a fresh chat, before any
+//                          conversation history exists to carry it.
+//   5. GPS               — the default when nobody said otherwise.
 //
 // The type gate in rule 2 is v1's hard-won one: asking about a RESTAURANT is
 // not a destination change. Geocoding a venue name biased to the user's GPS
@@ -90,7 +96,8 @@ function _samePlace(a, b) {
  *   the session's destination — the caller owns that write.
  */
 async function resolveDestination({
-    placeNames = [], gps = null, sessionDestination = null, nearbyMode = false, currentRegion = null,
+    placeNames = [], gps = null, sessionDestination = null, savedDestination = null,
+    nearbyMode = false, currentRegion = null,
 } = {}, deps = {}) {
     const gpsCenter = (gps && gps.lat != null && gps.lng != null) ? { lat: gps.lat, lng: gps.lng } : null;
 
@@ -136,8 +143,29 @@ async function resolveDestination({
         };
     }
 
-    // 4. Where they actually are.
+    // 4. The destination chosen in Settings. A fresh chat has no session
+    //    destination, so without this the setting was invisible on exactly the
+    //    turn that matters most — the first one.
+    const saved = _savedCentre(savedDestination);
+    if (saved) {
+        return { center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name, remember: null };
+    }
+
+    // 5. Where they actually are.
     return { center: gpsCenter, source: gpsCenter ? 'gps' : 'none', city: null, remember: null };
 }
 
-module.exports = { resolveDestination, isGeographic, _samePlace, GEO_DESTINATION_TYPES };
+/** The Settings destination, or null when it is unset. `coordinates` defaults
+ *  to {lat: 0, lng: 0} in the schema, and 0,0 is the Gulf of Guinea — treating
+ *  the default as a location would send every traveler to the Atlantic. */
+function _savedCentre(saved) {
+    const c = saved?.coordinates || saved || {};
+    const lat = Number(c.lat ?? c.latitude);
+    const lng = Number(c.lng ?? c.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    if (lat === 0 && lng === 0) return null;
+    const name = saved?.city || saved?.countryName || saved?.name || null;
+    return { lat, lng, name };
+}
+
+module.exports = { resolveDestination, isGeographic, _samePlace, _savedCentre, GEO_DESTINATION_TYPES };

@@ -147,3 +147,60 @@ describe('resolveDestination: "here"', () => {
         expect(d.source).toBe('named');
     });
 });
+
+// Arsen 2026-08-24: "destination is set dubai, it always starts from armenia,
+// and always same scenario". A destination chosen in Settings was invisible to
+// the engine, so it only took effect once the traveler typed the city out loud.
+describe('the destination saved in Settings', () => {
+    const { resolveDestination, _savedCentre } = require('../engine/context/destination');
+    const YEREVAN = { lat: 40.1814, lng: 44.5102 };
+    const DUBAI = { country: 'AE', countryName: 'United Arab Emirates', city: 'Dubai',
+        coordinates: { lat: 25.205, lng: 55.271 } };
+
+    test('beats GPS — that is the point of choosing one', async () => {
+        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI });
+        expect(d.source).toBe('saved');
+        expect(d.city).toBe('Dubai');
+        expect(d.center.lat).toBeCloseTo(25.205, 2);
+    });
+
+    test('a city named in the message still wins over it', async () => {
+        const findPlaces = async () => ([{
+            name: 'Tbilisi', place_id: 'p1', primaryType: 'locality',
+            geometry: { location: { lat: 41.7, lng: 44.8 } },
+        }]);
+        const d = await resolveDestination(
+            { placeNames: ['Tbilisi'], gps: YEREVAN, savedDestination: DUBAI }, { findPlaces });
+        expect(d.source).toBe('named');
+        expect(d.city).toBe('Tbilisi');
+    });
+
+    test('the conversation\'s own destination still wins over it', async () => {
+        const d = await resolveDestination({
+            gps: YEREVAN, savedDestination: DUBAI,
+            sessionDestination: { name: 'Paphos', latitude: 34.77, longitude: 32.42 },
+        });
+        expect(d.source).toBe('session');
+        expect(d.city).toBe('Paphos');
+    });
+
+    test('"near me" still means GPS', async () => {
+        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI, nearbyMode: true });
+        expect(d.source).toBe('nearby');
+        expect(d.center.lat).toBeCloseTo(40.1814, 3);
+    });
+
+    test('an unset destination is not the Gulf of Guinea', () => {
+        expect(_savedCentre({ city: '', coordinates: { lat: 0, lng: 0 } })).toBeNull();
+        expect(_savedCentre(null)).toBeNull();
+        expect(_savedCentre({ coordinates: { lat: null, lng: null } })).toBeNull();
+    });
+
+    test('an unset destination falls through to GPS', async () => {
+        const d = await resolveDestination({
+            gps: YEREVAN,
+            savedDestination: { city: '', countryName: '', coordinates: { lat: 0, lng: 0 } },
+        });
+        expect(d.source).toBe('gps');
+    });
+});

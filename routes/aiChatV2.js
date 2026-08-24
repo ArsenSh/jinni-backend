@@ -190,12 +190,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    fallback for missing GPS, and a city named in the message was
         //    never geocoded at all — so "events in dubai" searched Yerevan and
         //    returned Armenian theatre (live 2026-08-24). v1's precedence,
-        //    restored: nearby → named city → session destination → GPS. ──
+        //    restored, plus the saved one: nearby → named city → session
+        //    destination → Settings destination → GPS. ──
         try {
             const dest = await resolveDestination({
                 placeNames: intent.placeNames || [],
                 gps: center,
                 sessionDestination: sessionPeek?.activeDestination || null,
+                // The destination chosen in Settings. Without it, choosing
+                // Dubai did nothing until the traveler typed "Dubai" out loud.
+                savedDestination: intent._preferences?.destination || null,
                 nearbyMode,
                 // Where we are now, so naming it is understood as "here" rather
                 // than as a move to its centroid. Same 1km grid cache the
