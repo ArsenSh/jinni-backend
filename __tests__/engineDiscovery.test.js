@@ -87,3 +87,39 @@ describe('_onlyVerified', () => {
         expect(_onlyVerified([{ url: 'nonsense' }], ['platinumlist.net'], 'Dubai')).toHaveLength(0);
     });
 });
+
+// ── The model's key names are not a contract (Arsen 2026-08-24) ──────────────
+// Asking for [{"host":…,"url":…}] and then reading exactly those two keys cost
+// a whole Dubai run: "model proposed 0 → 0 real". The model had answered; we
+// did not recognise the shape, and the log said only that nothing came back.
+describe('proposal parsing is shape-agnostic', () => {
+    const { _rowHost, _rowUrl } = require('../engine/events/discovery');
+
+    test('a bare hostname string, the oldest shape', () => {
+        expect(_rowHost('platinumlist.net')).toBe('platinumlist.net');
+        expect(_rowHost('https://www.Platinumlist.net/dubai')).toBe('platinumlist.net');
+    });
+
+    test('the shape we asked for', () => {
+        const row = { host: 'ticketmaster.ae', url: 'https://www.ticketmaster.ae/dubai' };
+        expect(_rowHost(row)).toBe('ticketmaster.ae');
+        expect(_rowUrl(row)).toBe('https://www.ticketmaster.ae/dubai');
+    });
+
+    test('other key names the model may reasonably pick', () => {
+        expect(_rowHost({ hostname: 'visitdubai.com', link: 'https://visitdubai.com/en/whats-on' })).toBe('visitdubai.com');
+        expect(_rowHost({ site: 'timeoutdubai.com' })).toBe('timeoutdubai.com');
+        expect(_rowUrl({ hostname: 'visitdubai.com', link: 'https://visitdubai.com/x' })).toBe('https://visitdubai.com/x');
+    });
+
+    test('a host recovered from the URL when no host field exists at all', () => {
+        expect(_rowHost({ name: 'Dubai Calendar', website: 'https://dubaicalendar.ae/events' })).toBe('dubaicalendar.ae');
+    });
+
+    test('nothing hostlike yields nothing — liberal, not credulous', () => {
+        for (const row of [{ nothing: 'useful' }, 42, null, undefined, '', 'not a domain', []]) {
+            expect(_rowHost(row)).toBe('');
+        }
+        expect(_rowUrl({ note: 'ask me later' })).toBeNull();
+    });
+});

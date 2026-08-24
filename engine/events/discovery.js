@@ -60,6 +60,39 @@ async function _domainResolves(host) {
     }
 }
 
+/** Hostname and listing URL out of ONE proposal, whatever shape it arrived in.
+ *
+ *  The model may answer a bare string, {host,url}, {hostname,link}, {site,…} —
+ *  its key names are its choice, not a contract we get to depend on. So we read
+ *  the VALUES and take the first that looks like a host or a URL. Being liberal
+ *  here is free; being strict cost a Dubai run that returned "proposed 0".
+ */
+const _HOSTLIKE = /^[a-z0-9.-]+\.[a-z]{2,}$/;
+
+function _bareHost(v) {
+    return String(v || '').trim().toLowerCase()
+        .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+}
+
+function _rowHost(row) {
+    if (typeof row === 'string') { const h = _bareHost(row); return _HOSTLIKE.test(h) ? h : ''; }
+    if (!row || typeof row !== 'object') return '';
+    for (const v of Object.values(row)) {
+        const h = _bareHost(v);
+        if (_HOSTLIKE.test(h)) return h;
+    }
+    return '';
+}
+
+function _rowUrl(row) {
+    if (!row || typeof row !== 'object') return null;
+    for (const v of Object.values(row)) {
+        const str = String(v || '').trim();
+        if (/^https?:\/\//i.test(str)) return str;
+    }
+    return null;
+}
+
 /** How many DATED events a page yields to the reader we actually use.
  *
  *  The old gate accepted a site only if it published schema.org JSON-LD. Our
@@ -207,19 +240,21 @@ async function discoverEventSources(country, city) {
             });
             const raw = String(res?.text || '');
             const arr = JSON.parse((raw.match(/\[[\s\S]*?\]/) || ['[]'])[0]);
-            // Bare strings still parse — the older answer shape, and what the
-            // model falls back to when it does not know a city page.
-            const _host = (v) => String(v || '').trim().toLowerCase()
-                .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
             const urlByHost = new Map();
             const proposed = (Array.isArray(arr) ? arr : [])
                 .map((row) => {
-                    const host = _host(typeof row === 'string' ? row : row?.host || row?.url);
-                    if (typeof row === 'object' && row?.url) urlByHost.set(host, String(row.url));
+                    const host = _rowHost(row);
+                    const url = _rowUrl(row);
+                    if (host && url) urlByHost.set(host, url);
                     return host;
                 })
-                .filter(d => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d))
+                .filter(Boolean)
                 .slice(0, DOMAIN_DISCOVERY_MAX);
+            // Say what came back when nothing survives. Asking for objects and
+            // then depending on the key names "host" and "url" cost a whole
+            // Dubai run — the model answered, we did not recognise it, and the
+            // log said only "proposed 0" (live 2026-08-24). Never guess again.
+            if (!proposed.length) console.warn(`[discovery] ${country}: nothing usable in the reply — ${raw.slice(0, 200).replace(/\s+/g, ' ')}`);
 
             // ── Verify, then probe. A name the model produced is a HINT, never
             //    a fact: it reaches the network only after passing the same
@@ -333,6 +368,8 @@ module.exports = {
     _domainResolves,
     _fetchCityListing,
     _cityListingUrls,
+    _rowHost,
+    _rowUrl,
     _datedEventCount,
     _confirmDomainBySearch,
     DOMAIN_DISCOVERY_TTL_MS,
