@@ -176,6 +176,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 gps: center,
                 sessionDestination: sessionPeek?.activeDestination || null,
                 nearbyMode,
+                // Where we are now, so naming it is understood as "here" rather
+                // than as a move to its centroid. Same 1km grid cache the
+                // search region uses a moment later, so it costs nothing.
+                currentRegion: center ? await resolveRegion({ center }) : null,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;

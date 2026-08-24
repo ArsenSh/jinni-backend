@@ -94,3 +94,56 @@ describe('resolveDestination', () => {
         expect(isGeographic(null)).toBe(false);
     });
 });
+
+// ── Naming where you already are is not a move (Arsen 2026-08-24) ────────────
+// "ok, find in armenia, but other events" from Yerevan re-centred on the
+// country's centroid in Ararat Province, and every card then read "46 km away"
+// from a traveler who could have walked to them.
+describe('resolveDestination: "here"', () => {
+    const geo = (rows) => ({
+        findPlaces: async (q) => {
+            const hit = rows[q];
+            return hit ? [{ name: hit.name, geometry: { location: { lat: hit.lat, lng: hit.lng } }, types: hit.types }] : [];
+        },
+    });
+    const HERE = { city: 'Yerevan', country: 'Armenia' };
+
+    test('naming the country you are in keeps the street you are on', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Armenia'], gps: YEREVAN, currentRegion: HERE },
+            geo({ Armenia: { name: 'Armenia', lat: 40.069, lng: 45.038, types: ['country'] } }));
+        expect(d.center).toEqual(YEREVAN);          // not the centroid
+        expect(d.source).toBe('here');
+        expect(d.remember).toBeNull();
+    });
+
+    test('naming the city you are in also keeps precise coordinates', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Yerevan'], gps: YEREVAN, currentRegion: HERE },
+            geo({ Yerevan: { name: 'Yerevan', lat: 40.1772, lng: 44.5035, types: ['locality'] } }));
+        expect(d.center).toEqual(YEREVAN);
+        expect(d.source).toBe('here');
+    });
+
+    test('spelling and accents do not defeat it', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['tbilisi'], gps: { lat: 41.7, lng: 44.8 }, currentRegion: { city: "T'bilisi", country: 'Georgia' } },
+            geo({ tbilisi: { name: 'Tbilisi', lat: 41.69, lng: 44.80, types: ['locality'] } }));
+        expect(d.source).toBe('here');
+    });
+
+    test('a DIFFERENT country still re-centres — that is a real move', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Georgia'], gps: YEREVAN, currentRegion: HERE },
+            geo({ Georgia: { name: 'Georgia', lat: 42.31, lng: 43.35, types: ['country'] } }));
+        expect(d.source).toBe('named');
+        expect(d.center).toEqual({ lat: 42.31, lng: 43.35 });
+    });
+
+    test('with no idea where we are, the old behaviour stands', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Armenia'], gps: YEREVAN },
+            geo({ Armenia: { name: 'Armenia', lat: 40.069, lng: 45.038, types: ['country'] } }));
+        expect(d.source).toBe('named');
+    });
+});

@@ -74,14 +74,23 @@ function isGeographic(geo) {
     return geo.types.some(t => GEO_DESTINATION_TYPES.has(String(t).toLowerCase()));
 }
 
+/** Loose name equality for places: "T'bilisi" vs "Tbilisi", "Armenia" vs
+ *  "armenia". Accents and marks removed, case folded, punctuation dropped. */
+function _samePlace(a, b) {
+    const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '');
+    return !!norm(a) && norm(a) === norm(b);
+}
+
 /**
  * @returns {Promise<{center: {lat, lng}|null, source: string, city: string|null, remember: object|null}>}
- *   `source` is one of 'nearby' | 'named' | 'session' | 'gps' | 'none'.
+ *   `source` is one of 'nearby' | 'named' | 'here' | 'session' | 'gps' | 'none'.
+ *   'here' means the named place is where we already are, so nothing moved.
  *   `remember` is non-null only when a newly named city should be persisted as
  *   the session's destination — the caller owns that write.
  */
 async function resolveDestination({
-    placeNames = [], gps = null, sessionDestination = null, nearbyMode = false,
+    placeNames = [], gps = null, sessionDestination = null, nearbyMode = false, currentRegion = null,
 } = {}, deps = {}) {
     const gpsCenter = (gps && gps.lat != null && gps.lng != null) ? { lat: gps.lat, lng: gps.lng } : null;
 
@@ -97,6 +106,15 @@ async function resolveDestination({
             if (!isGeographic(geo)) {
                 console.log(`[destination] "${name}" resolved to a venue ("${geo.name}") — not re-centring`);
                 continue;
+            }
+            // Naming the place you are ALREADY in is not a move. "find in
+            // armenia" from Yerevan re-centred on the country's centroid in
+            // Ararat Province, and every card then read "46 km away" from a
+            // traveler who could walk to them (live 2026-08-24). A country
+            // centroid is a worse centre than the street you are standing on.
+            if (currentRegion && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city))) {
+                console.log(`[destination] "${name}" is where we already are — keeping the current centre`);
+                return { center: gpsCenter, source: 'here', city: currentRegion.city || geo.name, remember: null };
             }
             return {
                 center: { lat: geo.lat, lng: geo.lng },
@@ -122,4 +140,4 @@ async function resolveDestination({
     return { center: gpsCenter, source: gpsCenter ? 'gps' : 'none', city: null, remember: null };
 }
 
-module.exports = { resolveDestination, isGeographic, GEO_DESTINATION_TYPES };
+module.exports = { resolveDestination, isGeographic, _samePlace, GEO_DESTINATION_TYPES };
