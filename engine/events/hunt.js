@@ -39,6 +39,47 @@ function _fmtWindow(win) {
 // was an address fragment) — letters, spaces and simple punctuation only.
 const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
 
+/** Drop feeds a human already disabled for this city. Discovery has no memory
+ *  of a validator's decision, and re-reading a page someone switched off would
+ *  quietly overrule them. */
+async function _dropDisabled(feeds, city, deps) {
+    if (!feeds.length) return feeds;
+    try {
+        const EventSource = deps.EventSource
+            || (require('mongoose').connection.readyState === 1 ? require('../../models/EventSource') : null);
+        if (!EventSource) return feeds;
+        const rows = await EventSource.find({ url: { $in: feeds.map(f => f.url) }, enabled: false }).select('url').lean();
+        const off = new Set(rows.map(r => r.url));
+        const kept = feeds.filter(f => !off.has(f.url));
+        if (kept.length !== feeds.length) console.log(`[hunt] skipping ${feeds.length - kept.length} source(s) disabled by staff for ${city}`);
+        return kept;
+    } catch { return feeds; }
+}
+
+/** Write the productive discoveries into the registry, so the NEXT question
+ *  about this city reads them directly and costs nothing. `enabled` and
+ *  `discoveredAt` are insert-only: a later hunt must never flip a source a
+ *  validator turned off back on. */
+async function _registerDiscovered(sources, city, country, deps) {
+    if (!sources.length) return;
+    try {
+        const EventSource = deps.EventSource
+            || (require('mongoose').connection.readyState === 1 ? require('../../models/EventSource') : null);
+        if (!EventSource) return;
+        await EventSource.bulkWrite(sources.map(s => ({ updateOne: {
+            filter: { url: s.url, city },
+            update: {
+                $set: { country: country || null, lastReadAt: new Date(), lastFoundCount: s.count },
+                $setOnInsert: { name: `${s.label} · ${city}`, url: s.url, city, enabled: true, discoveredAt: new Date(), addedBy: null },
+            },
+            upsert: true,
+        } })), { ordered: false });
+        console.log(`[hunt] registered ${sources.length} source(s) for ${city} — next hunt reads them free: ${sources.map(s => `${s.label}(${s.count})`).join(', ')}`);
+    } catch (err) {
+        console.warn(`[hunt] registering discovered sources failed: ${err.message}`);
+    }
+}
+
 async function huntEvents({ city, country = null, center = null, window: win } = {}, deps = {}) {
     if (!city || !win) return [];
     if (!_CITY_RE.test(String(city).trim())) {
@@ -72,15 +113,35 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     } catch (err) {
         if (!err._quiet) console.warn(`[hunt] source registry unavailable: ${err.message}`);
     }
+    // Nobody has curated this city yet (Dubai, live 2026-08-24). Before paying
+    // for a search, DISCOVER its sources: the model proposes the sites that
+    // list events there, and code verifies each one — DNS, fetchability, that
+    // the page actually names this city, and that it publishes schema.org
+    // events. Survivors are registered below, so the city is curated from the
+    // second question onward and every later hunt is a free read.
+    let discovered = [];
+    if (!curated.length && country) {
+        try {
+            const discover = deps.discoverEventSources || require('./discovery').discoverEventSources;
+            const feeds = ((await discover(country, city)) || {}).feeds || [];
+            discovered = await _dropDisabled(feeds.slice(0, MAX_CURATED), city, deps);
+            if (discovered.length) console.log(`[hunt] discovered ${discovered.length} source(s) for ${city}: ${discovered.map(f => f.label).join(', ')}`);
+        } catch (err) {
+            console.warn(`[hunt] discovery for ${city} failed: ${err.message} — falling back to search`);
+        }
+    }
     const urls = curated.length
         ? curated.map((s) => ({ url: s.url, _sourceId: s._id }))
-        : (await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null })).slice(0, MAX_PAGES);
+        : (discovered.length
+            ? discovered.map((f) => ({ url: f.url, _discovered: f }))
+            : (await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null })).slice(0, MAX_PAGES));
     if (curated.length) console.log(`[hunt] curated: reading ${curated.length} registered source(s) for ${city} — no web search`);
     if (!urls.length) return [];
 
     const wStart = new Date(win.start), wEnd = new Date(win.end);
     const found = [];
     const sourceYield = new Map();                    // _sourceId → events read this hunt
+    const newSources = [];                            // discovered pages that actually produced events
     for (const u of urls) {
         const beforeCount = found.length;
         try {
@@ -167,8 +228,12 @@ async function huntEvents({ city, country = null, center = null, window: win } =
             console.warn(`[hunt] ${String(u.url).slice(0, 90)}: ${err.message}`);
         }
         if (u._sourceId) sourceYield.set(String(u._sourceId), found.length - beforeCount);
+        // A discovered page earns its registry row by PRODUCING dated events on
+        // the turn it was found — never by merely being proposed or fetched.
+        if (u._discovered && found.length > beforeCount) newSources.push({ ...u._discovered, count: found.length - beforeCount });
         if (found.length >= MAX_STORE) break;
     }
+    await _registerDiscovered(newSources, city, country, deps);
     // Yield tracking: dead sources become visible in the staff list.
     if (sourceYield.size) {
         try {

@@ -23,6 +23,12 @@ const eventSourceSchema = new mongoose.Schema({
     // parser for this site; null ⇒ the generic reader.
     adapter: { type: String, default: null, trim: true },
     addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Set when the HUNT registered this page itself, for a city nobody had
+    // curated (Arsen 2026-08-24: "it should search for websites, fill websites
+    // database and start to work"). A discovered source earns its row by
+    // producing dated events on the turn it was found — never by merely being
+    // proposed by a model or answering a fetch. Null ⇒ a person registered it.
+    discoveredAt: { type: Date, default: null },
     // Yield tracking — a source that reads 0 events night after night is
     // visibly dead in the staff list instead of silently missing.
     lastReadAt: { type: Date, default: null },
