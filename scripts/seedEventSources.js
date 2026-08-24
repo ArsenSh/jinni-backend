@@ -20,6 +20,33 @@ const SOURCES = [
     // ticketing.am does not resolve (live 2026-08-23: "[hunt] … fetch failed");
     // ticket.am is the working host.
     { name: 'Ticket.am',         url: 'https://ticket.am',                city: 'Yerevan', country: 'Armenia' },
+
+    // ── Dubai (Arsen 2026-08-24: "lets add the ticketmaster source manually
+    //    to the registry").
+    //
+    // A night of engine work on Dubai, and the answer was a registered source.
+    // Discovery could never get there on its own: platinumlist sits behind a
+    // Queue-it waiting room, dubaicalendar.ae has a broken certificate,
+    // timeoutdubai answers 405, and visitdubai is a marketing page with one
+    // date in 394KB. None of that is a bug we can fix.
+    //
+    // VERIFIED against the live page before registering: the allevents adapter
+    // reads 43 dated Dubai events with posters from this URL. Same adapter and
+    // same shape as Yerevan — picked automatically from the host, named here
+    // anyway so the staff list shows which parser runs.
+    { name: 'AllEvents Dubai',   url: 'https://allevents.in/dubai/all',   city: 'Dubai',
+      country: 'United Arab Emirates', adapter: 'allevents' },
+
+    // Ticketmaster UAE. city:null ⇒ country-wide, which is what this site is.
+    // Its root answers 200 with 456KB, but our markup ladder finds only two
+    // dates in it and no structured rows — the listing arrives as JSON from its
+    // own API. So this source exists for the network-capture tier to read, and
+    // it is the one entry here NOT yet proven to yield events. If it reads 0
+    // night after night, lastFoundCount will say so in the staff list; being
+    // staff-registered it will never disable itself, because a person's choice
+    // is not ours to revoke.
+    { name: 'Ticketmaster UAE',  url: 'https://www.ticketmaster.ae/',     city: null,
+      country: 'United Arab Emirates' },
 ];
 
 (async () => {
