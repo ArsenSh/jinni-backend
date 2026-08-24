@@ -180,12 +180,26 @@ function _cityListingUrls(host, city, modelUrl = null) {
 }
 
 /** Fetch the first candidate that answers with a real page. */
-async function _fetchCityListing(host, city, modelUrl = null) {
-    for (const url of _cityListingUrls(host, city, modelUrl)) {
+async function _fetchCityListing(host, city, modelUrl = null, deps = {}) {
+    const candidates = _cityListingUrls(host, city, modelUrl);
+    for (const url of candidates) {
         try {
             const html = await _fetchListingHtml(url);
             if (html && html.length > 500) return { url, html };
         } catch { /* try the next form */ }
+    }
+    // Nothing came back from ANY plain fetch. A page that exists only after
+    // JavaScript looks exactly like this, and the escalation further down never
+    // ran because we returned before reaching it (live 2026-08-24: a whole
+    // Dubai run with no [render] line at all). One render on the best
+    // candidate decides it.
+    if ((deps.renderAvailable || _renderAvailable)()) {
+        const best = candidates[0];
+        const html = await (deps.renderPage || _renderPage)(best);
+        if (html && html.length > 500) {
+            console.log(`[discovery] ${host}: plain fetch got nothing, rendered ${best}`);
+            return { url: best, html };
+        }
     }
     return null;
 }
@@ -291,7 +305,7 @@ async function discoverEventSources(country, city, deps = {}) {
                 const real = await _domainResolves(host);
                 if (!real) return { host, real: false, feed: null };
                 // Fetchable by us? → then it can also be probed for a free feed.
-                const ok = await _fetchCityListing(host, city, urlByHost.get(host));
+                const ok = await _fetchCityListing(host, city, urlByHost.get(host), deps);
                 // Real but we can't fetch it (bot-blocked). NOT disproven — a
                 // search-tool confirmation pass below decides. `fetchable:false`
                 // marks it for that pass; `relevant` stays undefined for now.
@@ -314,13 +328,13 @@ async function discoverEventSources(country, city, deps = {}) {
                 // only ever after the cheap read has already failed.
                 if (dated < MIN_DATED_EVENTS && (deps.renderAvailable || _renderAvailable)()) {
                     const rendered = await (deps.renderPage || _renderPage)(ok.url);
-                    if (rendered) {
-                        const after = _datedEventCount(rendered);
-                        if (after > dated) {
-                            console.log(`[discovery] ${host}: plain HTML had ${dated} dated event(s), rendered has ${after}`);
-                            dated = after;
-                            ok.html = rendered;
-                        }
+                    const after = rendered ? _datedEventCount(rendered) : 0;
+                    if (rendered && after > dated) {
+                        console.log(`[discovery] ${host}: plain HTML had ${dated} dated event(s), rendered has ${after}`);
+                        dated = after;
+                        ok.html = rendered;
+                    } else {
+                        console.log(`[discovery] ${host}: render ${rendered ? `found ${after}` : 'returned nothing'} — no better than the plain ${dated}`);
                     }
                 }
                 return {

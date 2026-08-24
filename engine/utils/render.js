@@ -45,8 +45,18 @@ function _load() {
 
 /** Whether rendering can be attempted at all. Callers use it to decide whether
  *  escalation is even worth a log line. */
+let _saidOnce = false;
 function renderAvailable() {
-    return process.env.RENDER_JS !== 'off' && !!_load();
+    const on = process.env.RENDER_JS !== 'off' && !!_load();
+    // Silence was indistinguishable from "never asked": a whole Dubai run
+    // produced no [render] line at all and neither of us could tell whether the
+    // browser was missing or simply unused (live 2026-08-24).
+    if (!_saidOnce) {
+        _saidOnce = true;
+        console.log(on ? '[render] rendering is ON (playwright present)'
+            : `[render] rendering is OFF (${process.env.RENDER_JS === 'off' ? 'RENDER_JS=off' : 'playwright not installed'})`);
+    }
+    return on;
 }
 
 async function _browserOnce() {
@@ -91,6 +101,7 @@ async function renderPage(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
     }
     const browser = await _browserOnce();
     if (!browser) return null;
+    console.log(`[render] loading ${String(url).slice(0, 70)}`);
 
     _inFlight++;
     let context = null;
@@ -112,6 +123,7 @@ async function renderPage(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
         await page.goto(String(safe), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
         await page.waitForLoadState('networkidle', { timeout: IDLE_MS }).catch(() => { /* good enough */ });
         const html = await page.content();
+        console.log(`[render] ${String(url).slice(0, 60)} → ${html ? html.length : 0} chars`);
         return html && html.length > 500 ? html : null;
     } catch (err) {
         console.warn(`[render] ${String(url).slice(0, 60)}: ${err.message}`);
