@@ -32,6 +32,8 @@ function deps({ feeds = [], pages = {}, source = fakeEventSource(), stored = [] 
         discoverEventSources: async () => ({ domains: [], feeds }),
         searchWeb: async () => { throw new Error('web search must not run when discovery worked'); },
         fetchHtml: async (url) => pages[url] || null,
+        // Venue pinning must never reach the real Google client from a test.
+        findPlaces: async () => [],
         _source: source, _stored: stored,
     };
 }

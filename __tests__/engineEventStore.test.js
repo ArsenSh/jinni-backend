@@ -154,6 +154,8 @@ describe('huntEvents (the fresh tier — search fills the database)', () => {
         AiFoundEvent: { bulkWrite },
         searchWeb: async () => urls,
         fetchHtml: async () => html,
+        // Venue pinning must never reach the real Google client from a test.
+        findPlaces: async () => [],
         nowFn: () => NOW,
     });
 
