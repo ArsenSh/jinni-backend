@@ -115,6 +115,18 @@ function selfBlock(preferences) {
               + 'Do NOT describe any taste, style or budget for them.\n');
 }
 
+// Live 2026-08-24, asked for Dubai events with an Armenian deck on screen:
+// Jinni said it had no Dubai cards — then recited "the Dubai International
+// Humanitarian Aid & Development Conference … August 24 to 26" and "Dubai
+// Summer Surprises through August 30" from memory. Nothing fetched those. An
+// honest preamble in front of remembered facts makes them MORE dangerous, not
+// less, because it buys them credibility. Naming an event is naming a date.
+const NO_REMEMBERED_EVENTS =
+    'Never name an event, festival, exhibition, concert, fair or conference that is not in the evidence '
+  + 'above — not even one you are confident is real, and not as an aside or an example. A remembered '
+  + 'event is a guess with a date attached. If you hold nothing for the place or period asked, say that '
+  + 'plainly and stop there; do not soften it by listing something from memory.\n';
+
 function historyTurns(history) {
     return (history || [])
         .filter(t => t && t.text)
@@ -161,6 +173,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences)
+              + NO_REMEMBERED_EVENTS
               + (localFacts.length
                   ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
                   + 'answer from them, attribute the source, and never contradict them from memory. '
@@ -209,6 +222,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences)
+              + NO_REMEMBERED_EVENTS
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
@@ -245,6 +259,7 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences)
+              + NO_REMEMBERED_EVENTS
               + 'You searched your verified data' + (cityLabel ? ` for ${cityLabel}` : '')
               + ' and found NOTHING matching what the traveler asked'
               + (unmatched.length ? ` (nothing for: ${unmatched.slice(0, 4).join(', ')})` : '') + '.\n'
@@ -325,6 +340,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
             content:
                 'You are Jinni, a warm, concise travel companion.\n'
               + selfBlock(preferences)
+              + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
@@ -434,6 +450,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences)
+              + NO_REMEMBERED_EVENTS
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
               + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'

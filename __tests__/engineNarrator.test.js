@@ -165,3 +165,27 @@ describe('selfBlock', () => {
         expect(sys).toContain('ROWS ABOUT YOU');
     });
 });
+
+// ── No events from memory (Arsen 2026-08-24) ─────────────────────────────────
+// Asked for Dubai events with an Armenian deck on screen, Jinni said it had no
+// Dubai cards and then listed two real-sounding conferences with date ranges,
+// plus "Dubai Summer Surprises through August 30". Nothing fetched any of it.
+describe('no remembered events', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    const builders = [
+        ['chit-chat', () => g.buildChitchatMessages({ message: 'events in dubai?' })],
+        ['getting-around', () => g.buildGettingAroundMessages({ message: 'how do I get there' })],
+        ['no-match', () => g.buildNoMatchMessages({ message: 'events in dubai?' })],
+        ['tool-answer', () => g.buildToolAnswerMessages({ message: 'tell me about it' })],
+        ['streamed narration', () => g.buildStreamedNarrationMessages({ query: 'events', places: [{ name: 'A' }] })],
+    ];
+    test.each(builders)('%s forbids naming an unlisted event', (_name, build) => {
+        const sys = build()[0].content;
+        expect(sys).toMatch(/Never name an event, festival, exhibition, concert, fair or conference/);
+        expect(sys).toMatch(/remembered event is a guess with a date attached/);
+    });
+    test('and forbids softening the gap by listing one anyway', () => {
+        const sys = g.buildStreamedNarrationMessages({ query: 'events', places: [] })[0].content;
+        expect(sys).toMatch(/do not soften it by listing something from memory/);
+    });
+});

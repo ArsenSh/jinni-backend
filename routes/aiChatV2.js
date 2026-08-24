@@ -452,10 +452,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // excluded) — "that's the lot" reads honest; "I have none"
                 // would be false. no_candidates = genuinely nothing listed.
                 const sawEverything = result.reason === 'all_filtered';
+                // Name the city we actually searched. "this area" let a Dubai
+                // ask read as if it had been answered about Dubai when the
+                // search had run somewhere else entirely (live 2026-08-24).
+                const where = meta.searchCity ? ` in ${meta.searchCity}` : ' for this area';
                 reply = category === 'events'
                     ? (sawEverything
-                        ? '🧪 V2: That\'s every upcoming event I have for this area right now — you\'ve seen them all. Ask me for places, or check back in a day or two.'
-                        : '🧪 V2: I don\'t have any verified upcoming events for this area in my listings right now. Try asking again closer to the date, or ask me for places instead.')
+                        ? `🧪 V2: That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
+                        : `🧪 V2: I don't have any verified event listings${where} yet. I'll go looking for that city's sources — try again shortly, or ask me for places instead.`)
                     : (sawEverything
                         ? '🧪 V2: You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
                         : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
