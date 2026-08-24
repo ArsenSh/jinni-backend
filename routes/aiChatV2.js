@@ -124,6 +124,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    Google fallback tier, no cards yet, pseudo-streamed prose. ──
     let center = (location && location.lat != null && location.lng != null)
         ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
+    // The raw reading, kept because `center` is reassigned to the chosen
+    // destination below. "Set my destination to my current location" has to mean
+    // the GPS, not whatever the search is centred on — otherwise it would save
+    // Dubai back onto itself while the traveler stood in Yerevan.
+    const gpsCenter = center;
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -178,6 +183,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             intent = await intentService.classify({ message, recentTurns, userLanguage, appCfg });
             intent._userLanguage = userLanguage;
             intent._preferences = user?.preferences || {};
+            // Settings Jinni may read and be asked to change: how far it looks
+            // in nearby and discovery modes (Arsen 2026-08-24), and whether a
+            // position was actually reported this turn — the traveler may have
+            // switched location off, and claiming to see it then is a lie.
+            intent._preferences._searchRadius = user?.settings?.searchRadius || null;
+            intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
             // An approval a moment ago is already true for this turn.
             if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {
@@ -594,9 +605,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // Where they actually are, so a "set my destination to
                         // here" is filled in by code. The model never supplies
                         // coordinates.
-                        const here = center ? await resolveRegion({ center }) : null;
+                        // Only when a position was actually reported. Arsen
+                        // 2026-08-24: "user may manually toggle off gps
+                        // location" — with it off there is nothing to save, and
+                        // validateProposal refuses rather than storing a guess.
+                        const here = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
                         const proposed = validateProposal(parsedTail.prefUpdate, {
-                            currentPlace: here ? { ...here, lat: center.lat, lng: center.lng } : null,
+                            currentPlace: here ? { ...here, lat: gpsCenter.lat, lng: gpsCenter.lng } : null,
                         });
                         if (proposed && isExplicit(parsedTail.prefUpdate) && req.user?.id) {
                             // They ASKED. An instruction is already consent, and

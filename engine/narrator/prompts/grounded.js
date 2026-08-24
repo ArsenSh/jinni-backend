@@ -81,7 +81,7 @@ const IDENTITY_ROWS = [
     // panel" while the log read "User location: Yerevan, Armenia" — a blindfold
     // it put on itself (live 2026-08-24). Denying a capability you have is as
     // misleading as inventing one you lack.
-    'You DO see where the traveler is right now when the app reports it, and their saved settings.',
+    'You DO see the traveler\'s saved settings.',
     'You CAN change a saved setting when they ask you to — say it is done, in the past tense. Never say you have no access to their settings or location.',
 ];
 
@@ -109,14 +109,37 @@ function travelerRows(preferences) {
     if (Array.isArray(p.languages) && p.languages.length) rows.push(`languages: ${p.languages.join(', ')}`);
     const d = p.destination || {};
     if (d.city || d.countryName) rows.push(`destination they saved: ${[d.city, d.countryName].filter(Boolean).join(', ')}`);
+    // The search radii, so it can answer "how far do you look?" and notice when
+    // one is the reason a deck came back thin (Arsen 2026-08-24).
+    const r = p._searchRadius || {};
+    if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)`);
+    if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)`);
+    // Budget style with no budget is a gap worth closing, and only the traveler
+    // can close it. Arsen 2026-08-24: "if user he wants budget places then
+    // should give budget also min and max".
+    if (p.travelStyle === 'budget' && !(p.budget && (p.budget.min > 0 || p.budget.max > 0))) {
+        rows.push('their style is budget but NO budget range is saved — ask for a min and max when it would help');
+    }
     return rows;
 }
 
 /** Identity rows + traveler rows + the no-invention rule, as one prompt block. */
-function selfBlock(preferences) {
+/**
+ * @param {object} preferences the traveler's saved rows
+ * @param {{knowsLocation?: boolean}} opts whether the app actually reported a
+ *   position this turn. Arsen 2026-08-24: "user may manually toggle off gps
+ *   location" — so this is not a constant. Claiming to see a location that was
+ *   switched off is the same failure as denying one that was on.
+ */
+function selfBlock(preferences, { knowsLocation = false } = {}) {
     const rows = travelerRows(preferences);
+    const locationRow = knowsLocation
+        ? 'You DO see where the traveler is right now — the app reported it this turn.'
+        : 'You do NOT see where the traveler is right now: no position was reported this turn '
+          + '(they may have location switched off in Settings). Do not guess it, and if they ask you to '
+          + 'use their current location, say plainly that you have none and that they can enable it in Settings.';
     return SELF_KNOWLEDGE_RULE
-        + 'ROWS ABOUT YOU:\n' + IDENTITY_ROWS.map(r => `- ${r}`).join('\n') + '\n'
+        + 'ROWS ABOUT YOU:\n' + [...IDENTITY_ROWS, locationRow].map(r => `- ${r}`).join('\n') + '\n'
         + (rows.length
             ? 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
               + rows.map(r => `- ${r}`).join('\n')
@@ -187,7 +210,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences)
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + (localFacts.length
                   ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
@@ -237,7 +260,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences)
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
@@ -274,7 +297,7 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences)
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + 'You searched your verified data' + (cityLabel ? ` for ${cityLabel}` : '')
               + ' and found NOTHING matching what the traveler asked'
@@ -360,7 +383,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               // verified events…" came from (live 2026-08-24). A deck turn can
               // re-litigate an earlier turn just as easily as a prose one.
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences)
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
@@ -385,8 +408,14 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'LASTING change to one (e.g. their style is luxury and they say they always travel cheap). One of '
               + '{"field":"travelStyle","value":"luxury|budget"}, {"field":"interests","value":["family","romantic"]}, '
               + '{"field":"budget","value":{"min":50,"max":200,"currency":"USD"}}, '
-              + '{"field":"destination","value":"current"} (only "current" — meaning where they are now). '
+              + '{"field":"destination","value":"current"} (only "current" — meaning where they are now), '
+              + '{"field":"nearbyRadius","value":5} (km, 1-20), {"field":"discoveryRadius","value":50} (km, 10-100). '
+              + 'Those two are how far you search in nearby and discovery modes; propose one when a thin result or '
+              + 'their own words call for it, and stay inside the range — a value outside it is dropped. '
               + 'A one-off ask is NOT a change: wanting a cheap lunch on a luxury trip changes nothing.\n'
+              // A style with no numbers behind it cannot be used for anything.
+              + '- If you set their style to budget and no budget range is saved, ASK for a min and max in the '
+              + 'same reply, in one short sentence. Never invent the figures — only they know what their budget is.\n'
               // An instruction is already consent. Treating "set my destination
               // to my GPS" as something to ask permission for produced "I can't
               // set that for you" (live 2026-08-24).
@@ -487,7 +516,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences)
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
               + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'

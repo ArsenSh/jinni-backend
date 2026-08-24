@@ -145,3 +145,64 @@ describe('setting the destination to where you are', () => {
         expect(Object.keys(sets[0].$set)).toEqual(['preferences.destination']);
     });
 });
+
+// Arsen 2026-08-24: "the jinni can have access to discovery and nearby modes
+// also their radiuses, in clever situations can ask or get command to change,
+// also can set budget in preferences with budget style, if user he wants budget
+// places then should give budget also min and max" — plus, crucially, "user may
+// manually toggle off gps location".
+describe('search radii and what Jinni admits to seeing', () => {
+    const { validateProposal, applyProposal, PREF_PATHS } = require('../engine/preferences/proposal');
+    const { selfBlock } = require('../engine/narrator/prompts/grounded');
+
+    test('a radius is accepted only inside the slider\'s own range', () => {
+        expect(validateProposal({ field: 'nearbyRadius', value: 8 }).value).toBe(8);
+        expect(validateProposal({ field: 'discoveryRadius', value: 75 }).value).toBe(75);
+        expect(validateProposal({ field: 'nearbyRadius', value: 40 })).toBeNull();       // max 20
+        expect(validateProposal({ field: 'discoveryRadius', value: 5 })).toBeNull();     // min 10
+        expect(validateProposal({ field: 'nearbyRadius', value: 'wide' })).toBeNull();
+    });
+
+    test('out of range is dropped, never quietly clamped', () => {
+        // Storing 20 after someone asked for 200 would make Jinni's "done" a lie.
+        expect(validateProposal({ field: 'nearbyRadius', value: 200 })).toBeNull();
+    });
+
+    test('radii write under settings, not preferences', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(Object.keys(u.$set)[0]); return { acknowledged: true }; } };
+        await applyProposal('u1', { field: 'nearbyRadius', value: 6 }, { User });
+        await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User });
+        expect(sets).toEqual(['settings.searchRadius.nearby', 'preferences.travelStyle']);
+        expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
+    });
+
+    test('with location reported, it says it sees where they are', () => {
+        const block = selfBlock({ travelStyle: 'luxury', _knowsLocation: true }, { knowsLocation: true });
+        expect(block).toMatch(/DO see where the traveler is right now/);
+    });
+
+    test('with location switched off, it says it does NOT — and points at Settings', () => {
+        const block = selfBlock({ travelStyle: 'luxury' }, { knowsLocation: false });
+        expect(block).toMatch(/do NOT see where the traveler is right now/);
+        expect(block).toMatch(/enable it in Settings/);
+        expect(block).not.toMatch(/DO see where the traveler is right now/);
+    });
+
+    test('budget style with no numbers is surfaced as a gap to ask about', () => {
+        const block = selfBlock({ travelStyle: 'budget', budget: { min: 0, max: 0 } });
+        expect(block).toMatch(/NO budget range is saved/);
+    });
+
+    test('budget style WITH numbers raises nothing', () => {
+        const block = selfBlock({ travelStyle: 'budget', budget: { min: 20, max: 80, currency: 'USD' } });
+        expect(block).not.toMatch(/NO budget range is saved/);
+        expect(block).toMatch(/budget: 20–80 USD/);
+    });
+
+    test('the radii appear as rows it can quote', () => {
+        const block = selfBlock({ _searchRadius: { nearby: 7, discovery: 60 } });
+        expect(block).toMatch(/nearby radius: 7 km/);
+        expect(block).toMatch(/discovery radius: 60 km/);
+    });
+});

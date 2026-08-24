@@ -45,6 +45,31 @@ const PREF_VOCAB = {
     destination: ['current'],
 };
 
+// Search radii, in km. Arsen 2026-08-24: "the jinni can have access to
+// discovery and nearby modes also their radiuses, in clever situations can ask
+// or get command to change".
+//
+// The bounds are the User schema's own (settings.searchRadius), not new numbers
+// invented here — a value the UI slider could not produce is a value the
+// traveler cannot undo. Out of range is DROPPED rather than clamped: silently
+// storing 100 after someone asked for 200 would make Jinni's "done" a lie. The
+// prompt states the limits, so the model proposes inside them.
+const RADIUS_LIMITS = {
+    nearbyRadius: { min: 1, max: 20, path: 'settings.searchRadius.nearby', label: 'nearby radius' },
+    discoveryRadius: { min: 10, max: 100, path: 'settings.searchRadius.discovery', label: 'discovery radius' },
+};
+
+// Which document path each field writes to. Radii live under settings, the rest
+// under preferences, and getting that wrong would write a field nothing reads.
+const PREF_PATHS = {
+    travelStyle: 'preferences.travelStyle',
+    interests: 'preferences.interests',
+    budget: 'preferences.budget',
+    destination: 'preferences.destination',
+    nearbyRadius: RADIUS_LIMITS.nearbyRadius.path,
+    discoveryRadius: RADIUS_LIMITS.discoveryRadius.path,
+};
+
 const MAX_BUDGET = 100000;
 
 /**
@@ -128,6 +153,13 @@ function validateProposal(raw, ctx = {}) {
         };
     }
 
+    if (RADIUS_LIMITS[field]) {
+        const { min, max, label } = RADIUS_LIMITS[field];
+        const n = Number(raw.value);
+        if (!Number.isFinite(n) || n < min || n > max) return null;
+        return { field, value: Math.round(n), label: `${label} to ${Math.round(n)} km` };
+    }
+
     return null;                                   // any other field is not ours to touch
 }
 
@@ -167,7 +199,9 @@ async function applyProposal(userId, proposal, deps = {}) {
     if (!userId || !valid) return false;
     const User = deps.User || require('../../models/User');
     try {
-        const res = await User.updateOne({ _id: userId }, { $set: { [`preferences.${valid.field}`]: valid.value } });
+        const path = PREF_PATHS[valid.field];
+        if (!path) return false;                   // a field with no home is not writable
+        const res = await User.updateOne({ _id: userId }, { $set: { [path]: valid.value } });
         const ok = !!(res?.acknowledged ?? res?.modifiedCount ?? res?.matchedCount);
         if (ok) console.log(`[prefs] ${userId}: ${valid.label} (approved by the traveler)`);
         return ok;
@@ -184,4 +218,4 @@ function isExplicit(raw) {
     return raw?.explicit === true || raw?.explicit === 'true';
 }
 
-module.exports = { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, PREF_VOCAB };
+module.exports = { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, PREF_VOCAB, PREF_PATHS, RADIUS_LIMITS };
