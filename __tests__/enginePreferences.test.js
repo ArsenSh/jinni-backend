@@ -93,3 +93,55 @@ describe('applyProposal', () => {
         expect(PREF_VOCAB.currency).toEqual(['AED', 'USD', 'RUB', 'EUR', 'GBP']);
     });
 });
+
+// Arsen 2026-08-24: "can you set to current location, gps one?" → "I can't set
+// that for you", which was false. Then: "it should simply set and save, same
+// things user can do from onboarding page."
+describe('setting the destination to where you are', () => {
+    const { validateProposal, isExplicit, applyProposal } = require('../engine/preferences/proposal');
+    const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
+
+    test('code fills in every field from the reported position', () => {
+        const p = validateProposal({ field: 'destination', value: 'current' }, { currentPlace: HERE });
+        expect(p.value).toEqual({
+            country: 'AM', countryName: 'Armenia', city: 'Yerevan',
+            coordinates: { lat: 40.18, lng: 44.51 },
+        });
+        expect(p.label).toBe('destination to Yerevan, Armenia');
+    });
+
+    test('a city NAME is refused — a guessed coordinate is not saveable', () => {
+        expect(validateProposal({ field: 'destination', value: 'Paris' }, { currentPlace: HERE })).toBeNull();
+        expect(validateProposal({ field: 'destination', value: { lat: 1, lng: 2 } }, { currentPlace: HERE })).toBeNull();
+    });
+
+    test('no position means no write, rather than 0,0', () => {
+        expect(validateProposal({ field: 'destination', value: 'current' }, {})).toBeNull();
+        expect(validateProposal({ field: 'destination', value: 'current' },
+            { currentPlace: { city: 'X', lat: 0, lng: 0 } })).toBeNull();
+    });
+
+    test('an ISO country code is only stored when the region gave one', () => {
+        // resolveRegion returns {city, country} with no code, so this field stays
+        // empty rather than being guessed from the country name.
+        const p = validateProposal({ field: 'destination', value: 'current' },
+            { currentPlace: { city: 'Dubai', country: 'United Arab Emirates', lat: 25.2, lng: 55.27 } });
+        expect(p.value.country).toBe('');
+        expect(p.value.countryName).toBe('United Arab Emirates');
+    });
+
+    test('only a real boolean true skips the confirmation', () => {
+        expect(isExplicit({ explicit: true })).toBe(true);
+        expect(isExplicit({ explicit: 'maybe' })).toBe(false);
+        expect(isExplicit({})).toBe(false);
+        expect(isExplicit(null)).toBe(false);
+    });
+
+    test('an asked-for change writes exactly one path', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true }; } };
+        const p = validateProposal({ field: 'destination', value: 'current' }, { currentPlace: HERE });
+        expect(await applyProposal('u1', p, { User })).toBe(true);
+        expect(Object.keys(sets[0].$set)).toEqual(['preferences.destination']);
+    });
+});

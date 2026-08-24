@@ -34,7 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
-const { validateProposal, isAffirmative, isNegative, applyProposal } = require('../engine/preferences/proposal');
+const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -591,8 +591,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // The model may PROPOSE a preference change; code checks
                         // it against the vocabulary and parks it for the
                         // traveler's answer. Nothing is written on this turn.
-                        const proposed = validateProposal(parsedTail.prefUpdate);
-                        if (proposed && sessionId && !pending) {
+                        // Where they actually are, so a "set my destination to
+                        // here" is filled in by code. The model never supplies
+                        // coordinates.
+                        const here = center ? await resolveRegion({ center }) : null;
+                        const proposed = validateProposal(parsedTail.prefUpdate, {
+                            currentPlace: here ? { ...here, lat: center.lat, lng: center.lng } : null,
+                        });
+                        if (proposed && isExplicit(parsedTail.prefUpdate) && req.user?.id) {
+                            // They ASKED. An instruction is already consent, and
+                            // this is the same change the onboarding screen makes
+                            // (Arsen 2026-08-24: "it should simply set and save").
+                            if (await applyProposal(req.user.id, proposed)) {
+                                meta.prefApplied = { field: proposed.field, label: proposed.label };
+                                console.log(`[prefs] ${proposed.label} — set on request, no confirmation needed`);
+                            }
+                        } else if (proposed && sessionId && !pending) {
                             meta.prefProposal = proposed;
                             require('../models/ChatSession')
                                 .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { ...proposed, askedAt: new Date() } } })
