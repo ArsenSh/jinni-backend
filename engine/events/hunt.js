@@ -20,6 +20,7 @@ const { _fetchListingHtml } = require('../utils/safeFetch');
 const { normalizePlaceName } = require('../places/matching');
 const { aiEventToCandidate } = require('../places/eventStore');
 const { haversineKm } = require('../utils/geo');
+const { pickAdapter: _pickAdapter, runAdapter: _runAdapter } = require('./adapters');
 
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 const MAX_CURATED = 8;   // registered sources read per hunt
@@ -242,7 +243,7 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         }
     }
     const urls = curated.length
-        ? curated.map((s) => ({ url: s.url, _sourceId: s._id }))
+        ? curated.map((s) => ({ url: s.url, _sourceId: s._id, _adapter: s.adapter || null }))
         : (discovered.length
             ? discovered.map((f) => ({ url: f.url, _discovered: f }))
             : _onlyVerified(await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null }), verifiedDomains, city).slice(0, MAX_PAGES));
@@ -258,6 +259,33 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         try {
             const html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
             if (!html) continue;
+
+            // A site-specific adapter, when this source names one or when one
+            // declares this host. It reads per event BLOCK, so a title cannot
+            // borrow its neighbour's link, poster or start time — the failure
+            // the generic path had on allevents (live 2026-08-24). Returning
+            // nothing is not an answer: the generic ladder then runs as usual,
+            // so a stale adapter degrades the result and never deletes one.
+            const adapter = (deps.pickAdapter || _pickAdapter)(u.url, u._adapter || null);
+            if (adapter) {
+                const rows = (deps.runAdapter || _runAdapter)(adapter, html, { url: u.url, city });
+                let kept = 0;
+                for (const e of rows) {
+                    if (e.startDate > wEnd) continue;
+                    if ((e.endDate || e.startDate) < wStart) continue;
+                    found.push({ ...e, sourceUrl: e.url || u.url, _tier: 'listing' });
+                    kept++;
+                }
+                if (kept) {
+                    console.log(`[hunt] adapter ${adapter.name}: ${kept} event(s) from ${String(u.url).slice(0, 60)}`);
+                    if (u._sourceId) sourceYield.set(String(u._sourceId), found.length - beforeCount);
+                    if (u._discovered) newSources.push({ ...u._discovered, count: found.length - beforeCount });
+                    if (found.length >= MAX_STORE) break;
+                    continue;
+                }
+                console.log(`[hunt] adapter ${adapter.name} read nothing from ${String(u.url).slice(0, 60)} — falling back to the generic reader`);
+            }
+
             const nodes = _extractLdEvents(html) || [];
             let ldFound = 0;
             for (const raw of nodes) {
