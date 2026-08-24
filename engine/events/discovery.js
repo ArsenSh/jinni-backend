@@ -7,6 +7,7 @@
 const { _assertPublicHttpUrl, _fetchListingHtml, _fetchUnavailable } = require('../utils/safeFetch');
 const { _extractLdEvents, _normalizeLdEvent } = require('./listing');
 const { EVENT_FEED_SOURCES, KNOWN_EVENT_SEARCH_DOMAINS } = require('./sources');
+const { renderPage: _renderPage, renderAvailable: _renderAvailable } = require('../utils/render');
 
 /* ═══════════ Automatic per-country event-source discovery ═════════════════
  * A hand-typed domain allowlist only ever covers one country. The moment the
@@ -216,7 +217,7 @@ async function _confirmDomainBySearch(host, place, model) {
     }
 }
 
-async function discoverEventSources(country, city) {
+async function discoverEventSources(country, city, deps = {}) {
     // Keyed by city, not country: the listing URL is per city, so Dubai and
     // Abu Dhabi — or Tbilisi and Batumi — must not share one cached answer.
     const key = `${String(country || '').toLowerCase().trim()}|${String(city || '').toLowerCase().trim()}`;
@@ -307,7 +308,21 @@ async function discoverEventSources(country, city) {
                 const hay = ok.html.toLowerCase();
                 const needle = String(city || country || '').toLowerCase().replace(/^t'/, '');
                 const relevant = !needle || hay.includes(needle);
-                const dated = _datedEventCount(ok.html);
+                let dated = _datedEventCount(ok.html);
+                // The page read empty — but "empty" and "JavaScript" look the
+                // same to a plain fetch. One render decides which it was, and
+                // only ever after the cheap read has already failed.
+                if (dated < MIN_DATED_EVENTS && (deps.renderAvailable || _renderAvailable)()) {
+                    const rendered = await (deps.renderPage || _renderPage)(ok.url);
+                    if (rendered) {
+                        const after = _datedEventCount(rendered);
+                        if (after > dated) {
+                            console.log(`[discovery] ${host}: plain HTML had ${dated} dated event(s), rendered has ${after}`);
+                            dated = after;
+                            ok.html = rendered;
+                        }
+                    }
+                }
                 return {
                     host, real: true, relevant, url: ok.url, dated,
                     feed: relevant && dated >= MIN_DATED_EVENTS

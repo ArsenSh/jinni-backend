@@ -21,11 +21,13 @@ const { normalizePlaceName } = require('../places/matching');
 const { aiEventToCandidate } = require('../places/eventStore');
 const { haversineKm } = require('../utils/geo');
 const { pickAdapter: _pickAdapter, runAdapter: _runAdapter } = require('./adapters');
+const { renderPage: _renderPage, renderAvailable: _renderAvailable } = require('../utils/render');
 
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 const MAX_CURATED = 8;   // registered sources read per hunt
 const MAX_STORE = 12;    // events stored per hunt
 const DEAD_READS = 3;    // empty reads before a DISCOVERED source switches itself off
+const MAX_RENDERS = 2;   // browser renders per hunt — seconds each, so escalate, never start here
 
 function _fmtWindow(win) {
     const f = (d) => new Date(d).toUTCString().slice(5, 16);   // "22 Aug 2026"
@@ -41,6 +43,13 @@ function _fmtWindow(win) {
 // into city fields (2026-08-23 live: hunted for "events 10/9 …" — the city
 // was an address fragment) — letters, spaces and simple punctuation only.
 const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
+
+/** Does this HTML carry anything a reader could call a date? Cheap and
+ *  deliberately loose — it only decides whether a render is worth trying. */
+function _datedish(html) {
+    const s = String(html || '');
+    return /"startDate"|itemprop=["']startDate|data-stime=|\b\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4}/i.test(s);
+}
 
 /** Follow each event to ITS OWN page for the facts a listing does not carry.
  *
@@ -305,11 +314,23 @@ async function huntEvents({ city, country = null, center = null, window: win } =
     const found = [];
     const sourceYield = new Map();                    // _sourceId → events read this hunt
     const newSources = [];                            // discovered pages that actually produced events
+    let renderBudget = MAX_RENDERS;
     for (const u of urls) {
         const beforeCount = found.length;
         try {
-            const html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
+            let html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });
             if (!html) continue;
+            // A listing with no dated events in its plain HTML is either empty
+            // or JavaScript. One render tells us which — budgeted, and only
+            // after the cheap read has already come back with nothing.
+            if (renderBudget > 0 && !_datedish(html) && (deps.renderAvailable || _renderAvailable)()) {
+                renderBudget--;
+                const rendered = await (deps.renderPage || _renderPage)(u.url);
+                if (rendered && _datedish(rendered)) {
+                    console.log(`[hunt] rendered ${String(u.url).slice(0, 60)} — the plain HTML carried no dates`);
+                    html = rendered;
+                }
+            }
 
             // A site-specific adapter, when this source names one or when one
             // declares this host. It reads per event BLOCK, so a title cannot
