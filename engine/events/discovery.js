@@ -126,6 +126,44 @@ function _rowUrl(row) {
  */
 const MIN_DATED_EVENTS = 3;
 
+// Dates as a READER sees them, for pages that publish no markup at all.
+//
+// ticketmaster.ae serves 456KB with two JSON-LD blocks and not one Event among
+// them; platinumlist the same. Both are single-page apps whose listings arrive
+// from an internal API, so a structured-data gate scores them 0 and throws them
+// away — while the model-read extractor that runs AFTERWARDS reads plain text
+// and never needed the markup. The gate was stricter than the thing it gated
+// (live 2026-08-24: Dubai rejected four readable sites in a row).
+//
+// GATING ONLY. This decides "does this page look like a listing", never what an
+// event IS. No date found here ever reaches a traveler — every card still comes
+// from the extractor, with its own source URL. So a loose count is safe: a page
+// that passes and yields nothing gets a zeroStreak and switches itself off.
+const _MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
+const _DATE_RES = [
+    new RegExp(`\\b\\d{1,2}\\s+(${_MONTHS})[a-z]*\\b`, 'gi'),      // 24 Aug
+    new RegExp(`\\b(${_MONTHS})[a-z]*\\s+\\d{1,2}\\b`, 'gi'),      // Aug 24
+    /\b\d{4}-\d{2}-\d{2}\b/g,                                    // 2026-08-24
+    /\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b/g,                        // 24/08/2026
+];
+
+function _textDatedCount(html) {
+    let text;
+    try {
+        const { _reducePage } = require('../search/readPage');
+        // _reducePage returns the whole reduced page; the visible copy is .text.
+        text = _reducePage(html, '', 40000)?.text || '';
+    } catch {
+        return 0;
+    }
+    if (!text) return 0;
+    const seen = new Set();
+    for (const re of _DATE_RES) {
+        for (const m of text.matchAll(re)) seen.add(m[0].toLowerCase().replace(/\s+/g, ' '));
+    }
+    return seen.size;
+}
+
 function _datedEventCount(html) {
     let n = 0;
     try {
@@ -135,10 +173,10 @@ function _datedEventCount(html) {
     try {
         const { _structuredFromHtml } = require('../search/readPage');
         const days = new Set(_structuredFromHtml(html).map(o => o.day).filter(Boolean));
-        return Math.max(n, days.size);
-    } catch {
-        return n;
-    }
+        n = Math.max(n, days.size);
+    } catch { /* keep whatever the ladder gave */ }
+    if (n >= MIN_DATED_EVENTS) return n;
+    return Math.max(n, _textDatedCount(html));
 }
 
 /** Where a site lists THIS CITY's events, in the order worth trying.

@@ -229,3 +229,36 @@ describe('_cleanVenue', () => {
         expect(_cleanVenue('Yerevan Theatre, the...').name).toBe('Yerevan Theatre');
     });
 });
+
+// The gate must not be stricter than the extractor it gates. ticketmaster.ae and
+// platinumlist both render fine and publish no Event markup at all — the
+// structured-data-only count scored them 0 and Dubai lost four readable sites in
+// a row (live 2026-08-24).
+describe('_datedEventCount: pages with no markup', () => {
+    const { _datedEventCount } = require('../engine/events/discovery');
+
+    test('counts dates a reader can see when there is no structured data', () => {
+        const html = `<html><body><ul>
+            <li><a href="/e/1">Coldplay Live</a><span>24 Aug</span></li>
+            <li><a href="/e/2">Adele in Dubai</a><span>27 Aug</span></li>
+            <li><a href="/e/3">Comedy Night</a><span>2026-09-04</span></li>
+            <li><a href="/e/4">Expo Opening</a><span>05/09/2026</span></li>
+        </ul></body></html>`;
+        expect(_datedEventCount(html)).toBeGreaterThanOrEqual(3);
+    });
+
+    test('a page of prose is still not a listing', () => {
+        const html = '<html><body><p>Dubai is a city in the UAE. The weather is warm '
+            + 'and the beaches are long. Many visitors come every year.</p></body></html>';
+        expect(_datedEventCount(html)).toBeLessThan(3);
+    });
+
+    test('structured data still wins when it is there', () => {
+        const html = `<html><head><script type="application/ld+json">${JSON.stringify([
+            { '@type': 'Event', name: 'A', startDate: '2026-09-01' },
+            { '@type': 'Event', name: 'B', startDate: '2026-09-02' },
+            { '@type': 'Event', name: 'C', startDate: '2026-09-03' },
+        ])}</script></head><body></body></html>`;
+        expect(_datedEventCount(html)).toBe(3);
+    });
+});

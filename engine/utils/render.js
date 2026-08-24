@@ -127,7 +127,16 @@ async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
             const type = route.request().resourceType();
             return ['image', 'media', 'font'].includes(type) ? route.abort() : route.continue();
         });
-        await page.goto(String(safe), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+        const resp = await page.goto(String(safe), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+        // A browser renders an error page as happily as a real one, and a
+        // single-page app's 404 is just as big as its listing: we rendered
+        // ticketmaster.ae's 404 and reported "166,678 chars" as if we had read
+        // Dubai's events (live 2026-08-24). Status first, content second.
+        const status = resp ? resp.status() : 0;
+        if (status && (status >= 400 || status < 200)) {
+            console.log(`[render] ${String(url).slice(0, 60)} → HTTP ${status}, not a page`);
+            return null;
+        }
         await page.waitForLoadState('networkidle', { timeout: IDLE_MS }).catch(() => { /* good enough */ });
         const html = await page.content();
         console.log(`[render] ${String(url).slice(0, 60)} → ${html ? html.length : 0} chars`);
