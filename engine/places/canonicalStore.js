@@ -129,7 +129,11 @@ function cacheDocToCandidate(d, center) {
  */
 function huntCity(params = {}, evs = []) {
     const looksReal = (c) => c && /^[\p{L}][\p{L}\s.'’-]{1,40}$/u.test(String(c).trim());
-    return [params.regionCity, params.center?.city, ...(evs || []).map(e => e?.city)].find(looksReal) || null;
+    const found = [params.regionCity, params.center?.city, ...(evs || []).map(e => e?.city)].find(looksReal);
+    // Google reverse-geocodes Tbilisi as "T'bilisi" — a transliteration mark,
+    // not punctuation anyone types or any site prints. Only an apostrophe right
+    // after a single leading letter is dropped, so "Coeur d'Alene" survives.
+    return found ? String(found).trim().replace(/^([\p{L}])['’](?=\p{L})/u, '$1') : null;
 }
 
 /** Defensive mapping for proximityService rows (Business/Destination). Their

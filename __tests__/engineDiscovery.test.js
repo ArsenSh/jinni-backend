@@ -83,8 +83,16 @@ describe('_onlyVerified', () => {
         expect(_onlyVerified(results, null, 'Dubai')).toHaveLength(3);
     });
 
-    test('unparseable results are dropped rather than trusted', () => {
-        expect(_onlyVerified([{ url: 'nonsense' }], ['platinumlist.net'], 'Dubai')).toHaveLength(0);
+    test('unparseable results are dropped while others survive', () => {
+        const mixed = [{ url: 'nonsense' }, { url: 'https://dubai.platinumlist.net/x' }];
+        expect(_onlyVerified(mixed, ['platinumlist.net'], 'Dubai')).toEqual([mixed[1]]);
+    });
+
+    // Tbilisi kept 0/5 and the city returned no events at all (2026-08-24).
+    // A confinement that empties the deck has stopped being a quality gate.
+    test('filtering to nothing falls back to reading everything', () => {
+        expect(_onlyVerified([{ url: 'https://gulfnews.com/x' }], ['platinumlist.net'], 'Tbilisi')).toHaveLength(1);
+        expect(_onlyVerified([{ url: 'nonsense' }], ['platinumlist.net'], 'Dubai')).toHaveLength(1);
     });
 });
 

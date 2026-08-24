@@ -136,6 +136,13 @@ function _onlyVerified(results, domains, city) {
             return ok.has(h) || [...ok].some(d => h.endsWith(`.${d}`));
         } catch { return false; }
     });
+    // Filtering to nothing is worse than not filtering: Tbilisi kept 0/5 and
+    // the city returned no events at all (live 2026-08-24). A confinement that
+    // empties the deck has stopped being a quality gate.
+    if (!kept.length) {
+        console.log(`[hunt] search for ${city}: no result on a verified domain — reading all ${list.length} rather than none`);
+        return list;
+    }
     if (kept.length !== list.length) {
         console.log(`[hunt] search for ${city}: kept ${kept.length}/${list.length} result(s) on verified domains`);
     }

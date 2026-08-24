@@ -60,6 +60,28 @@ async function _domainResolves(host) {
     }
 }
 
+/** The model's reply → an array of proposals, even when it is cut off.
+ *
+ *  A closing bracket is not something to depend on: a token cap can truncate
+ *  the array mid-object, and then a whole-array parse yields nothing at all.
+ *  So parse the array when it closes, and salvage the complete {...} objects
+ *  when it does not. Markdown fences are ignored either way.
+ */
+function _parseProposals(raw) {
+    const text = String(raw || '');
+    const whole = text.match(/\[[\s\S]*\]/);            // greedy: the LAST bracket closes it
+    if (whole) {
+        try { const a = JSON.parse(whole[0]); if (Array.isArray(a) && a.length) return a; } catch { /* salvage */ }
+    }
+    const out = [];
+    for (const m of text.matchAll(/\{[^{}]*\}/g)) {
+        try { out.push(JSON.parse(m[0])); } catch { /* skip this fragment */ }
+    }
+    if (out.length) return out;
+    // Last resort: bare quoted hostnames, the oldest answer shape.
+    return [...text.matchAll(/"([a-z0-9-]+(?:\.[a-z0-9-]+)+)"/gi)].map(m => m[1]);
+}
+
 /** Hostname and listing URL out of ONE proposal, whatever shape it arrived in.
  *
  *  The model may answer a bare string, {host,url}, {hostname,link}, {site,…} —
@@ -212,7 +234,11 @@ async function discoverEventSources(country, city) {
             const cfg = await AppConfig.getConfig();
             const res = await claudeService.complete({
                 model: cfg.claudeModel,
-                maxTokens: 200,
+                // 200 was sized for bare hostnames. Asking for objects with
+                // full URLs overflowed it, the array never closed, and the
+                // parser saw nothing — Dubai's whole discovery, twice (live
+                // 2026-08-24).
+                maxTokens: 700,
                 temperature: 0,
                 system: 'You return only JSON. No prose, no markdown fences.',
                 messages: [{
@@ -239,7 +265,7 @@ async function discoverEventSources(country, city) {
                 }]
             });
             const raw = String(res?.text || '');
-            const arr = JSON.parse((raw.match(/\[[\s\S]*?\]/) || ['[]'])[0]);
+            const arr = _parseProposals(raw);
             const urlByHost = new Map();
             const proposed = (Array.isArray(arr) ? arr : [])
                 .map((row) => {
@@ -368,6 +394,7 @@ module.exports = {
     _domainResolves,
     _fetchCityListing,
     _cityListingUrls,
+    _parseProposals,
     _rowHost,
     _rowUrl,
     _datedEventCount,
