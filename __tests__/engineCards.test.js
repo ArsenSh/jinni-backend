@@ -162,3 +162,53 @@ describe('factDescription: events describe themselves without a blurb', () => {
         expect(r.description).toBe('An Armenian dance celebration.');
     });
 });
+
+// ── The model names the category, code checks the word (Arsen 2026-08-24) ────
+// "ai is leader not an employee... code just helps". The type table stops
+// leading and becomes the fallback; a named kind wins, but only if it is one
+// of ours.
+describe('category vocabulary', () => {
+    const { CATEGORY_VOCABULARY, normalizeCategory } = require('../engine/narrator/cards');
+
+    test('a vocabulary word from the model beats the type table', () => {
+        expect(categoryFor({ _kind: 'Rental agency', primaryType: 'lodging' }, 'hotels')).toBe('Rental agency');
+    });
+    test('a word outside the vocabulary is dropped, not rewritten', () => {
+        expect(categoryFor({ _kind: 'Teleporter', primaryType: 'shopping_mall' }, 'general')).toBe('Shopping centre');
+        expect(categoryFor({ _kind: 'Teleporter' }, null)).toBe('Place');
+    });
+    test('a dated listing still outranks anything the model says', () => {
+        expect(categoryFor({ _kind: 'Bar', eventSchedule: { startDate: '2026-09-04' } }, 'general')).toBe('Event');
+    });
+    test('normalizeCategory is forgiving about spelling, strict about membership', () => {
+        expect(normalizeCategory('  rENTAL AGENCY ')).toBe('Rental agency');
+        for (const junk of ['', null, undefined, 42, {}, 'Teleporter', 'Кафе']) expect(normalizeCategory(junk)).toBeNull();
+    });
+    test('the vocabulary covers the labels the table can emit, so the two cannot drift', () => {
+        expect(CATEGORY_VOCABULARY).toContain('Place');
+        expect(CATEGORY_VOCABULARY).toContain('Event');
+        for (const t of ['shopping_mall', 'performing_arts_theater', 'real_estate_agency', 'apartment_complex']) {
+            expect(CATEGORY_VOCABULARY).toContain(categoryFor({ primaryType: t }, null));
+        }
+    });
+});
+
+describe('parseCardsTail kinds', () => {
+    const { parseCardsTail } = require('../engine/narrator/prompts/grounded');
+
+    test('valid kinds survive, invented ones become null', () => {
+        const t = parseCardsTail('{"cards":[{"i":0,"kind":"Rental agency","blurb":"a"},{"i":1,"kind":"Teleporter","blurb":"b"}],"question":"q?"}', 2);
+        expect(t.kinds).toEqual(['Rental agency', null]);
+        expect(t.blurbs).toEqual(['a', 'b']);
+    });
+    test('a tail with no kinds at all still parses (older shape)', () => {
+        const t = parseCardsTail('{"cards":[{"i":0,"blurb":"a"}],"question":null}', 1);
+        expect(t.blurbs).toEqual(['a']);
+        expect(t.kinds).toEqual([null]);
+    });
+    test('the salvage pass recovers kinds from a truncated tail', () => {
+        const t = parseCardsTail('{"cards":[{"i":0,"kind":"Museum","blurb":"a"},{"i":1,"kind":"Bar","blur', 2);
+        expect(t.kinds[0]).toBe('Museum');
+        expect(t.blurbs[0]).toBe('a');
+    });
+});

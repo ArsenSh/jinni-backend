@@ -502,7 +502,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     const tail = splitter.finalize();
                     intro = splitter.prose.trim();
                     const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
-                    if (parsedTail) { blurbs = parsedTail.blurbs; meta.followUpQuestion = parsedTail.question; }
+                    if (parsedTail) {
+                        blurbs = parsedTail.blurbs;
+                        meta.followUpQuestion = parsedTail.question;
+                        // The model's read of what each place IS, already checked
+                        // against the vocabulary. Ride it on the candidate so it
+                        // survives hoistNarrated's reordering — categoryFor picks
+                        // it up, and a slot the model left blank falls back to the
+                        // type table on its own.
+                        (parsedTail.kinds || []).forEach((k, i) => { if (k && result.places[i]) result.places[i]._kind = k; });
+                    }
                     streamedOk = !!intro;
                 } catch (err) {
                     console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);

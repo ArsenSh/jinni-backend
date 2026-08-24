@@ -13,11 +13,16 @@ const CATEGORY_LABELS = {
     shopping: 'Shop', activities: 'Activity',
 };
 
-// Google place type → the word a traveler reads on the card. Live 2026-08-24:
-// a shopping mall, an opera house, a puppet theatre, a real-estate office and
-// an apart-hotel ALL read "Attraction", because the old rule only knew five
-// families and defaulted everything else. Google already tells us what a place
-// is — this table just stops us throwing that away.
+// Google place type → the word a traveler reads on the card.
+//
+// This table used to LEAD, and that was the v1 habit in new clothes: a human
+// enumerating the world one row at a time, forever behind it (Arsen
+// 2026-08-24 — "ai is leader not an employee, code just helps"). Naming what a
+// place IS is a judgement, and judgements belong to the model. So the model
+// names it now and code checks the answer against the vocabulary; this table
+// is the FALLBACK for turns with no model answer — a fact-line deck, a failed
+// stream, a salvaged tail. It is also where the vocabulary comes from, so the
+// two can never drift apart.
 const TYPE_LABELS = {
     // Sleep
     hotel: 'Hotel', motel: 'Hotel', resort_hotel: 'Hotel', extended_stay_hotel: 'Hotel', lodging: 'Hotel',
@@ -84,10 +89,35 @@ function labelForTypes(place) {
     return null;
 }
 
+// The words a card is allowed to wear. Derived from the tables above plus the
+// kinds that have no Google type, so adding a label in one place adds it
+// everywhere — a vocabulary, not a second list to keep in sync.
+const CATEGORY_VOCABULARY = [...new Set([
+    ...Object.values(TYPE_LABELS),
+    ...TYPE_SUFFIXES.map(([, label]) => label),
+    ...Object.values(CATEGORY_LABELS),
+    'Place',
+])].sort();
+const _VOCAB_BY_LOWER = new Map(CATEGORY_VOCABULARY.map(v => [v.toLowerCase(), v]));
+
+/** A proposed category → its canonical spelling, or null if it isn't one of ours.
+ *  This is the brake: the model may name anything, and only a name in the
+ *  vocabulary reaches a card. Nothing here rewrites a rejected answer — it is
+ *  dropped, and the deterministic fallback takes the turn. */
+function normalizeCategory(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    return _VOCAB_BY_LOWER.get(raw.trim().toLowerCase()) || null;
+}
+
 function categoryFor(place, action) {
     // A dated listing is an event whatever else it looks like — and 'Event' is
     // the exact string the frontend's isEventRec() matches on.
     if (place.eventSchedule) return 'Event';
+    // The model's read of this specific place, having seen its name and its raw
+    // types — it knows a "Rent House" is a rental agency and a caravanserai is
+    // not an attraction. Only a vocabulary word gets through.
+    const named = normalizeCategory(place._kind);
+    if (named) return named;
     const typed = labelForTypes(place);
     if (typed) return typed;
     // The turn's category is a weaker signal than the place's own type: it
@@ -217,4 +247,4 @@ function buildContentParts(prose, recCount, trailingText = null) {
     return parts;
 }
 
-module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription };
+module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription, CATEGORY_VOCABULARY, normalizeCategory };

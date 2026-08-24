@@ -4,9 +4,19 @@
 // prompt is the point (ChatV2 §2/§3) — tools/retrieval replaced the v1 pleading.
 
 /** One evidence line per place — the ONLY facts the model may assert. */
+const { CATEGORY_VOCABULARY, normalizeCategory } = require('../cards');
+
 function placeFactLine(p) {
     const bits = [
-        p.primaryType || (Array.isArray(p.types) && p.types[0]) || null,
+        // Up to three raw Google types, not one. The model is asked to NAME
+        // what this place is (see the card schema), and one coarse type is not
+        // enough to tell a rental agency from an apartment block — the live
+        // 2026-08-24 deck where a mall, an opera house and a real-estate office
+        // all came out "Attraction".
+        [p.primaryType, ...(Array.isArray(p.types) ? p.types : [])]
+            .filter(Boolean).filter((t, i, a) => a.indexOf(t) === i)
+            .filter(t => !/^(point_of_interest|establishment)$/.test(t))
+            .slice(0, 3).join('/') || null,
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
@@ -318,8 +328,17 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
-              + '{"cards": [{"i": 0, "blurb": "..."}, ...], "question": "..." | null}\n'
+              + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
+              // The card's category. Google's raw types are on each facts line
+              // and they are coarse — a rental agency, an apartment block and a
+              // mall can all arrive as one vague type. The model reads the NAME
+              // too, so it can tell them apart; code then checks the answer is
+              // a vocabulary word and ignores anything else.
+              + '\n- kind: what this place IS, chosen from this list EXACTLY as spelled, in English (never translated):\n'
+              + `  ${CATEGORY_VOCABULARY.join(', ')}.\n`
+              + '  Judge from the name AND the raw types shown. Pick the most specific one that is TRUE; '
+              + 'use "Place" only when nothing else honestly fits. Never invent a word outside the list.\n'
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
@@ -345,10 +364,14 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
     ];
 }
 
-/** Parse the post-delimiter tail: {blurbs, question} or null on junk. */
+/** Parse the post-delimiter tail: {blurbs, kinds, question} or null on junk.
+ *  `kinds` are the model's category names, already checked against the
+ *  vocabulary — an unrecognised word is dropped, never rewritten, and that
+ *  slot falls back to the deterministic table in cards.js. */
 function parseCardsTail(tail, count) {
     const text = String(tail || '');
     const blurbs = new Array(count).fill(null);
+    const kinds = new Array(count).fill(null);
     let question = null;
 
     // Pass 1 — parse the JSON, tolerating the model's most common slip
@@ -362,29 +385,31 @@ function parseCardsTail(tail, count) {
     }
     if (obj) {
         for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
-            if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
-                && typeof c.blurb === 'string' && c.blurb.trim()) {
-                blurbs[c.i] = c.blurb.trim().slice(0, 240);
-            }
+            if (!c || !Number.isInteger(c.i) || c.i < 0 || c.i >= count) continue;
+            if (typeof c.blurb === 'string' && c.blurb.trim()) blurbs[c.i] = c.blurb.trim().slice(0, 240);
+            const kind = normalizeCategory(c.kind);
+            if (kind) kinds[c.i] = kind;
         }
         if (typeof obj.question === 'string' && obj.question.trim()) {
             question = obj.question.trim().slice(0, 200);
         }
         // A parse that yielded NOTHING (valid JSON, wrong shape) still gets
         // the salvage pass below — don't return an empty win.
-        if (blurbs.some(Boolean) || question) return { blurbs, question };
+        if (blurbs.some(Boolean) || kinds.some(Boolean) || question) return { blurbs, kinds, question };
     }
 
     // Pass 2 — salvage (battery row 7, 2026-08-22): a truncated or malformed
     // tail still usually contains well-formed {"i":N,"blurb":"…"} fragments;
     // recover them individually so most cards keep their written blurbs
     // instead of ALL falling back to fact-lines.
-    const cardRe = /"i"\s*:\s*(\d+)\s*,\s*"blurb"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    const cardRe = /"i"\s*:\s*(\d+)\s*(?:,\s*"kind"\s*:\s*"([^"]*)")?\s*,\s*"blurb"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
     let hit, salvaged = false;
     while ((hit = cardRe.exec(text))) {
         const i = Number(hit[1]);
         if (i >= 0 && i < count) {
-            try { blurbs[i] = JSON.parse(`"${hit[2]}"`).trim().slice(0, 240); salvaged = true; }
+            const kind = normalizeCategory(hit[2]);
+            if (kind) kinds[i] = kind;
+            try { blurbs[i] = JSON.parse(`"${hit[3]}"`).trim().slice(0, 240); salvaged = true; }
             catch { /* bad escapes — skip this fragment */ }
         }
     }
@@ -392,7 +417,7 @@ function parseCardsTail(tail, count) {
     if (qm) {
         try { question = JSON.parse(`"${qm[1]}"`).trim().slice(0, 200); } catch { /* skip */ }
     }
-    return (salvaged || question) ? { blurbs, question } : null;
+    return (salvaged || question) ? { blurbs, kinds, question } : null;
 }
 
 /**
