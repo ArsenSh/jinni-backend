@@ -133,7 +133,7 @@ describe('selfBlock', () => {
         expect(b).toContain('travel style: luxury');
         expect(b).toContain('interests: food, history');
         expect(b).toContain('budget: 50–200 USD');
-        expect(b).toContain('destination they saved: Yerevan, Armenia');
+        expect(b).toContain('location saved in their settings (where they plan to go, NOT where they are): Yerevan, Armenia');
     });
 
     test('no saved settings reads as unknown, not as freedom to invent', () => {

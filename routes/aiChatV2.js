@@ -210,6 +210,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    restored, plus the saved one: nearby → named city → session
         //    destination → Settings destination → GPS. ──
         try {
+            // Resolved once and reused: the destination rules need it, and the
+            // prompt needs to NAME it. Telling the model it can see a position
+            // without saying which one is what produced "your location is Dubai
+            // right now" while the traveler stood in Yerevan (live 2026-08-24).
+            const hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
+            const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
+            if (intent._preferences) intent._preferences._here = hereLabel || null;
             const dest = await resolveDestination({
                 placeNames: intent.placeNames || [],
                 gps: center,
@@ -224,7 +231,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // Where we are now, so naming it is understood as "here" rather
                 // than as a move to its centroid. Same 1km grid cache the
                 // search region uses a moment later, so it costs nothing.
-                currentRegion: center ? await resolveRegion({ center }) : null,
+                currentRegion: hereRegion,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;

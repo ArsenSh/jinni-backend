@@ -202,16 +202,36 @@ describe('search radii and what Jinni admits to seeing', () => {
         expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
     });
 
-    test('with location reported, it says it sees where they are', () => {
-        const block = selfBlock({ travelStyle: 'luxury', _knowsLocation: true }, { knowsLocation: true });
-        expect(block).toMatch(/DO see where the traveler is right now/);
+    // The lie, live 2026-08-24: "are you sure that my location is Dubai?" →
+    // "Yes, your location is Dubai right now — the app reported it this turn",
+    // while the log read "User location: Yerevan, Yerevan, Armenia". Dubai was
+    // the SAVED location. The prompt said it could see a position without ever
+    // saying which one, so it reached for the only place name in front of it.
+    test('the current position is NAMED, not merely asserted to exist', () => {
+        const block = selfBlock(
+            { _here: 'Yerevan, Armenia', _savedLocation: { city: 'Dubai', countryName: 'United Arab Emirates' } },
+            { knowsLocation: true });
+        expect(block).toMatch(/WHERE THEY ARE RIGHT NOW: Yerevan, Armenia/);
+        expect(block).toMatch(/NOT the same thing as the location saved/);
     });
 
-    test('with location switched off, it says it does NOT — and points at Settings', () => {
+    test('the saved location is labelled as somewhere they plan to go', () => {
+        const block = selfBlock({ _savedLocation: { city: 'Dubai', countryName: 'United Arab Emirates' } });
+        expect(block).toMatch(/location saved in their settings \(where they plan to go, NOT where they are\): Dubai/);
+    });
+
+    test('knowing the flag but not the place counts as NOT knowing', () => {
+        // Half-knowledge is what produced the invention, so it fails closed.
+        const block = selfBlock({ travelStyle: 'luxury', _knowsLocation: true }, { knowsLocation: true });
+        expect(block).toMatch(/do NOT know where the traveler is right now/);
+    });
+
+    test('with location switched off, it says so — and points at Settings', () => {
         const block = selfBlock({ travelStyle: 'luxury' }, { knowsLocation: false });
-        expect(block).toMatch(/do NOT see where the traveler is right now/);
+        expect(block).toMatch(/do NOT know where the traveler is right now/);
+        expect(block).toMatch(/never infer it from their saved location/);
         expect(block).toMatch(/enable it in Settings/);
-        expect(block).not.toMatch(/DO see where the traveler is right now/);
+        expect(block).not.toMatch(/WHERE THEY ARE RIGHT NOW/);
     });
 
     test('budget style with no numbers is surfaced as a gap to ask about', () => {

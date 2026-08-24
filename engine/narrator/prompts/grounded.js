@@ -107,8 +107,13 @@ function travelerRows(preferences) {
     }
     if (Array.isArray(p.accessibility) && p.accessibility.length) rows.push(`accessibility needs: ${p.accessibility.join(', ')}`);
     if (Array.isArray(p.languages) && p.languages.length) rows.push(`languages: ${p.languages.join(', ')}`);
-    const d = p.destination || {};
-    if (d.city || d.countryName) rows.push(`destination they saved: ${[d.city, d.countryName].filter(Boolean).join(', ')}`);
+    // settings.location is the field the Preferences screen shows and the one
+    // Jinni writes; preferences.destination is the older twin kept in step.
+    const d = p._savedLocation || p.destination || {};
+    if (d.city || d.countryName) {
+        rows.push(`location saved in their settings (where they plan to go, NOT where they are): `
+            + `${[d.city, d.countryName].filter(Boolean).join(', ')}`);
+    }
     // The search radii, so it can answer "how far do you look?" and notice when
     // one is the reason a deck came back thin (Arsen 2026-08-24).
     const r = p._searchRadius || {};
@@ -133,11 +138,22 @@ function travelerRows(preferences) {
  */
 function selfBlock(preferences, { knowsLocation = false } = {}) {
     const rows = travelerRows(preferences);
-    const locationRow = knowsLocation
-        ? 'You DO see where the traveler is right now — the app reported it this turn.'
-        : 'You do NOT see where the traveler is right now: no position was reported this turn '
-          + '(they may have location switched off in Settings). Do not guess it, and if they ask you to '
-          + 'use their current location, say plainly that you have none and that they can enable it in Settings.';
+    // NAME the place. Saying only "you can see where they are" told it that it
+    // knew something without telling it what, so it filled the gap with the
+    // saved destination and answered "Yes, your location is Dubai right now —
+    // the app reported it this turn" while the log read Yerevan (live
+    // 2026-08-24). A capability with no value behind it is worse than no
+    // capability: it produces confident invention.
+    const here = preferences?._here || null;
+    const locationRow = (knowsLocation && here)
+        ? `WHERE THEY ARE RIGHT NOW: ${here} — the app reported this position on this turn. `
+          + 'This is their PHYSICAL position and it is NOT the same thing as the location saved in their '
+          + 'settings, which is where they plan to go. If those two differ, say so plainly rather than '
+          + 'picking one. Never state a current position other than the one on this line.'
+        : 'You do NOT know where the traveler is right now: no position was reported this turn '
+          + '(they may have location switched off in Settings). Do not guess it, never infer it from their '
+          + 'saved location, and if they ask you to use their current location, say plainly that you have '
+          + 'none and that they can enable it in Settings.';
     return SELF_KNOWLEDGE_RULE
         + 'ROWS ABOUT YOU:\n' + [...IDENTITY_ROWS, locationRow].map(r => `- ${r}`).join('\n') + '\n'
         + (rows.length
