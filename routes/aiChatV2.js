@@ -361,7 +361,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
         } else if (!center) {
-            reply = '🧪 V2: I need a location to search — enable GPS or pick a destination, then ask again.';
+            reply = 'I need a location to search — enable GPS or pick a destination, then ask again.';
             send(res, { type: 'token', content: reply });
         } else {
             const timeContext = buildTimeContext({ timezone: userTimezone, lng: center.lng });
@@ -459,11 +459,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 const where = meta.searchCity ? ` in ${meta.searchCity}` : ' for this area';
                 reply = category === 'events'
                     ? (sawEverything
-                        ? `🧪 V2: That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
-                        : `🧪 V2: I don't have any verified event listings${where} yet. I'll go looking for that city's sources — try again shortly, or ask me for places instead.`)
+                        ? `That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
+                        : `I don't have any verified event listings${where} yet. I'll go looking for that city's sources — try again shortly, or ask me for places instead.`)
                     : (sawEverything
-                        ? '🧪 V2: You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
-                        : '🧪 V2: I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
+                        ? 'You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
+                        : 'I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
                 send(res, { type: 'token', content: reply });
             } else if (
                 // ── RELEVANCE BRAKE (Arsen 2026-08-23). The deck matches
@@ -615,7 +615,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         }
     } catch (err) {
         console.error('[v2] turn failed:', err.message);
-        reply = '🧪 V2: this turn hit an error (logged server-side). Switch to V1 for real answers.';
+        reply = 'this turn hit an error (logged server-side). Switch to V1 for real answers.';
         send(res, { type: 'token', content: reply });
     }
 

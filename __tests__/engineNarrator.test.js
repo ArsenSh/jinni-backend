@@ -69,7 +69,7 @@ describe('buildChitchatMessages', () => {
     test('no venue names, but invites place asks inward and owns its history', () => {
         const msgs = buildChitchatMessages({ message: 'Hi', langName: 'English' });
         expect(msgs[0].content).toContain('Do not invent or name any specific real venue');
-        expect(msgs[0].content).toContain('never claim you cannot see or remember it');
+        expect(msgs[0].content).toContain('never claim you cannot');
         expect(msgs[0].content).toContain('Never describe yourself as unable to name places');
         expect(msgs[1].content).toBe('Hi');
     });
@@ -152,6 +152,22 @@ describe('selfBlock', () => {
         expect(b).not.toContain('interests:');
     });
 
+    // Live 2026-08-24: "a budget of $0–0 USD". Zero is the untouched default.
+    test('a zero budget is the default, not a preference', () => {
+        expect(selfBlock({ travelStyle: 'luxury', budget: { min: 0, max: 0, currency: 'USD' } })).not.toContain('budget:');
+        expect(selfBlock({ budget: { min: 50, max: 200, currency: 'USD' } })).toContain('budget: 50–200 USD');
+    });
+
+    // The rows were meant to stop invention, and instead became a script the
+    // model recited at the top of every reply — "who made you" opened with
+    // luxury/family/romantic/Yerevan before answering anything.
+    test('the rows are background, not an announcement', () => {
+        const b = selfBlock({ travelStyle: 'luxury' });
+        expect(b).toMatch(/BACKGROUND/);
+        expect(b).toMatch(/never announce them/);
+        expect(b).toMatch(/only if the CURRENT message asks/);
+    });
+
     test('identity rows name no company and no model, and forbid guessing one', () => {
         const b = selfBlock({});
         expect(b).toContain('jinni.travel');
@@ -184,6 +200,19 @@ describe('no remembered events', () => {
         expect(sys).toMatch(/Never name an event, festival, exhibition, concert, fair or conference/);
         expect(sys).toMatch(/remembered event is a guess with a date attached/);
     });
+    test('the reply opens on the question asked, not on an earlier topic', () => {
+        for (const build of [
+            () => g.buildChitchatMessages({ message: 'who made you' }),
+            () => g.buildGettingAroundMessages({ message: 'how do I get there' }),
+            () => g.buildNoMatchMessages({ message: 'x' }),
+            () => g.buildStreamedNarrationMessages({ query: 'x', places: [{ name: 'A' }] }),
+        ]) {
+            const sys = build()[0].content;
+            expect(sys).toMatch(/START with the answer to the current message/);
+            expect(sys).toMatch(/Do not preface it with the traveler's preferences/);
+        }
+    });
+
     test('and forbids softening the gap by listing one anyway', () => {
         const sys = g.buildStreamedNarrationMessages({ query: 'events', places: [] })[0].content;
         expect(sys).toMatch(/do not soften it by listing something from memory/);

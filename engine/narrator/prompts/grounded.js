@@ -50,6 +50,9 @@ const ANSWER_ONLY_CURRENT =
     'Answer ONLY the traveler\'s CURRENT message. Earlier questions in this conversation have already '
   + 'been answered — never answer them again, never summarise them, and never open with a correction or '
   + 'apology about an earlier turn unless the current message asks about it. '
+  + 'START with the answer to the current message. Do not preface it with the traveler\'s preferences, '
+  + 'with what you do or do not have, or with a recap of an earlier topic — asked "who made you", answer '
+  + 'who made you and nothing else. '
   + 'Plain sentences only: no headers, no bullet lists, no bold section titles.\n';
 
 // ── SELF-KNOWLEDGE AS EVIDENCE ───────────────────────────────────────────────
@@ -91,8 +94,10 @@ function travelerRows(preferences) {
     const rows = [];
     if (p.travelStyle) rows.push(`travel style: ${p.travelStyle}`);
     if (Array.isArray(p.interests) && p.interests.length) rows.push(`interests: ${p.interests.join(', ')}`);
-    if (p.budget && (p.budget.min != null || p.budget.max != null)) {
-        rows.push(`budget: ${[p.budget.min, p.budget.max].filter(v => v != null).join('–')} ${p.budget.currency || 'USD'}`);
+    // A zero budget is the untouched default, not a preference — it produced
+    // "a budget of $0–0 USD" in a live reply (2026-08-24). No value, no row.
+    if (p.budget && (p.budget.min > 0 || p.budget.max > 0)) {
+        rows.push(`budget: ${[p.budget.min, p.budget.max].filter(v => v > 0).join('–')} ${p.budget.currency || 'USD'}`);
     }
     if (Array.isArray(p.accessibility) && p.accessibility.length) rows.push(`accessibility needs: ${p.accessibility.join(', ')}`);
     if (Array.isArray(p.languages) && p.languages.length) rows.push(`languages: ${p.languages.join(', ')}`);
@@ -109,7 +114,9 @@ function selfBlock(preferences) {
         + (rows.length
             ? 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
               + rows.map(r => `- ${r}`).join('\n')
-              + '\nQuote these when asked, and let them shape what you suggest. Nothing else about them is known to you.\n'
+              + '\nThese are BACKGROUND. Let them quietly shape WHAT you suggest — never announce them. '
+              + 'State them back only if the CURRENT message asks what you know about the traveler. '
+              + 'Nothing else about them is known to you.\n'
             : 'ROWS ABOUT THIS TRAVELER: none — they have saved no preferences. If they ask what their '
               + 'preferences are, say plainly that none are saved yet and that they can set them in Preferences. '
               + 'Do NOT describe any taste, style or budget for them.\n');
@@ -180,7 +187,8 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
                   + 'For entry rules and safety, tell them to confirm with the official authority.\n'
                   : '')
               + 'This is a casual/meta message — answer naturally in 1–3 sentences.\n'
-              + 'You DO see the recent conversation above — reference it naturally; never claim you cannot see or remember it.\n'
+              + 'You DO see the recent conversation above — never claim you cannot. Draw on it only where THIS '
+              + 'message needs it; do not summarise or revisit it otherwise.\n'
               + 'Do not invent or name any specific real venue in THIS reply (none are verified on this turn). '
               + 'If the traveler wants places, hotels or recommendations, warmly invite them to ask directly '
               + '(e.g. "ask me for cozy bars nearby") — you WILL fetch real verified places with photo cards then. '
@@ -339,6 +347,11 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion.\n'
+              // The card path had no such rule, and it is where "I apologize for
+              // the confusion in my earlier message. You're right — I DO have
+              // verified events…" came from (live 2026-08-24). A deck turn can
+              // re-litigate an earlier turn just as easily as a prose one.
+              + ANSWER_ONLY_CURRENT
               + selfBlock(preferences)
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
