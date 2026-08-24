@@ -125,6 +125,10 @@ function _rowUrl(row) {
  *  capability itself is what made Dubai look unreadable when it was not.
  */
 const MIN_DATED_EVENTS = 3;
+// How many candidate URLs may be RENDERED before we accept the site is closed
+// to us. The plain fetcher already tried them all for free; this is the paid
+// pass, so it is short.
+const RENDER_CANDIDATES = 3;
 const { eventsFromApi: _eventsFromApi } = require('./apiEvents');
 
 // Dates as a READER sees them, for pages that publish no markup at all.
@@ -233,12 +237,25 @@ async function _fetchCityListing(host, city, modelUrl = null, deps = {}) {
     // Dubai run with no [render] line at all). One render on the best
     // candidate decides it.
     if ((deps.renderAvailable || _renderAvailable)()) {
-        const best = candidates[0];
-        const html = await (deps.renderPage || _renderPage)(best);
-        if (html && html.length > 500) {
-            console.log(`[discovery] ${host}: plain fetch got nothing, rendered ${best}`);
-            return { url: best, html };
+        // Try the candidates IN ORDER, not just the first. The first is the
+        // model's proposed URL, and the model invents paths — ticketmaster.ae's
+        // "city/206" became "city/306" on the next turn, and platinumlist's
+        // "/guide/dubai" is a 404. Rendering only that one URL meant we gave up
+        // while https://dubai.platinumlist.net/ sat untried two lines down the
+        // list (live 2026-08-24: four Dubai runs, not one real listing page).
+        // Budgeted, because each attempt is a browser page.
+        let tries = 0;
+        for (const url of candidates) {
+            if (tries >= RENDER_CANDIDATES) break;
+            tries++;
+            const html = await (deps.renderPage || _renderPage)(url);
+            if (html && html.length > 500) {
+                console.log(`[discovery] ${host}: plain fetch got nothing, rendered ${url}`
+                    + (tries > 1 ? ` (candidate ${tries})` : ''));
+                return { url, html };
+            }
         }
+        console.log(`[discovery] ${host}: ${tries} candidate URL(s) rendered nothing readable`);
     }
     return null;
 }
