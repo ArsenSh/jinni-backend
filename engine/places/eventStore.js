@@ -136,6 +136,11 @@ function aiEventToCandidate(e, center) {
         description: e.description || null,
         image: e.image || null,                       // the poster the card showed
         address: e.address || e.venueName || null,
+        // The venue, kept SEPARATE from the address. An event has no photos of
+        // its own, so "more images" has to ask about the room it happens in —
+        // asking about the event's TITLE instead returned photos of unrelated
+        // places (live 2026-08-24: Google searched for "Սև ու սպիտակ մածուն").
+        venueName: e.venueName || null,
         city: e.city || null,
         country: e.country || null,
         geometry: (e.lat != null && e.lng != null) ? { lat: e.lat, lng: e.lng } : null,

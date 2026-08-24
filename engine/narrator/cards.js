@@ -201,6 +201,9 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         // a guess, never converted. Read by the info modal; absent when the
         // page didn't say, which must keep looking absent.
         eventPrice: place.price || null,
+        // The venue an event happens in. "More images" needs it: an event has
+        // no photos of its own, and searching its title found strangers.
+        venueName: place.venueName || null,
         // Source link shown below event cards (frontend rec.sourceUrl).
         sourceUrl: place.sourceUrl || null,
         _isExpired: false,
