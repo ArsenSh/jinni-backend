@@ -19,6 +19,17 @@
 
 const { _assertPublicHttpUrl } = require('./safeFetch');
 
+// What a single-page app fetches FOR ITSELF is the cleanest data on the page.
+// platinumlist and ticketmaster.ae serve a shell and then load their listings
+// as JSON from their own API; we were parsing the shell and finding nothing
+// (live 2026-08-24). Keeping those responses is not extra access — the browser
+// asked for them to draw the page. It is just not throwing them away.
+const MAX_API_RESPONSES = 30;
+const MAX_API_BYTES = 3 * 1024 * 1024;
+const MAX_ONE_RESPONSE = 1024 * 1024;
+// Third-party chatter the page also fetches, which is none of our business.
+const API_NOISE = /analytics|gtag|googletag|doubleclick|sentry|hotjar|segment|clarity|facebook|recaptcha|cookiebot|onetrust|optimizely|intercom|cloudflareinsights/i;
+
 const RENDER_TIMEOUT_MS = 20000;
 const IDLE_MS = 1500;                 // quiet network before we take the DOM
 const MAX_CONCURRENT = 3;             // browser pages are expensive — run a few, QUEUE the rest
@@ -84,10 +95,26 @@ async function _browserOnce() {
 }
 
 /**
- * @returns {Promise<string|null>} the rendered HTML, or null for every failure
+ * @returns {Promise<{html: string|null, api: Array<{url, data}>}|null>} the
+ *   rendered page and the JSON it fetched for itself, or null for every failure
  *   — unavailable, refused, timed out, too busy. Null always means "read it the
  *   plain way", never "this page is empty".
  */
+/** Same site, roughly: an API on api.platinumlist.net belongs to
+ *  platinumlist.net. Two-part suffixes are handled for the ones travel sites
+ *  actually use; anything unusual simply fails closed and is not captured. */
+const TWO_PART = new Set(['co.uk', 'com.au', 'co.ae', 'com.tr', 'co.il', 'com.br', 'co.nz', 'com.sa']);
+function _registrable(host) {
+    const parts = String(host || '').toLowerCase().split('.');
+    if (parts.length < 3) return parts.join('.');
+    const last2 = parts.slice(-2).join('.');
+    return TWO_PART.has(last2) ? parts.slice(-3).join('.') : last2;
+}
+function _sameSite(a, b) {
+    const ra = _registrable(a);
+    return !!ra && ra === _registrable(b);
+}
+
 async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
     if (!renderAvailable()) return null;
     // WAIT for a slot rather than dropping the page. Skipping-when-busy quietly
@@ -102,6 +129,8 @@ async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
     // return while holding one, and three refused URLs would have jammed
     // rendering until the next restart.
     let context = null;
+    const api = [];
+    let apiBytes = 0;
     try {
         let safe;
         try {
@@ -121,6 +150,23 @@ async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
             viewport: { width: 1280, height: 1600 },
         });
         const page = await context.newPage();
+        // Keep the JSON the page fetches for itself, from its own site only.
+        const pageHost = new URL(String(safe)).hostname;
+        page.on('response', async (resp) => {
+            try {
+                if (api.length >= MAX_API_RESPONSES || apiBytes >= MAX_API_BYTES) return;
+                const rurl = resp.url();
+                if (API_NOISE.test(rurl)) return;
+                if (!_sameSite(new URL(rurl).hostname, pageHost)) return;
+                if (!resp.ok()) return;
+                const type = String(resp.headers()['content-type'] || '');
+                if (!/json/i.test(type)) return;
+                const body = await resp.body();
+                if (!body || body.length > MAX_ONE_RESPONSE) return;
+                apiBytes += body.length;
+                api.push({ url: rurl, data: JSON.parse(body.toString('utf8')) });
+            } catch { /* a response we cannot read is a response we do not have */ }
+        });
         // We want the DOM, not the pictures. Blocking heavy assets cuts a render
         // to roughly a third and spares the site the bandwidth.
         await page.route('**/*', (route) => {
@@ -139,8 +185,10 @@ async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
         }
         await page.waitForLoadState('networkidle', { timeout: IDLE_MS }).catch(() => { /* good enough */ });
         const html = await page.content();
-        console.log(`[render] ${String(url).slice(0, 60)} → ${html ? html.length : 0} chars`);
-        return html && html.length > 500 ? html : null;
+        console.log(`[render] ${String(url).slice(0, 60)} → ${html ? html.length : 0} chars`
+            + (api.length ? `, ${api.length} JSON response(s) from its own API` : ''));
+        if ((!html || html.length <= 500) && !api.length) return null;
+        return { html: html && html.length > 500 ? html : null, api };
     } catch (err) {
         console.warn(`[render] ${String(url).slice(0, 60)}: ${err.message}`);
         return null;
@@ -174,7 +222,14 @@ async function _waitForSlot(url) {
 // a minute and hands back the first result.
 const _recent = new Map();            // url → { promise, ts }
 
+/** The rendered HTML alone — what every existing caller wants. */
 async function renderPage(url, opts = {}) {
+    const res = await renderPageFull(url, opts);
+    return res?.html || null;
+}
+
+/** The rendered HTML AND the JSON the page fetched for itself. */
+async function renderPageFull(url, opts = {}) {
     const key = String(url);
     const now = Date.now();
     for (const [k, v] of _recent) if (now - v.ts > RECENT_TTL_MS) _recent.delete(k);
@@ -196,4 +251,4 @@ async function closeBrowser() {
     if (b) await b.close().catch(() => {});
 }
 
-module.exports = { renderPage, renderAvailable, closeBrowser };
+module.exports = { renderPage, renderPageFull, renderAvailable, closeBrowser, _sameSite, _registrable };

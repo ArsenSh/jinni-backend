@@ -7,7 +7,7 @@
 const { _assertPublicHttpUrl, _fetchListingHtml, _fetchUnavailable } = require('../utils/safeFetch');
 const { _extractLdEvents, _normalizeLdEvent } = require('./listing');
 const { EVENT_FEED_SOURCES, KNOWN_EVENT_SEARCH_DOMAINS } = require('./sources');
-const { renderPage: _renderPage, renderAvailable: _renderAvailable } = require('../utils/render');
+const { renderPage: _renderPage, renderPageFull: _renderPageFull, renderAvailable: _renderAvailable } = require('../utils/render');
 
 /* ═══════════ Automatic per-country event-source discovery ═════════════════
  * A hand-typed domain allowlist only ever covers one country. The moment the
@@ -125,6 +125,7 @@ function _rowUrl(row) {
  *  capability itself is what made Dubai look unreadable when it was not.
  */
 const MIN_DATED_EVENTS = 3;
+const { eventsFromApi: _eventsFromApi } = require('./apiEvents');
 
 // Dates as a READER sees them, for pages that publish no markup at all.
 //
@@ -365,12 +366,19 @@ async function discoverEventSources(country, city, deps = {}) {
                 // same to a plain fetch. One render decides which it was, and
                 // only ever after the cheap read has already failed.
                 if (dated < MIN_DATED_EVENTS && (deps.renderAvailable || _renderAvailable)()) {
-                    const rendered = await (deps.renderPage || _renderPage)(ok.url);
-                    const after = rendered ? _datedEventCount(rendered) : 0;
-                    if (rendered && after > dated) {
+                    const res = await (deps.renderPageFull || _renderPageFull)(ok.url);
+                    const rendered = res?.html || null;
+                    // A single-page app publishes its listing as JSON, not as
+                    // markup. The gate has to count what the EXTRACTOR will be
+                    // able to read, or it rejects sites hunt could have used.
+                    const fromApi = res?.api?.length
+                        ? (deps.eventsFromApi || _eventsFromApi)(res.api, ok.url).length : 0;
+                    if (fromApi) console.log(`[discovery] ${host}: its own API carried ${fromApi} dated event(s)`);
+                    const after = Math.max(rendered ? _datedEventCount(rendered) : 0, fromApi);
+                    if (after > dated) {
                         console.log(`[discovery] ${host}: plain HTML had ${dated} dated event(s), rendered has ${after}`);
                         dated = after;
-                        ok.html = rendered;
+                        if (rendered) ok.html = rendered;
                     } else {
                         console.log(`[discovery] ${host}: render ${rendered ? `found ${after}` : 'returned nothing'} — no better than the plain ${dated}`);
                     }

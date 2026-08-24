@@ -262,3 +262,11 @@ describe('_datedEventCount: pages with no markup', () => {
         expect(_datedEventCount(html)).toBe(3);
     });
 });
+
+// NOTE on the discovery gate and the network-capture tier: discoverEventSources
+// takes no injectable model or fetcher — it reaches for AppConfig and the
+// network directly — so the gate's API branch is not unit-tested here. What IS
+// covered: eventsFromApi itself (__tests__/engineApiEvents.test.js) and the
+// same tier end-to-end through the hunt (__tests__/engineRender.test.js, "the
+// network-capture tier"). Making the gate directly testable means giving
+// discoverEventSources the same dependency seams hunt has.

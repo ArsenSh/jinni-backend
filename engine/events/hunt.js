@@ -21,7 +21,8 @@ const { normalizePlaceName } = require('../places/matching');
 const { aiEventToCandidate } = require('../places/eventStore');
 const { haversineKm } = require('../utils/geo');
 const { pickAdapter: _pickAdapter, runAdapter: _runAdapter } = require('./adapters');
-const { renderPage: _renderPage, renderAvailable: _renderAvailable } = require('../utils/render');
+const { renderPage: _renderPage, renderPageFull: _renderPageFull, renderAvailable: _renderAvailable } = require('../utils/render');
+const { eventsFromApi: _eventsFromApi } = require('./apiEvents');
 
 const MAX_PAGES = 3;     // fetched per hunt (search fallback)
 const MAX_CURATED = 8;   // registered sources read per hunt
@@ -323,12 +324,14 @@ async function huntEvents({ city, country = null, center = null, window: win } =
             // A listing with no dated events in its plain HTML is either empty
             // or JavaScript. One render tells us which — budgeted, and only
             // after the cheap read has already come back with nothing.
+            let capturedApi = [];
             if (renderBudget > 0 && !_datedish(html) && (deps.renderAvailable || _renderAvailable)()) {
                 renderBudget--;
-                const rendered = await (deps.renderPage || _renderPage)(u.url);
-                if (rendered && _datedish(rendered)) {
+                const res = await (deps.renderPageFull || _renderPageFull)(u.url);
+                if (res?.api?.length) capturedApi = res.api;
+                if (res?.html && _datedish(res.html)) {
                     console.log(`[hunt] rendered ${String(u.url).slice(0, 60)} — the plain HTML carried no dates`);
-                    html = rendered;
+                    html = res.html;
                 }
             }
 
@@ -360,6 +363,40 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     continue;
                 }
                 console.log(`[hunt] adapter ${adapter.name} read nothing from ${String(u.url).slice(0, 60)} — falling back to the generic reader`);
+            }
+
+            // ── The JSON the page fetched FOR ITSELF. ──
+            // A single-page app's HTML is a shell; its listing arrives as JSON
+            // from its own API moments later. We rendered the shell, read no
+            // dates, and declared Dubai unreadable — while the browser had
+            // already been handed names, dates, venues, prices and posters and
+            // discarded them (live 2026-08-24). This keeps what the page was
+            // given, which is cleaner than any parse of the drawn DOM: nothing
+            // to guess, and no per-site selector to maintain.
+            if (capturedApi.length) {
+                const rows = (deps.eventsFromApi || _eventsFromApi)(capturedApi, u.url);
+                if (rows.length) {
+                    // Rows that already carry venue and price skip this; the
+                    // rest get their event page, exactly as an adapter's do.
+                    await _followDetails(rows, { fetchHtml, pageUrl: u.url, timeoutMs: deps.timeoutMs });
+                    let kept = 0;
+                    for (const e of rows) {
+                        if (e.startDate > wEnd) continue;
+                        if ((e.endDate || e.startDate) < wStart) continue;
+                        found.push({ ...e, sourceUrl: e.url || u.url, _tier: 'listing' });
+                        kept++;
+                    }
+                    if (kept) {
+                        console.log(`[hunt] api-tier: ${kept} event(s) from ${String(u.url).slice(0, 60)}'s own API`
+                            + ` (${capturedApi.length} response(s), ${rows.length} dated row(s))`);
+                        if (u._sourceId) sourceYield.set(String(u._sourceId), found.length - beforeCount);
+                        if (u._discovered) newSources.push({ ...u._discovered, count: found.length - beforeCount });
+                        if (found.length >= MAX_STORE) break;
+                        continue;
+                    }
+                }
+                console.log(`[hunt] api-tier: ${capturedApi.length} response(s) from `
+                    + `${String(u.url).slice(0, 50)} held no dated events — falling through`);
             }
 
             const nodes = _extractLdEvents(html) || [];
