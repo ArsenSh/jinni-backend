@@ -247,6 +247,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     weatherNote(weather) || null].filter(Boolean).join('; ') || null,
                 canQuoteFares: flightsEnabled(),
                 localFacts: gaFacts,
+                preferences: intent._preferences,
             });
             if (gaFacts.length) meta.localFacts = gaFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             let toolCalls = 0;
@@ -284,7 +285,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
         } else if (namedCard) {
             const loop = await runToolLoop({
-                messages: buildToolAnswerMessages({ message, langName, history: recentTurns }),
+                messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
                 tools: [PLACE_DETAILS_TOOL],
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                 maxTokens: 400,
@@ -315,7 +316,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 : [];
             if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             const out = await narrator.stream({
-                messages: buildChitchatMessages({ message, langName, history: recentTurns, localFacts: infoFacts }),
+                messages: buildChitchatMessages({ message, langName, history: recentTurns, localFacts: infoFacts, preferences: intent._preferences }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 200,
                 realStream: true,
@@ -443,6 +444,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     messages: buildNoMatchMessages({
                         message, langName, cityLabel, history: recentTurns,
                         unmatched: result.provenance.unmatched,
+                        preferences: intent._preferences,
                     }),
                     onToken: (c) => send(res, { type: 'token', content: c }),
                     maxTokens: 220,
@@ -477,7 +479,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     })
                     : [];
                 if (placeFacts.length) meta.localFacts = placeFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
-                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns, localFacts: placeFacts };
+                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns, localFacts: placeFacts, preferences: intent._preferences };
                 let intro = '', blurbs = [], streamedOk = false;
                 try {
                     const splitter = new DelimitedSplitter((text) => send(res, { type: 'token', content: text }));

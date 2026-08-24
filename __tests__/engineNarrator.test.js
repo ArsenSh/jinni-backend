@@ -118,3 +118,50 @@ describe('narrator.stream (contract, fake provider)', () => {
         await expect(narrator.stream({ messages: [], tools: [{}] })).rejects.toThrow(/tool-use loop not implemented/);
     });
 });
+
+// ── Self-knowledge as evidence (Arsen 2026-08-24) ────────────────────────────
+// Jinni claimed the traveler liked "cozy, low-key spots" while their saved
+// travelStyle was 'luxury', and announced it was "made by Withlocals". Both
+// holes are now filled with rows, and an empty row set must read as "unknown"
+// rather than licence to improvise.
+describe('selfBlock', () => {
+    const { selfBlock, buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+
+    test('saved settings become quotable rows', () => {
+        const b = selfBlock({ travelStyle: 'luxury', interests: ['food', 'history'],
+            budget: { min: 50, max: 200, currency: 'USD' }, destination: { city: 'Yerevan', countryName: 'Armenia' } });
+        expect(b).toContain('travel style: luxury');
+        expect(b).toContain('interests: food, history');
+        expect(b).toContain('budget: 50–200 USD');
+        expect(b).toContain('destination they saved: Yerevan, Armenia');
+    });
+
+    test('no saved settings reads as unknown, not as freedom to invent', () => {
+        for (const empty of [null, undefined, {}, { interests: [], languages: [] }]) {
+            const b = selfBlock(empty);
+            expect(b).toContain('none — they have saved no preferences');
+            expect(b).toContain('Do NOT describe any taste, style or budget');
+            expect(b).not.toContain('travel style:');
+        }
+    });
+
+    test('a field with no value contributes no row', () => {
+        const b = selfBlock({ travelStyle: 'luxury' });
+        expect(b).toContain('travel style: luxury');
+        expect(b).not.toContain('budget:');
+        expect(b).not.toContain('interests:');
+    });
+
+    test('identity rows name no company and no model, and forbid guessing one', () => {
+        const b = selfBlock({});
+        expect(b).toContain('jinni.travel');
+        expect(b).toMatch(/never name a company or a model/i);
+        expect(b).not.toMatch(/withlocals|anthropic|openai|claude|deepseek|gpt/i);
+    });
+
+    test('the block reaches the chit-chat prompt, where the invention happened', () => {
+        const sys = buildChitchatMessages({ message: 'what are my preferences?', preferences: { travelStyle: 'luxury' } })[0].content;
+        expect(sys).toContain('travel style: luxury');
+        expect(sys).toContain('ROWS ABOUT YOU');
+    });
+});

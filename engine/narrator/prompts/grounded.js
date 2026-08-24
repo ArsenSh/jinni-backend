@@ -42,6 +42,69 @@ const ANSWER_ONLY_CURRENT =
   + 'apology about an earlier turn unless the current message asks about it. '
   + 'Plain sentences only: no headers, no bullet lists, no bold section titles.\n';
 
+// ── SELF-KNOWLEDGE AS EVIDENCE ───────────────────────────────────────────────
+//
+// Live 2026-08-24. Asked "what are my preferences?" three times, Jinni said
+// "cozy, low-key spots, local food, avoiding touristy crowds" — while the
+// stored travelStyle was 'luxury' — then two turns later denied having any
+// access at all. It also announced it was "made by Withlocals", a company with
+// no connection to this app.
+//
+// Neither was a reasoning failure. The preferences were loaded the whole time
+// (they steer ranking; `style=luxury` is in every retrieval log line) and were
+// simply never shown to the narrator. Withholding real data does not make a
+// model safer — it makes it guess, and a guess is the thing we are trying to
+// prevent. So the traveler's saved settings and Jinni's own identity become
+// ROWS, and a claim with no row behind it is forbidden.
+//
+// Only what is verifiable belongs here. Which model answers a turn varies per
+// request, and the company behind the app is not this file's to assert — so
+// neither is listed, and "I don't know" is the required answer for both.
+const IDENTITY_ROWS = [
+    'You are Jinni, the travel companion inside the Jinni app (jinni.travel).',
+    'You find real, verified places and events near the traveler, and answer practical travel questions from sourced notes.',
+    'You DO see the current conversation. You do NOT carry memory between separate chats.',
+];
+
+const SELF_KNOWLEDGE_RULE =
+    'ABOUT YOURSELF AND THE TRAVELER you may state ONLY what the rows below say. '
+  + 'Anything absent from them you genuinely do not know — which AI model answers you, which company '
+  + 'built or owns the app, the traveler\'s tastes, budget, home city or past trips. Say you don\'t know '
+  + 'in one short sentence and move on. Never name a company or a model, never describe a preference '
+  + 'that is not listed, and never claim to see settings that are not listed.\n';
+
+/** The traveler's SAVED settings, one row per field that actually holds a value.
+ *  Absent fields stay absent on purpose: a missing row means "unknown", which
+ *  the rule above turns into an honest "I don't know" instead of an invention. */
+function travelerRows(preferences) {
+    const p = preferences || {};
+    const rows = [];
+    if (p.travelStyle) rows.push(`travel style: ${p.travelStyle}`);
+    if (Array.isArray(p.interests) && p.interests.length) rows.push(`interests: ${p.interests.join(', ')}`);
+    if (p.budget && (p.budget.min != null || p.budget.max != null)) {
+        rows.push(`budget: ${[p.budget.min, p.budget.max].filter(v => v != null).join('–')} ${p.budget.currency || 'USD'}`);
+    }
+    if (Array.isArray(p.accessibility) && p.accessibility.length) rows.push(`accessibility needs: ${p.accessibility.join(', ')}`);
+    if (Array.isArray(p.languages) && p.languages.length) rows.push(`languages: ${p.languages.join(', ')}`);
+    const d = p.destination || {};
+    if (d.city || d.countryName) rows.push(`destination they saved: ${[d.city, d.countryName].filter(Boolean).join(', ')}`);
+    return rows;
+}
+
+/** Identity rows + traveler rows + the no-invention rule, as one prompt block. */
+function selfBlock(preferences) {
+    const rows = travelerRows(preferences);
+    return SELF_KNOWLEDGE_RULE
+        + 'ROWS ABOUT YOU:\n' + IDENTITY_ROWS.map(r => `- ${r}`).join('\n') + '\n'
+        + (rows.length
+            ? 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
+              + rows.map(r => `- ${r}`).join('\n')
+              + '\nQuote these when asked, and let them shape what you suggest. Nothing else about them is known to you.\n'
+            : 'ROWS ABOUT THIS TRAVELER: none — they have saved no preferences. If they ask what their '
+              + 'preferences are, say plainly that none are saved yet and that they can set them in Preferences. '
+              + 'Do NOT describe any taste, style or budget for them.\n');
+}
+
 function historyTurns(history) {
     return (history || [])
         .filter(t => t && t.text)
@@ -80,13 +143,14 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
 }
 
 /** Non-place turns: just be Jinni — and never name specific venues (none are verified). */
-function buildChitchatMessages({ message, langName = 'English', history = [], localFacts = [] }) {
+function buildChitchatMessages({ message, langName = 'English', history = [], localFacts = [], preferences = null }) {
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
+              + selfBlock(preferences)
               + (localFacts.length
                   ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
                   + 'answer from them, attribute the source, and never contradict them from memory. '
@@ -127,13 +191,14 @@ function localFactsBlock(facts = [], maxChars = 4000) {
         }).join('\n\n') + '\n';
 }
 
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [] }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null }) {
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
+              + selfBlock(preferences)
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
@@ -162,13 +227,14 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
  * how "book a taxi" became six museums — so we say so instead, in prose, with
  * no cards attached.
  */
-function buildNoMatchMessages({ message, langName = 'English', unmatched = [], cityLabel = null, history = [] }) {
+function buildNoMatchMessages({ message, langName = 'English', unmatched = [], cityLabel = null, history = [], preferences = null }) {
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
+              + selfBlock(preferences)
               + 'You searched your verified data' + (cityLabel ? ` for ${cityLabel}` : '')
               + ' and found NOTHING matching what the traveler asked'
               + (unmatched.length ? ` (nothing for: ${unmatched.slice(0, 4).join(', ')})` : '') + '.\n'
@@ -241,13 +307,14 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [] }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion.\n'
+              + selfBlock(preferences)
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
@@ -334,13 +401,14 @@ function parseCardsTail(tail, count) {
  * made structural: null = "not listed", point inward (the card's More button),
  * never outward to Google.
  */
-function buildToolAnswerMessages({ message, langName = 'English', history = [] }) {
+function buildToolAnswerMessages({ message, langName = 'English', history = [], preferences = null }) {
     return [
         {
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
+              + selfBlock(preferences)
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
               + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
@@ -351,4 +419,4 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [] }
     ];
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns };
+module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
