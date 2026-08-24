@@ -42,6 +42,57 @@ function _fmtWindow(win) {
 // was an address fragment) — letters, spaces and simple punctuation only.
 const _CITY_RE = /^[\p{L}][\p{L}\s.'’-]{1,40}$/u;
 
+/** Follow each event to ITS OWN page for the facts a listing does not carry.
+ *
+ *  Listing pages carry teasers; the event page carries the machine-readable
+ *  truth — exact start, ticket price, venue, full poster. Proven live
+ *  2026-08-24: tomsarkgh's listing exposes NO structured data and its event
+ *  page exposes all of it. Site-agnostic, because that is simply where
+ *  publishers put it.
+ *
+ *  Shared by the model-read tier AND by adapters: an adapter reads a listing,
+ *  so without this its events would arrive with no venue (and therefore no map
+ *  pin) and no price. Budgeted, and any failure leaves the listing data intact.
+ */
+// A listing thumbnail makes a poor card image (Arsen 2026-08-23: "images
+// little bad quality than in that web") — tomsarkgh serves 260x146 crops in
+// the list and the full picture as og:image on the event page. So a
+// thumbnail-looking URL counts as "no good image yet".
+const _looksThumbnail = (u) => /thumbnail|\/thumb|_thumb|\b\d{2,4}[x_]\d{2,4}\b|small|preview/i.test(String(u || ''));
+
+async function _followDetails(rows, { fetchHtml, pageUrl, timeoutMs = 10000, budget = 6 } = {}) {
+    const { _structuredFromHtml } = require('../search/readPage');
+    for (const e of rows) {
+        const wantPoster = !e.image || _looksThumbnail(e.image);
+        const wantFacts = !e.price || !e.startDate || !e.venueName
+            || (e.startDate.getUTCHours() === 0 && e.startDate.getUTCMinutes() === 0);
+        if (!(wantPoster || wantFacts) || !e.url || e.url === pageUrl || budget <= 0) continue;
+        budget--;
+        try {
+            const dHtml = await fetchHtml(e.url, { timeoutMs });
+            if (!dHtml) continue;
+            if (wantPoster) {
+                const og = (dHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1];
+                if (og && /^https:\/\//i.test(og)) e.image = og;
+            }
+            const day = e.startDate.toISOString().slice(0, 10);
+            const all = _structuredFromHtml(dHtml);
+            const hit = all.find(o => o.day === day) || all[0];
+            if (!hit) continue;
+            const noTime = e.startDate.getUTCHours() === 0 && e.startDate.getUTCMinutes() === 0;
+            if (hit.time && noTime) {
+                e.startDate = new Date(`${day}T${hit.time}:00Z`);
+                console.log(`[hunt] detail page gave "${String(e.name).slice(0, 40)}" an exact start ${hit.time}`);
+            }
+            if (hit.price && !e.price) e.price = hit.price;
+            // A truncated venue is worse than no venue: it blocked the full
+            // name the detail page was offering.
+            if (hit.venue && (!e.venueName || _cleanVenue(e.venueName).truncated)) e.venueName = hit.venue;
+        } catch { /* the listing data still stands */ }
+    }
+    return rows;
+}
+
 /** A venue name as the LISTING GRID showed it — which is often cut short.
  *
  *  tomsarkgh clips long venue names in its cards, the model faithfully copies
@@ -269,6 +320,10 @@ async function huntEvents({ city, country = null, center = null, window: win } =
             const adapter = (deps.pickAdapter || _pickAdapter)(u.url, u._adapter || null);
             if (adapter) {
                 const rows = (deps.runAdapter || _runAdapter)(adapter, html, { url: u.url, city });
+                // An adapter reads a LISTING, so its events still need the
+                // event page for venue, price and the full poster — without
+                // this they would arrive unpinnable and priceless.
+                if (rows.length) await _followDetails(rows, { fetchHtml, pageUrl: u.url, timeoutMs: deps.timeoutMs });
                 let kept = 0;
                 for (const e of rows) {
                     if (e.startDate > wEnd) continue;
@@ -313,52 +368,8 @@ async function huntEvents({ city, country = null, center = null, window: win } =
                     // thumbnails — spend a few extra fetches on events whose
                     // own link the model matched but whose image it couldn't
                     // (allevents.in live 2026-08-23: 7 events, 0 posters).
-                    // A listing thumbnail makes a poor card image (Arsen
-                    // 2026-08-23: "images little bad quality than in that web")
-                    // — tomsarkgh serves 260x146 crops in the list and the full
-                    // picture as og:image on the event page. So a
-                    // thumbnail-looking URL counts as "no good image yet".
-                    const looksThumbnail = (u) => /thumbnail|\/thumb|_thumb|\b\d{2,4}[x_]\d{2,4}\b|small|preview/i.test(String(u || ''));
-                    const { _structuredFromHtml } = require('../search/readPage');
-                    // FOLLOW THE EVENT TO ITS OWN PAGE. Listing pages carry
-                    // teasers; the event page carries the machine-readable
-                    // truth — start time, ticket price, venue, full poster.
-                    // Proven live 2026-08-24: tomsarkgh's listing exposes NO
-                    // structured data, its event page exposes all of it. This
-                    // is site-agnostic: it is where publishers put it.
-                    let detailBudget = 6;
-                    for (const e of extracted) {
-                        const wantPoster = !e.image || looksThumbnail(e.image);
-                        const wantFacts = !e.price || !e.startDate
-                            || (e.startDate.getUTCHours() === 0 && e.startDate.getUTCMinutes() === 0);
-                        if ((wantPoster || wantFacts) && e.url && e.url !== page.url && detailBudget > 0) {
-                            detailBudget--;
-                            try {
-                                const dHtml = await fetchHtml(e.url, { timeoutMs: deps.timeoutMs || 10000 });
-                                if (dHtml) {
-                                    if (wantPoster) {
-                                        const og = (dHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || [])[1];
-                                        if (og && /^https:\/\//i.test(og)) e.image = og;
-                                    }
-                                    const day = e.startDate.toISOString().slice(0, 10);
-                                    const hit = _structuredFromHtml(dHtml).find(o => o.day === day)
-                                        || _structuredFromHtml(dHtml)[0];
-                                    if (hit) {
-                                        if (hit.time && wantFacts) {
-                                            e.startDate = new Date(`${day}T${hit.time}:00Z`);
-                                            console.log(`[hunt] detail page gave "${String(e.name).slice(0, 40)}" an exact start ${hit.time}`);
-                                        }
-                                        if (hit.price && !e.price) e.price = hit.price;
-                                        // A truncated venue is worse than no
-                                        // venue: it blocked the full name the
-                                        // detail page was offering.
-                                        if (hit.venue && (!e.venueName || _cleanVenue(e.venueName).truncated)) e.venueName = hit.venue;
-                                    }
-                                }
-                            } catch { /* the listing data still stands */ }
-                        }
-                        found.push({ ...e, sourceUrl: e.url || u.url });
-                    }
+                    await _followDetails(extracted, { fetchHtml, pageUrl: page.url, timeoutMs: deps.timeoutMs });
+                    for (const e of extracted) found.push({ ...e, sourceUrl: e.url || u.url });
                     // Log the 0 case too — silence here is indistinguishable
                     // from "reader not deployed" (live lesson 2026-08-23).
                     console.log(`[hunt] extracted-tier: +${extracted.length} model-read event(s) from ${String(u.url).slice(0, 60)} (${page.text.length} chars read)`);

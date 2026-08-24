@@ -87,3 +87,45 @@ describe('the registry', () => {
         expect(listAdapters()).toEqual(expect.arrayContaining([{ name: 'allevents', hosts: ['allevents.in'] }]));
     });
 });
+
+// ── Adapter rows still get the event page (Arsen 2026-08-24) ─────────────────
+// An adapter reads a LISTING. Without following each event to its own page its
+// cards would arrive with no venue — and therefore no map pin — and no price.
+describe('adapter rows are enriched like any other', () => {
+    const { huntEvents } = require('../engine/events/hunt');
+    const WINDOW = { start: '2026-09-01T00:00:00Z', end: '2026-09-07T00:00:00Z', label: 'w' };
+
+    const detail = `<html>
+      <meta property="og:image" content="https://cdn-az.allevents.in/full.jpg">
+      <div itemscope itemtype="http://schema.org/Event">
+        <meta itemprop="startDate" content="2026-09-04 21:00">
+        <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="price" content="3000"><meta itemprop="priceCurrency" content="AMD">
+        </div>
+        <div itemprop="location" itemscope itemtype="http://schema.org/Place">
+          <span itemprop="name">Bak75</span>
+        </div>
+      </div></html>`;
+
+    const listing = `<ul><li class="event-card" data-link="https://allevents.in/yerevan/x/1" data-name="Test Event">
+        <div class="banner-cont" style="background:url(https://cdn-ip.allevents.in/s/rs:fill:500:250/thumb.avif);"></div>
+        <div class="date"> Fri, 04 Sep, 2026 </div></li></ul>`;
+
+    test('venue, price and start come from the event page', async () => {
+        const stored = [];
+        await huntEvents({ city: 'Yerevan', country: 'Armenia', window: WINDOW }, {
+            EventSource: { find: () => ({ select: () => ({ lean: async () => [] }) }), bulkWrite: async () => {} },
+            AiFoundEvent: { bulkWrite: async (ops) => stored.push(...ops) },
+            discoverEventSources: async () => ({ feeds: [{ label: 'allevents.in', url: 'https://allevents.in/yerevan/all' }] }),
+            searchWeb: async () => [],
+            findPlaces: async () => [],
+            fetchHtml: async (u) => (u.includes('/yerevan/all') ? listing : detail),
+        });
+        const row = stored[0].updateOne.update.$setOnInsert;
+        expect(row.name).toBe('Test Event');
+        expect(row.venueName).toBe('Bak75');
+        expect(row.price).toBe('3000 AMD');
+        expect(new Date(row.startDate).toISOString()).toBe('2026-09-04T21:00:00.000Z');
+        expect(row.image).toBe('https://cdn-az.allevents.in/full.jpg');
+    });
+});
