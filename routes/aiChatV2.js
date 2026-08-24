@@ -32,6 +32,7 @@ const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../eng
 const { flightsEnabled } = require('../engine/travel/flights');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
+const { resolveDestination } = require('../engine/context/destination');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -121,11 +122,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    Google fallback tier, no cards yet, pseudo-streamed prose. ──
     let center = (location && location.lat != null && location.lng != null)
         ? { lat: Number(location.lat), lng: Number(location.lng) } : null;
-    // Session-destination fallback (v1's rule): a Paphos conversation stays
-    // centered on Paphos even when this turn names no place and sends no GPS.
-    if (!center && sessionPeek?.activeDestination?.latitude != null && sessionPeek?.activeDestination?.longitude != null) {
-        center = { lat: sessionPeek.activeDestination.latitude, lng: sessionPeek.activeDestination.longitude };
-    }
+    // `center` is the raw GPS reading and nothing else. The chosen destination
+    // used to be folded in here as a fallback, which is what made it LOSE to
+    // GPS; resolveDestination now settles the precedence once, below, after
+    // intent has told us whether this message names a city.
 
     let reply;
     let recommendations = [];
@@ -163,6 +163,34 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
         }
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
+
+        // ── WHERE we are searching. Until now a chosen destination was only a
+        //    fallback for missing GPS, and a city named in the message was
+        //    never geocoded at all — so "events in dubai" searched Yerevan and
+        //    returned Armenian theatre (live 2026-08-24). v1's precedence,
+        //    restored: nearby → named city → session destination → GPS. ──
+        try {
+            const dest = await resolveDestination({
+                placeNames: intent.placeNames || [],
+                gps: center,
+                sessionDestination: sessionPeek?.activeDestination || null,
+                nearbyMode,
+            }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
+            if (dest.center) center = dest.center;
+            if (dest.city) meta.searchCity = dest.city;
+            if (dest.source !== 'gps') {
+                console.log(`[v2] centre=${dest.source}${dest.city ? ` "${dest.city}"` : ''} (${center?.lat?.toFixed(3)},${center?.lng?.toFixed(3)})`);
+            }
+            // Remember a newly named city so the NEXT turn stays there without
+            // paying for another geocode (v1's activeDestination contract).
+            if (dest.remember && sessionId) {
+                require('../models/ChatSession')
+                    .updateOne({ _id: sessionId }, { $set: { activeDestination: dest.remember } })
+                    .catch(err => console.warn('[v2] activeDestination save failed:', err.message));
+            }
+        } catch (err) {
+            console.warn('[v2] destination resolve failed, keeping GPS centre:', err.message);
+        }
 
         // ── Admin-config parity (Arsen 2026-08-22: "we need create v2 same
         //    way so admin will be able configure if needed"): the SAME
