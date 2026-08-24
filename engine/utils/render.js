@@ -21,7 +21,9 @@ const { _assertPublicHttpUrl } = require('./safeFetch');
 
 const RENDER_TIMEOUT_MS = 20000;
 const IDLE_MS = 1500;                 // quiet network before we take the DOM
-const MAX_CONCURRENT = 2;             // a browser page is expensive; skip the rest
+const MAX_CONCURRENT = 3;             // browser pages are expensive — run a few, QUEUE the rest
+const QUEUE_WAIT_MS = 25000;          // how long a page may wait for a free slot
+const RECENT_TTL_MS = 60000;          // one URL, one render per minute
 
 let _playwright;                      // undefined = not tried, null = unavailable
 let _browser = null;
@@ -86,26 +88,31 @@ async function _browserOnce() {
  *   — unavailable, refused, timed out, too busy. Null always means "read it the
  *   plain way", never "this page is empty".
  */
-async function renderPage(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
+async function _renderOnce(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
     if (!renderAvailable()) return null;
-    if (_inFlight >= MAX_CONCURRENT) {
-        console.log(`[render] busy — skipping ${String(url).slice(0, 60)}`);
-        return null;
-    }
-    let safe;
-    try {
-        safe = await _assertPublicHttpUrl(url);       // the same guard as any fetch
-    } catch (err) {
-        console.warn(`[render] refused ${String(url).slice(0, 60)}: ${err.message}`);
-        return null;
-    }
-    const browser = await _browserOnce();
-    if (!browser) return null;
-    console.log(`[render] loading ${String(url).slice(0, 70)}`);
-
-    _inFlight++;
+    // WAIT for a slot rather than dropping the page. Skipping-when-busy quietly
+    // threw away the two sites most likely to have the answer: five Dubai
+    // candidates were probed at once, visitdubai and timeoutdubai took both
+    // slots, and ticketmaster.ae and platinumlist.net were discarded unread
+    // (live 2026-08-24). A concurrency limit is there to pace work, not to lose
+    // it. The wait is bounded, so a jammed browser still degrades to plain
+    // fetch instead of hanging the turn.
+    if (!(await _waitForSlot(url))) return null;
+    // EVERY path from here releases the slot. Two early returns below used to
+    // return while holding one, and three refused URLs would have jammed
+    // rendering until the next restart.
     let context = null;
     try {
+        let safe;
+        try {
+            safe = await _assertPublicHttpUrl(url);   // the same guard as any fetch
+        } catch (err) {
+            console.warn(`[render] refused ${String(url).slice(0, 60)}: ${err.message}`);
+            return null;
+        }
+        const browser = await _browserOnce();
+        if (!browser) return null;
+        console.log(`[render] loading ${String(url).slice(0, 70)}`);
         context = await browser.newContext({
             // Identify ourselves, exactly as the plain fetcher does. A site that
             // wants to refuse Jinni must be able to recognise Jinni.
@@ -134,10 +141,49 @@ async function renderPage(url, { timeoutMs = RENDER_TIMEOUT_MS } = {}) {
     }
 }
 
+/** Wait for a free slot, claiming it on success. */
+async function _waitForSlot(url) {
+    const deadline = Date.now() + QUEUE_WAIT_MS;
+    let waited = false;
+    while (_inFlight >= MAX_CONCURRENT) {
+        if (Date.now() > deadline) {
+            console.log(`[render] gave up waiting for a slot — ${String(url).slice(0, 60)}`);
+            return false;
+        }
+        waited = true;
+        await new Promise(r => setTimeout(r, 200));
+    }
+    if (waited) console.log(`[render] queued → running ${String(url).slice(0, 60)}`);
+    _inFlight++;
+    return true;
+}
+
+// One URL, one render. Discovery probes a page and then escalates the same page
+// a moment later, so timeoutdubai was fetched by the browser TWICE in one turn
+// — burning a slot that ticketmaster.ae needed (live 2026-08-24). Callers must
+// not have to coordinate; the module refuses to load the same URL twice inside
+// a minute and hands back the first result.
+const _recent = new Map();            // url → { promise, ts }
+
+async function renderPage(url, opts = {}) {
+    const key = String(url);
+    const now = Date.now();
+    for (const [k, v] of _recent) if (now - v.ts > RECENT_TTL_MS) _recent.delete(k);
+    const hit = _recent.get(key);
+    if (hit) {
+        console.log(`[render] already loading/loaded ${key.slice(0, 60)} — reusing it`);
+        return hit.promise;
+    }
+    const promise = _renderOnce(url, opts);
+    _recent.set(key, { promise, ts: now });
+    return promise;
+}
+
 /** For tests and graceful shutdown. */
 async function closeBrowser() {
     const b = _browser;
     _browser = null;
+    _recent.clear();
     if (b) await b.close().catch(() => {});
 }
 
