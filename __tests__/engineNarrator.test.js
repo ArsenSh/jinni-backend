@@ -198,7 +198,7 @@ describe('no remembered events', () => {
     test.each(builders)('%s forbids naming an unlisted event', (_name, build) => {
         const sys = build()[0].content;
         expect(sys).toMatch(/Never name an event, festival, exhibition, concert, fair or conference/);
-        expect(sys).toMatch(/remembered event is a guess with a date attached/);
+        expect(sys).toMatch(/a date nobody verified is a guess a traveler can act on/);
     });
     test('the reply opens on the question asked, not on an earlier topic', () => {
         for (const build of [
@@ -215,6 +215,26 @@ describe('no remembered events', () => {
 
     test('and forbids softening the gap by listing one anyway', () => {
         const sys = g.buildStreamedNarrationMessages({ query: 'events', places: [] })[0].content;
-        expect(sys).toMatch(/do not soften it by listing something from memory/);
+        expect(sys).toMatch(/do not soften it by listing something anyway/);
+    });
+});
+
+// ── Evidence is the list, not the search (Arsen 2026-08-24) ──────────────────
+// The narrator was given its own web search on card turns, so it announced
+// "Dubai Fashion Week runs September 1–5 at Dubai Design District" — a real
+// sounding claim with a date, on no card, checked by nobody. The hunt already
+// searches, and everything it finds becomes a card; the narrator narrates.
+describe('evidence is the list', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+
+    test.each([
+        ['streamed narration', () => g.buildStreamedNarrationMessages({ query: 'events', places: [{ name: 'A' }] })],
+        ['chit-chat', () => g.buildChitchatMessages({ message: 'events?' })],
+        ['no-match', () => g.buildNoMatchMessages({ message: 'events?' })],
+    ])('%s says what evidence is, and excludes search', (_n, build) => {
+        const sys = build()[0].content;
+        expect(sys).toMatch(/EVIDENCE means the listed items in this prompt and nothing else/);
+        expect(sys).toMatch(/not anything you find by searching/);
+        expect(sys).toMatch(/a date nobody verified is a guess a traveler can act on/);
     });
 });

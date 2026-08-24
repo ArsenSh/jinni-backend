@@ -536,7 +536,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         onToken: (d) => splitter.feed(d),
                         model: providerName,
                         modelName,
-                        webSearch,
+                        // NO web search for the narrator. The hunt already did
+                        // the searching, and everything it found became a CARD.
+                        // Giving the narrator its own search let a fact reach a
+                        // traveler without ever passing the card pipeline: live
+                        // 2026-08-24 it announced "Dubai Fashion Week runs
+                        // September 1–5 at Dubai Design District" — a real
+                        // sounding claim with a date, on no card, checked by
+                        // nothing. The narrator narrates evidence; it does not
+                        // discover.
                     });
                     actualTokens += (streamOut.usage?.in || 0) + (streamOut.usage?.out || 0);
                     const tail = splitter.finalize();
@@ -557,7 +565,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);
                 }
                 if (!streamedOk) {
-                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, modelName, webSearch });
+                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, modelName });
                     actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
@@ -617,7 +625,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
             }
         }
     } catch (err) {

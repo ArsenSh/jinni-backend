@@ -130,9 +130,11 @@ function selfBlock(preferences) {
 // less, because it buys them credibility. Naming an event is naming a date.
 const NO_REMEMBERED_EVENTS =
     'Never name an event, festival, exhibition, concert, fair or conference that is not in the evidence '
-  + 'above — not even one you are confident is real, and not as an aside or an example. A remembered '
-  + 'event is a guess with a date attached. If you hold nothing for the place or period asked, say that '
-  + 'plainly and stop there; do not soften it by listing something from memory.\n';
+  + 'above — not even one you are confident is real, and not as an aside or an example. EVIDENCE means '
+  + 'the listed items in this prompt and nothing else: not your memory, and not anything you find by '
+  + 'searching, which has been checked by nobody. A named event is a named DATE, and a date nobody '
+  + 'verified is a guess a traveler can act on. If you hold nothing for the place or period asked, say '
+  + 'that plainly and stop there; do not soften it by listing something anyway.\n';
 
 function historyTurns(history) {
     return (history || [])
