@@ -61,3 +61,56 @@ describe('history in prompts', () => {
         expect(buildChitchatMessages({ message: 'hi' })).toHaveLength(2);
     });
 });
+
+// ── Which ask a follow-up continues (Arsen 2026-08-24) ───────────────────────
+// "other interesting events please, which you think will be better to go with
+// girlfriend" searched for "then if you see what are my preferences" — the
+// refill path reused the literal previous message, and the message in between
+// was chit-chat. A follow-up is about the deck on screen, so only a turn that
+// produced cards can be the ask it continues.
+describe('lastCardAsk', () => {
+    const { lastCardAsk } = require('../engine/context/session');
+    const ask = (text) => ({ sender: 'user', text });
+    const deck = (...names) => ({ sender: 'ai', text: 'here you go', recommendations: names.map(n => ({ name: n, placeId: `p-${n}` })) });
+    const said = (text) => ({ sender: 'ai', text });
+
+    test('the live failure: chit-chat between the deck and the follow-up', () => {
+        expect(lastCardAsk([
+            ask('events next week'),
+            deck('Coca-Cola Fest', 'Symphonic Hayko'),
+            ask('do you see my preferences?'),
+            said('I can see your saved preferences.'),
+            ask('then if you see what are my preferences?'),
+            said('You like cozy, low-key spots.'),
+        ])).toBe('events next week');
+    });
+
+    test('the most recent deck wins when several asks produced one', () => {
+        expect(lastCardAsk([
+            ask('events next week'), deck('Coca-Cola Fest'),
+            ask('cozy bars nearby'), deck('Bohem'),
+        ])).toBe('cozy bars nearby');
+    });
+
+    test('an AI turn with an empty deck is not an answer', () => {
+        expect(lastCardAsk([
+            ask('events next week'), deck('Coca-Cola Fest'),
+            ask('what AI works under you'), { sender: 'ai', text: 'I am Jinni.', recommendations: [] },
+        ])).toBe('events next week');
+    });
+
+    test('no carded ask in the window → null, so the turn stays a fresh ask', () => {
+        expect(lastCardAsk([ask('hello'), said('hi!'), ask('what can you do')])).toBeNull();
+        expect(lastCardAsk([])).toBeNull();
+        expect(lastCardAsk(null)).toBeNull();
+        expect(lastCardAsk(undefined)).toBeNull();
+    });
+
+    test('a deck with no user turn before it yields null rather than a wrong ask', () => {
+        expect(lastCardAsk([deck('Some Place')])).toBeNull();
+    });
+
+    test('malformed rows are skipped, not thrown on', () => {
+        expect(lastCardAsk([null, ask('events next week'), undefined, deck('X'), {}])).toBe('events next week');
+    });
+});

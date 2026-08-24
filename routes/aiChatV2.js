@@ -26,7 +26,7 @@ const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages, shownPlaces } = require('../engine/context/session');
+const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
@@ -216,8 +216,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // itself... gas and brake pedals"): intent.refill is the LLM's read
         // of the conversation; the regex is the LLM-timeout fallback.
         const refill = parseRefillAsk(message);
-        const prevUserAsk = [...recentTurns].reverse()
-            .find(t => t.sender === 'user' && t.text && t.text !== message)?.text || null;
+        // WHICH ask is being continued is a lookup, not a guess. It used to be
+        // "whatever they typed last", so a chit-chat turn in between hijacked
+        // the search: "other interesting events please…" ran the query "then if
+        // you see what are my preferences" (live 2026-08-24). A follow-up is
+        // about the deck on screen, so it can only be the ask that produced one.
+        const prevUserAsk = lastCardAsk(sessionPeek?.messages);
         const refillActive = (intent.refill === true || refill.isRefill)
             && !namedCard && sessionCards.length > 0 && !!prevUserAsk;
         if (refillActive) {
@@ -226,6 +230,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 intent.searchQuery = intent.searchQuery || prevUserAsk;
             }
             meta.refill = true;
+            console.log(`[v2] refill → continuing the ask that made the deck: "${String(prevUserAsk).slice(0, 60)}"`);
         }
         const deckCount = refillActive && refill.count ? Math.min(12, Math.max(3, refill.count)) : 6;
 

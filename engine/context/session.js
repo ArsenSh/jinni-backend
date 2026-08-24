@@ -40,4 +40,32 @@ function shownPlaces(messages) {
     return [...seen.values()];
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces };
+/**
+ * The last question that actually PRODUCED a deck — i.e. the ask a follow-up
+ * like "other ones please" is really about.
+ *
+ * Live 2026-08-24: "other interesting events please, which you think will be
+ * better to go with girlfriend" ran the query "then if you see what are my
+ * preferences", because the refill path reused the literal previous message —
+ * which was chit-chat. WHETHER a turn is a follow-up is a judgement, and the
+ * intent model makes it. WHICH ask it follows is not: it is a lookup in
+ * session state, and a turn that returned no cards cannot be the answer.
+ *
+ * Returns null when no carded ask sits in the visible window — the caller then
+ * treats the turn as a fresh ask, which is honest. Guessing was the bug.
+ */
+function lastCardAsk(messages) {
+    const list = messages || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        if (!m || m.sender !== 'ai' || !(m.recommendations || []).length) continue;
+        // The user turn immediately preceding that deck is the ask that made it.
+        for (let j = i - 1; j >= 0; j--) {
+            if (list[j]?.sender === 'user' && list[j].text) return String(list[j].text).slice(0, 300);
+        }
+        return null;
+    }
+    return null;
+}
+
+module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk };
