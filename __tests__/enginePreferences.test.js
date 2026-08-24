@@ -206,3 +206,40 @@ describe('search radii and what Jinni admits to seeing', () => {
         expect(block).toMatch(/discovery radius: 60 km/);
     });
 });
+
+// The bug this exists to prevent, live 2026-08-24: "change my location, choose
+// Dubai" → "Your location is now set to Dubai — done." while the log read
+// "[prefs] destination to Yerevan, Armenia — set on request". The vocabulary
+// only had 'current', so a named city was silently turned into the GPS. The
+// prose and the database disagreed, which is worse than refusing outright.
+describe('a named destination is saved as the city that was named', () => {
+    const { validateProposal } = require('../engine/preferences/proposal');
+    const GPS = { city: 'Yerevan', country: 'Armenia', lat: 40.18, lng: 44.51 };
+    const NAMED = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
+
+    test('"named" saves the named city, not where they are standing', () => {
+        const p = validateProposal({ field: 'destination', value: 'named' },
+            { currentPlace: GPS, namedPlace: NAMED });
+        expect(p.value.city).toBe('Dubai');
+        expect(p.value.coordinates).toEqual({ lat: 25.205, lng: 55.271 });
+        expect(p.label).toBe('destination to Dubai, United Arab Emirates');
+    });
+
+    test('"current" still saves where they are', () => {
+        const p = validateProposal({ field: 'destination', value: 'current' },
+            { currentPlace: GPS, namedPlace: NAMED });
+        expect(p.value.city).toBe('Yerevan');
+    });
+
+    test('"named" with no city named writes NOTHING — it does not fall back to GPS', () => {
+        // Falling back is how Yerevan got saved when Dubai was asked for.
+        expect(validateProposal({ field: 'destination', value: 'named' }, { currentPlace: GPS })).toBeNull();
+    });
+
+    test('a place name or coordinates from the model are still refused', () => {
+        expect(validateProposal({ field: 'destination', value: 'Dubai' },
+            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
+        expect(validateProposal({ field: 'destination', value: { lat: 25, lng: 55 } },
+            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
+    });
+});

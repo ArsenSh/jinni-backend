@@ -129,6 +129,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // the GPS, not whatever the search is centred on — otherwise it would save
     // Dubai back onto itself while the traveler stood in Yerevan.
     const gpsCenter = center;
+    // The city THIS turn named, geocoded through Google by resolveDestination.
+    // Kept so "change my location, choose Dubai" can be saved as Dubai — the
+    // model says which city it meant, never where it is.
+    let namedPlace = null;
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -219,6 +223,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
+            if (dest.source === 'named' && dest.center && dest.city) {
+                namedPlace = { city: dest.city, country: null, countryCode: '', lat: dest.center.lat, lng: dest.center.lng };
+            }
             if (dest.source !== 'gps') {
                 console.log(`[v2] centre=${dest.source}${dest.city ? ` "${dest.city}"` : ''} (${center?.lat?.toFixed(3)},${center?.lng?.toFixed(3)})`);
             }
@@ -610,8 +617,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // location" — with it off there is nothing to save, and
                         // validateProposal refuses rather than storing a guess.
                         const here = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
+                        // The named city's country, resolved the same way as
+                        // everything else — from coordinates, not from a name
+                        // the model wrote.
+                        let named = namedPlace;
+                        if (named) {
+                            const nr = await resolveRegion({ center: { lat: named.lat, lng: named.lng } });
+                            named = { ...named, city: nr?.city || named.city, country: nr?.country || null };
+                        }
                         const proposed = validateProposal(parsedTail.prefUpdate, {
                             currentPlace: here ? { ...here, lat: gpsCenter.lat, lng: gpsCenter.lng } : null,
+                            namedPlace: named,
                         });
                         if (proposed && isExplicit(parsedTail.prefUpdate) && req.user?.id) {
                             // They ASKED. An instruction is already consent, and

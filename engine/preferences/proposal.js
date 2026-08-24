@@ -37,12 +37,20 @@ const PREF_VOCAB = {
     interests: ['family', 'romantic', 'nature', 'adventure', 'cultural',
         'history', 'art', 'food_drink', 'nightlife', 'relaxation'],
     currency: ['AED', 'USD', 'RUB', 'EUR', 'GBP'],
-    // The only destination value we accept is "where I am now". A city NAME
-    // would have to be geocoded to be stored, and a guessed coordinate saved as
-    // someone's destination is the kind of wrong that is hard to notice — the
-    // 0,0 Gulf of Guinea problem with extra steps. Code fills in every field
-    // from the position the app already reported.
-    destination: ['current'],
+    // Two values, and both are resolved by CODE:
+    //   'current' — where the app says they are now.
+    //   'named'   — the city THIS TURN's destination resolver already geocoded
+    //               through Google. Not a name the model typed.
+    //
+    // 'current' alone was a bug with teeth: "change my location, choose Dubai"
+    // had no other option, so the model proposed 'current', code resolved it to
+    // the GPS, and Yerevan was saved while the reply said "now set to Dubai"
+    // (live 2026-08-24). The prose and the database disagreed, which is worse
+    // than refusing outright.
+    //
+    // A model-supplied coordinate is still never accepted. It says WHICH of the
+    // two, and code supplies the numbers either way.
+    destination: ['current', 'named'],
 };
 
 // Search radii, in km. Arsen 2026-08-24: "the jinni can have access to
@@ -136,17 +144,22 @@ function validateProposal(raw, ctx = {}) {
         }
         const v = String(raw.value || '').trim().toLowerCase();
         if (!PREF_VOCAB.destination.includes(v)) return null;
-        const where = [ctx.currentPlace?.city, ctx.currentPlace?.country].filter(Boolean).join(', ');
-        const lat = Number(ctx.currentPlace?.lat);
-        const lng = Number(ctx.currentPlace?.lng);
+        // 'named' uses the city the resolver already geocoded this turn; nothing
+        // is written when no city was named, rather than falling back to the
+        // GPS and saving somewhere the traveler did not ask for.
+        const src = v === 'named' ? ctx.namedPlace : ctx.currentPlace;
+        if (!src) return null;
+        const where = [src.city, src.country].filter(Boolean).join(', ');
+        const lat = Number(src.lat);
+        const lng = Number(src.lng);
         // No position, nothing to save. Refusing beats storing 0,0.
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
         return {
             field,
             value: {
-                country: ctx.currentPlace?.countryCode || '',
-                countryName: ctx.currentPlace?.country || '',
-                city: ctx.currentPlace?.city || '',
+                country: src.countryCode || '',
+                countryName: src.country || '',
+                city: src.city || '',
                 coordinates: { lat, lng },
             },
             label: where ? `destination to ${where}` : 'destination to where you are now',
