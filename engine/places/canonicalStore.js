@@ -116,6 +116,22 @@ function cacheDocToCandidate(d, center) {
     };
 }
 
+/** Which city the events hunt is about.
+ *
+ *  The reverse-geocoded region comes FIRST. Deriving the name from the events
+ *  we already held made a city with none unhuntable — the only source of the
+ *  name was the thing we could not have yet, so Dubai returned "no listings"
+ *  in 1.7s having never looked (Arsen 2026-08-24: "why i have not received
+ *  events for dubai?").
+ *
+ *  Dirty rows still carry address fragments ("10/9") in the city field, so the
+ *  shape check stays: letters, spaces and simple punctuation only.
+ */
+function huntCity(params = {}, evs = []) {
+    const looksReal = (c) => c && /^[\p{L}][\p{L}\s.'’-]{1,40}$/u.test(String(c).trim());
+    return [params.regionCity, params.center?.city, ...(evs || []).map(e => e?.city)].find(looksReal) || null;
+}
+
 /** Defensive mapping for proximityService rows (Business/Destination). Their
  *  hours use a day-name schedule (not Google periods) — left null here, so the
  *  context engine treats them as UNKNOWN (kept, never dropped). Converter TODO. */
@@ -237,11 +253,10 @@ async function loadCandidates(params = {}, deps = {}) {
             try {
                 // First candidate whose city LOOKS like a city — dirty rows
                 // carry address fragments ("10/9") in the city field.
-                const _cityLooksReal = (c) => c && /^[\p{L}][\p{L}\s.'’-]{1,40}$/u.test(String(c).trim());
-                const city = [params.center?.city, ...evs.map(e => e?.city)].find(_cityLooksReal) || null;
+                const city = huntCity(params, evs);
                 const extra = await (deps.huntEvents || require('../events/hunt').huntEvents)({
                     city,
-                    country: params.center?.country || null,
+                    country: params.regionCountry || params.center?.country || null,
                     center: params.center,
                     window: params.eventWindow,
                 }, { webSearchCfg: params.eventsHunt.webSearch || null });
@@ -462,6 +477,7 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
 
 module.exports = {
     loadCandidates,
+    huntCity,
     googleFallback,
     uncoveredQueryTokens,
     buildCacheQuery,

@@ -159,3 +159,35 @@ describe('hunt: venue pinning', () => {
         for (const r of rows) expect(r.lat).toBeNull();
     });
 });
+
+// ── A city with no events must still be huntable (Arsen 2026-08-24) ──────────
+// "why i have not received events for dubai?" — the hunt took its city from the
+// events it already held, so a city with none had no name to hunt with and
+// huntEvents returned on its first line, silently. The only source of the name
+// was the thing we could not have yet.
+describe('huntCity', () => {
+    const { huntCity } = require('../engine/places/canonicalStore');
+
+    test('the reverse-geocoded region wins, so an eventless city is huntable', () => {
+        expect(huntCity({ regionCity: 'Dubai' }, [])).toBe('Dubai');
+    });
+
+    test('the old path still works where events exist', () => {
+        expect(huntCity({}, [{ city: 'Yerevan' }])).toBe('Yerevan');
+    });
+
+    test('the region outranks a stale city on the events', () => {
+        expect(huntCity({ regionCity: 'Dubai' }, [{ city: 'Yerevan' }])).toBe('Dubai');
+    });
+
+    test('address fragments are still refused', () => {
+        expect(huntCity({ regionCity: '10/9' }, [])).toBeNull();
+        expect(huntCity({ regionCity: '0002' }, [{ city: '6/2 Hyusisayin' }])).toBeNull();
+    });
+
+    test('nothing known at all is null, not a guess', () => {
+        expect(huntCity({}, [])).toBeNull();
+        expect(huntCity()).toBeNull();
+        expect(huntCity({ regionCity: null }, [{ city: null }, null])).toBeNull();
+    });
+});

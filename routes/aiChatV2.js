@@ -396,9 +396,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 : null;
             stage(category === 'events' ? 'events' : 'search',
                 category === 'events' ? 'Checking what\'s on around here…' : 'Searching what I know about here…');
+            // WHERE we are, by name. The events hunt used to take its city from
+            // the events it already held — so a city with no events could never
+            // be hunted, and Dubai returned "no listings" in 1.7s without ever
+            // looking (live 2026-08-24). Reverse-geocoded once, ~1km grid cache.
+            const searchRegion = await resolveRegion({ center, placeNames: intent.placeNames });
             const result = await findPlaces({
                 query: retrievalQuery,
                 eventWindow,
+                regionCity: searchRegion.city || meta.searchCity || null,
+                regionCountry: searchRegion.country || null,
                 // Progress voice — the store calls this when it goes out to the
                 // city's listings or to Google, the two waits worth narrating.
                 onStage: stage,
