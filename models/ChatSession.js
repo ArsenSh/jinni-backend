@@ -117,6 +117,15 @@ const chatSessionSchema = new mongoose.Schema({
   // follow-up turns that don't repeat the name ("compare the first two…"),
   // so the session stays correctly centered with ZERO extra Google calls,
   // works before any recommendation cards exist, and survives reloads.
+  // One open "shall I change your saved preference?" question, waiting for the
+  // traveler's answer on the NEXT turn. Cleared the moment they answer either
+  // way — Jinni asks once and does not nag (Arsen 2026-08-24).
+  pendingPrefChange: {
+    field:    { type: String, default: null },
+    value:    { type: mongoose.Schema.Types.Mixed, default: null },
+    label:    { type: String, default: null },
+    askedAt:  { type: Date, default: null },
+  },
   activeDestination: {
     name: String,
     latitude: Number,

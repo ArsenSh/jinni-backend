@@ -359,7 +359,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
-              + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null}\n'
+              + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
               // The card's category. Google's raw types are on each facts line
               // and they are coarse — a rental agency, an apartment block and a
@@ -372,6 +372,15 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'use "Place" only when nothing else honestly fits. Never invent a word outside the list.\n'
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
+              // Noticing a contradiction is a judgement, so the model makes it.
+              // Overwriting what a person set is not, so it only ever proposes,
+              // and code needs an explicit yes before anything is written.
+              + '- prefUpdate: null, unless this message shows a LASTING change to a saved preference above '
+              + '(e.g. their style is luxury and they say they always travel cheap). One of '
+              + '{"field":"travelStyle","value":"luxury|budget"}, {"field":"interests","value":["family","romantic"]}, '
+              + '{"field":"budget","value":{"min":50,"max":200,"currency":"USD"}}. '
+              + 'A one-off ask is NOT a change: wanting a cheap lunch on a luxury trip changes nothing. '
+              + 'When you propose one, ASK about it in the prose in one short sentence and wait — never say it is done.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
               // Owned notes on a PLACES turn (Arsen 2026-08-24, after "where can
               // I buy a SIM card" returned phone-repair shops and a blurb
@@ -403,7 +412,7 @@ function parseCardsTail(tail, count) {
     const text = String(tail || '');
     const blurbs = new Array(count).fill(null);
     const kinds = new Array(count).fill(null);
-    let question = null;
+    let question = null, prefUpdate = null;
 
     // Pass 1 — parse the JSON, tolerating the model's most common slip
     // (trailing commas before } or ]).
@@ -426,7 +435,8 @@ function parseCardsTail(tail, count) {
         }
         // A parse that yielded NOTHING (valid JSON, wrong shape) still gets
         // the salvage pass below — don't return an empty win.
-        if (blurbs.some(Boolean) || kinds.some(Boolean) || question) return { blurbs, kinds, question };
+        if (obj.prefUpdate && typeof obj.prefUpdate === 'object') prefUpdate = obj.prefUpdate;
+        if (blurbs.some(Boolean) || kinds.some(Boolean) || question) return { blurbs, kinds, question, prefUpdate };
     }
 
     // Pass 2 — salvage (battery row 7, 2026-08-22): a truncated or malformed
@@ -448,7 +458,7 @@ function parseCardsTail(tail, count) {
     if (qm) {
         try { question = JSON.parse(`"${qm[1]}"`).trim().slice(0, 200); } catch { /* skip */ }
     }
-    return (salvaged || question) ? { blurbs, kinds, question } : null;
+    return (salvaged || question) ? { blurbs, kinds, question, prefUpdate } : null;
 }
 
 /**

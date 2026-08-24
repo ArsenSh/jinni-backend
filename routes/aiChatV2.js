@@ -34,6 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
+const { validateProposal, isAffirmative, isNegative, applyProposal } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -55,7 +56,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, messages: { $slice: -8 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, messages: { $slice: -8 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
@@ -128,6 +129,24 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // GPS; resolveDestination now settles the precedence once, below, after
     // intent has told us whether this message names a city.
 
+    // ── An open "shall I change your saved preference?" question is answered
+    //    HERE, before anything reads preferences, so an approved change shapes
+    //    this very turn. Only an explicit yes writes; a new question, a vague
+    //    reply or silence all leave the settings alone. Either way the question
+    //    is closed — Jinni asks once (Arsen 2026-08-24). ──
+    let prefApplied = null;
+    const pending = sessionPeek?.pendingPrefChange?.field ? sessionPeek.pendingPrefChange : null;
+    if (pending) {
+        const said = isAffirmative(message);
+        if (said) prefApplied = (await applyProposal(req.user.id, pending)) ? pending : null;
+        else if (!isNegative(message)) console.log('[prefs] no clear answer — leaving the setting as it is');
+        if (sessionId) {
+            require('../models/ChatSession')
+                .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { field: null, value: null, label: null, askedAt: null } } })
+                .catch(() => {});
+        }
+    }
+
     let reply;
     let recommendations = [];
     const meta = { engine: 'v2', build: 'narrator-v0+cards', timestamp: new Date() };
@@ -159,6 +178,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             intent = await intentService.classify({ message, recentTurns, userLanguage, appCfg });
             intent._userLanguage = userLanguage;
             intent._preferences = user?.preferences || {};
+            // An approval a moment ago is already true for this turn.
+            if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {
             console.warn('[v2] intent failed, treating as place query:', err.message);
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
@@ -563,6 +584,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // it up, and a slot the model left blank falls back to the
                         // type table on its own.
                         (parsedTail.kinds || []).forEach((k, i) => { if (k && result.places[i]) result.places[i]._kind = k; });
+                        // The model may PROPOSE a preference change; code checks
+                        // it against the vocabulary and parks it for the
+                        // traveler's answer. Nothing is written on this turn.
+                        const proposed = validateProposal(parsedTail.prefUpdate);
+                        if (proposed && sessionId && !pending) {
+                            meta.prefProposal = proposed;
+                            require('../models/ChatSession')
+                                .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { ...proposed, askedAt: new Date() } } })
+                                .catch(() => {});
+                            console.log(`[prefs] proposed: ${proposed.label} — awaiting the traveler's answer`);
+                        }
                     }
                     streamedOk = !!intro;
                 } catch (err) {
@@ -656,6 +688,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         console.warn(`[v2][limits] post-stream usage true-up skipped: ${e.message}`);
     }
 
+    if (prefApplied) meta.prefApplied = { field: prefApplied.field, label: prefApplied.label };
     meta.debug = {
         engine: 'v2',
         shown: recommendations.length,
