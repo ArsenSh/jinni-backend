@@ -16,7 +16,7 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk } = require('../engine/retrieval/tuning');
@@ -133,6 +133,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // Kept so "change my location, choose Dubai" can be saved as Dubai — the
     // model says which city it meant, never where it is.
     let namedPlace = null;
+    let settingsApplied = [];
+    let settingsRefused = [];
+    let pendingLocationChange = null;      // needs the geocoded city, resolved below
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -193,6 +196,47 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // switched location off, and claiming to see it then is a lie.
             intent._preferences._searchRadius = user?.settings?.searchRadius || null;
             intent._savedLocation = user?.settings?.location?.city ? user.settings.location : null;
+            // ── A SETTINGS COMMAND IS CARRIED OUT HERE, before retrieval. ──
+            //
+            // Arsen 2026-08-24: "this kind of commands why it triggers to show
+            // locations??? … it only updated interest to family but it
+            // recommended locations, it couldnt set to dubai, and have not
+            // asked budget to set style."
+            //
+            // All three symptoms were one cause. A change used to be parsed out
+            // of the CARD narration, which meant: the turn had to retrieve
+            // places to carry one (so every "set my style" produced six cards),
+            // the prose was written from preferences read BEFORE the write (so
+            // it reported the old value while saving the new one), and if the
+            // narrator simply left the field out — as it did for "set style to
+            // budget" — nothing was written at all while the reply still said
+            // "done".
+            //
+            // Now the intent step reports the command, code validates and
+            // writes it, and the reply describes what code actually did. No
+            // retrieval, no cards, nothing to disagree with.
+            settingsApplied = [];
+            settingsRefused = [];
+            for (const c of (intent.settingsChange || [])) {
+                const proposed = validateProposal(c, {
+                    currentPlace: null,          // filled below when it is needed
+                    namedPlace: null,
+                });
+                if (!proposed && c.field !== 'location') { settingsRefused.push(c.field); continue; }
+                if (c.field === 'location') { pendingLocationChange = c; continue; }
+                if (req.user?.id && await applyProposal(req.user.id, proposed)) {
+                    settingsApplied.push(proposed);
+                    // The reply is written from these rows, so they must show
+                    // the NEW value — reporting the old one while having saved
+                    // the new one is exactly what went wrong before.
+                    if (proposed.field === 'nearbyRadius' || proposed.field === 'discoveryRadius') {
+                        const key = proposed.field === 'nearbyRadius' ? 'nearby' : 'discovery';
+                        intent._preferences._searchRadius = { ...(intent._preferences._searchRadius || {}), [key]: proposed.value };
+                    } else {
+                        intent._preferences[proposed.field] = proposed.value;
+                    }
+                } else settingsRefused.push(c.field);
+            }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
             // An approval a moment ago is already true for this turn.
@@ -237,6 +281,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
                 namedPlace = { city: dest.city, country: null, countryCode: '', lat: dest.center.lat, lng: dest.center.lng };
+            }
+            // The location command waited for this: the city geocoded through
+            // Google, never a name the model typed.
+            if (pendingLocationChange && req.user?.id) {
+                const nr = namedPlace
+                    ? await resolveRegion({ center: { lat: namedPlace.lat, lng: namedPlace.lng } })
+                    : null;
+                const proposed = validateProposal(pendingLocationChange, {
+                    currentPlace: hereRegion && gpsCenter
+                        ? { ...hereRegion, lat: gpsCenter.lat, lng: gpsCenter.lng } : null,
+                    namedPlace: namedPlace
+                        ? { ...namedPlace, city: nr?.city || namedPlace.city, country: nr?.country || null } : null,
+                });
+                if (proposed && await applyProposal(req.user.id, proposed)) {
+                    settingsApplied.push(proposed);
+                    // So THIS turn's reply reflects the change it just made.
+                    intent._preferences._savedLocation = proposed.value;
+                    intent._savedLocation = proposed.value;
+                } else {
+                    settingsRefused.push('location');
+                }
             }
             if (dest.source !== 'gps') {
                 console.log(`[v2] centre=${dest.source}${dest.city ? ` "${dest.city}"` : ''} (${center?.lat?.toFixed(3)},${center?.lng?.toFixed(3)})`);
@@ -376,6 +441,37 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             meta.answerType = 'getting_around';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
+        } else if (settingsApplied.length || settingsRefused.length) {
+            // A COMMAND WAS CARRIED OUT. Nothing was asked for, so nothing is
+            // retrieved and no cards are produced (Arsen 2026-08-24: "this kind
+            // of commands why it triggers to show locations???").
+            //
+            // The reply describes what CODE DID — the applied list, not the
+            // model's memory of what it proposed. That is the whole point: for
+            // "set style to budget" the narrator silently omitted the field, so
+            // nothing was written while the reply still said it was done.
+            const done = settingsApplied.map(p2 => p2.label);
+            const failed = settingsRefused;
+            // Budget style with no numbers behind it cannot be used for
+            // anything, and only the traveler knows the figures.
+            const b = intent._preferences?.budget;
+            const needsBudget = settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
+                && !(b && (b.min > 0 || b.max > 0));
+            const out = await narrator.stream({
+                messages: buildSettingsMessages({ message, langName, done, failed, needsBudget }),
+                onToken: (c) => send(res, { type: 'token', content: c }),
+                maxTokens: 120,
+                realStream: true,
+                model: providerName,
+            }, { provider: deepseekProvider });
+            reply = out.text || '';
+            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            streamedOk = !!reply;
+            meta.answerType = 'settings';
+            meta.settingsApplied = settingsApplied.map(p2 => ({ field: p2.field, label: p2.label }));
+            if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
+            console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
+                + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
         } else if (namedCard) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),

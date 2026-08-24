@@ -546,4 +546,33 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
     ];
 }
 
-module.exports = { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
+/**
+ * Reporting a settings change that CODE HAS ALREADY MADE.
+ *
+ * The list is the record of what was written, so the model's only job is to
+ * say it in the traveler's language. It is told not to add, omit or soften
+ * anything — "set style to budget" once produced "that's done" when nothing had
+ * been written at all (live 2026-08-24).
+ */
+function buildSettingsMessages({ message, langName, done = [], failed = [], needsBudget = false }) {
+    const lines = [];
+    if (done.length) lines.push('CHANGED, and already saved: ' + done.join('; ') + '.');
+    if (failed.length) lines.push('NOT changed — you could not do this: ' + failed.join(', ') + '.');
+    return [
+        { role: 'system', content:
+            `You are Jinni. Reply in ${langName}, in ONE short sentence (two only if there is a question to ask).\n`
+            + 'A setting has just been changed for the traveler. Report EXACTLY what the lines below say, in the '
+            + 'past tense, and nothing else. Do not add settings that are not listed. Do not claim anything was '
+            + 'changed that is not on the CHANGED line — if a line says NOT changed, say plainly that you could '
+            + 'not do that one. Do not offer places, do not list their other preferences, do not ask what they '
+            + 'want to see next.\n'
+            + (needsBudget
+                ? 'THEN ask, in one short sentence, what their minimum and maximum budget per day is and in which '
+                  + 'currency — a budget style with no figures cannot be used. Never invent the figures.\n'
+                : '') },
+        { role: 'user', content: `They said: "${String(message || '').slice(0, 200)}"\n\n${lines.join('\n')}` },
+    ];
+}
+
+module.exports = {
+    buildSettingsMessages, buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
