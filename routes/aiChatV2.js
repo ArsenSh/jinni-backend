@@ -33,6 +33,7 @@ const { flightsEnabled } = require('../engine/travel/flights');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
+const { approxIn } = require('../engine/money/price');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -575,6 +576,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode, description: hoisted.blurbs[i] || null }));
+                // What the listing printed stays exactly as printed; the
+                // traveler's own currency rides ALONGSIDE it, rounded and
+                // marked ≈ (Arsen 2026-08-24: "it will show what it found and
+                // how much it will be"). Null whenever it would be a guess.
+                const displayCurrency = intent._preferences?.budget?.currency || 'USD';
+                for (const rec of recommendations) {
+                    if (rec.eventPrice) rec.eventPriceApprox = approxIn(rec.eventPrice, displayCurrency);
+                }
                 // Remember what this turn showed (fire-and-forget) — feeds the
                 // cross-session novelty signal, and survives session deletion.
                 recordViews(req.user.id, recommendations, category);
