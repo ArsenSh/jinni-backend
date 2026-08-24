@@ -231,6 +231,9 @@ async function loadCandidates(params = {}, deps = {}) {
             && !_exIds.has(c.placeId) && !_exIds.has(c.verifiedId)
             && !_exNames.has(normalizePlaceName(c.name || ''))).length;
         if ((unseenEvents < 3 || params.eventsHunt?.force) && params.eventsHunt && params.eventWindow) {
+            // The longest wait in the whole engine (8–24s of reading listing
+            // pages). Say so, or the app looks frozen.
+            params.onStage?.('listings', 'Reading the city\'s event listings…');
             try {
                 // First candidate whose city LOOKS like a city — dirty rows
                 // carry address fragments ("10/9") in the city field.
@@ -333,6 +336,7 @@ async function loadCandidates(params = {}, deps = {}) {
     const missing = uncoveredQueryTokens(params.coreQuery, merged)
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
     if ((merged.length < wanted || missing.length) && (params.query || category)) {
+        params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
             const extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,

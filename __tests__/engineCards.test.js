@@ -80,11 +80,28 @@ describe('hoistNarrated (prose and deck agree — the DABOO/COBA case)', () => {
 });
 
 describe('categoryFor', () => {
-    test('action label wins; type heuristics fall back; Attraction is the floor', () => {
-        expect(categoryFor({}, 'restaurants')).toBe('Restaurant');
+    test('the place\'s own type wins; the turn\'s action only fills gaps', () => {
         expect(categoryFor({ primaryType: 'museum' }, null)).toBe('Museum');
         expect(categoryFor({ types: ['park'] }, 'general')).toBe('Park');
-        expect(categoryFor({}, null)).toBe('Attraction');
+        // A mobile operator found on a "shopping" turn is not merely "Shop".
+        expect(categoryFor({ primaryType: 'telecommunications_service_provider' }, 'shopping')).toBe('Mobile operator');
+        expect(categoryFor({}, 'restaurants')).toBe('Restaurant');
+    });
+    test('the live 2026-08-24 cards that all read "Attraction"', () => {
+        expect(categoryFor({ primaryType: 'shopping_mall' }, 'general')).toBe('Shopping centre');
+        expect(categoryFor({ primaryType: 'performing_arts_theater' }, 'general')).toBe('Theatre');
+        expect(categoryFor({ primaryType: 'real_estate_agency' }, 'general')).toBe('Rental agency');
+        expect(categoryFor({ primaryType: 'apartment_complex' }, 'general')).toBe('Apartments');
+    });
+    test('suffix families cover the long tail', () => {
+        expect(categoryFor({ primaryType: 'greek_restaurant' }, null)).toBe('Restaurant');
+        expect(categoryFor({ primaryType: 'sporting_goods_store' }, null)).toBe('Shop');
+    });
+    test('a dated listing is an Event whatever else it looks like', () => {
+        expect(categoryFor({ primaryType: 'stadium', eventSchedule: { startDate: '2026-09-04' } }, 'general')).toBe('Event');
+    });
+    test('an unknown row says only what we know', () => {
+        expect(categoryFor({}, null)).toBe('Place');
     });
 });
 

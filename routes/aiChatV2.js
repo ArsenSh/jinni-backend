@@ -131,6 +131,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     let recommendations = [];
     const meta = { engine: 'v2', build: 'narrator-v0+cards', timestamp: new Date() };
     const t0 = Date.now();
+    // What the engine did this turn. Reported ONCE, at the bottom of the reply
+    // (it used to be pasted into the prose, where it read as something Jinni
+    // was saying). Filled by whichever branch answers.
+    const stats = { candidates: null, cacheHit: false, path: null };
+    // Genie-voiced progress. The traveler waits 8–24s on an event hunt with no
+    // sign of life; these say what is happening in Jinni's own voice, not the
+    // engine's. Unknown SSE types are ignored by older clients, so this is safe
+    // to send unconditionally.
+    const stage = (key, text) => { try { send(res, { type: 'stage', key, text }); } catch { /* client gone */ } };
     try {
         // Intent pre-pass — same classifier v1 trusts; failure degrades to
         // "treat it as a place query" rather than failing the turn.
@@ -350,9 +359,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 ? (_ev.windowFromPeriod(intent.period)
                     || _ev.parseEventWindow(refillActive ? (prevUserAsk || message) : message))
                 : null;
+            stage(category === 'events' ? 'events' : 'search',
+                category === 'events' ? 'Checking what\'s on around here…' : 'Searching what I know about here…');
             const result = await findPlaces({
                 query: retrievalQuery,
                 eventWindow,
+                // Progress voice — the store calls this when it goes out to the
+                // city's listings or to Google, the two waits worth narrating.
+                onStage: stage,
                 // Hunt permission rides the SAME admin gate as narration web
                 // search: events category enabled + master switch on. The
                 // store decides WHEN (unseen shelf thin for the asked window)
@@ -441,6 +455,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 meta.answerType = 'no_match';
                 console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
             } else {
+                stage('writing', 'Almost there — putting it together…');
                 const weather = await weatherPromise;   // resolved long ago or null
                 const timeNote = [
                     timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null,
@@ -502,10 +517,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         send(res, { type: 'token', content: chunk });
                     }
                 }
-                const footer = `\n\n🧪 v2 · ${result.places.length}/${result.provenance.candidateCount} candidates`
-                             + `${result.provenance.cacheHit ? ' · cache HIT' : ''} · ${Date.now() - t0}ms`;
-                send(res, { type: 'token', content: footer });
-                reply = intro + footer;
+                stats.candidates = result.provenance.candidateCount;
+                stats.cacheHit = !!result.provenance.cacheHit;
+                reply = intro;
                 // ── Cards, real by construction: every one started as a
                 //    retrieval candidate. v1's exact payload shape → the
                 //    frontend renders them unchanged (photos, map, votes).
@@ -565,6 +579,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     } catch (e) {
         console.warn(`[v2][limits] post-stream usage true-up skipped: ${e.message}`);
     }
+
+    meta.debug = {
+        engine: 'v2',
+        shown: recommendations.length,
+        candidates: stats.candidates,
+        cacheHit: stats.cacheHit,
+        ms: Date.now() - t0,
+    };
 
     send(res, {
         type: 'complete',

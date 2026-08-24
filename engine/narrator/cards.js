@@ -13,15 +13,89 @@ const CATEGORY_LABELS = {
     shopping: 'Shop', activities: 'Activity',
 };
 
+// Google place type → the word a traveler reads on the card. Live 2026-08-24:
+// a shopping mall, an opera house, a puppet theatre, a real-estate office and
+// an apart-hotel ALL read "Attraction", because the old rule only knew five
+// families and defaulted everything else. Google already tells us what a place
+// is — this table just stops us throwing that away.
+const TYPE_LABELS = {
+    // Sleep
+    hotel: 'Hotel', motel: 'Hotel', resort_hotel: 'Hotel', extended_stay_hotel: 'Hotel', lodging: 'Hotel',
+    hostel: 'Hostel', bed_and_breakfast: 'Guesthouse', guest_house: 'Guesthouse', cottage: 'Guesthouse',
+    farmstay: 'Guesthouse', inn: 'Guesthouse', campground: 'Campsite', rv_park: 'Campsite',
+    apartment_complex: 'Apartments', apartment_building: 'Apartments', condominium_complex: 'Apartments',
+    housing_complex: 'Apartments', real_estate_agency: 'Rental agency',
+    // Eat & drink
+    restaurant: 'Restaurant', fine_dining_restaurant: 'Restaurant', steak_house: 'Restaurant',
+    food_court: 'Food court', meal_takeaway: 'Takeaway', meal_delivery: 'Delivery',
+    cafe: 'Cafe', coffee_shop: 'Cafe', tea_house: 'Tea house', bakery: 'Bakery',
+    dessert_shop: 'Dessert shop', ice_cream_shop: 'Ice cream', juice_shop: 'Juice bar',
+    bar: 'Bar', pub: 'Pub', bar_and_grill: 'Bar', wine_bar: 'Wine bar', night_club: 'Nightclub',
+    // Culture
+    museum: 'Museum', art_gallery: 'Gallery', performing_arts_theater: 'Theatre',
+    opera_house: 'Opera house', concert_hall: 'Concert hall', auditorium: 'Concert hall',
+    movie_theater: 'Cinema', cultural_center: 'Cultural centre', cultural_landmark: 'Landmark',
+    library: 'Library', historical_landmark: 'Historical Site', historical_place: 'Historical Site',
+    monument: 'Monument', church: 'Church', mosque: 'Mosque', synagogue: 'Synagogue',
+    hindu_temple: 'Temple', place_of_worship: 'Place of worship',
+    // Outdoors & play
+    park: 'Park', national_park: 'National park', state_park: 'Park', dog_park: 'Park',
+    garden: 'Garden', botanical_garden: 'Garden', plaza: 'Square', hiking_area: 'Trail',
+    beach: 'Beach', zoo: 'Zoo', wildlife_park: 'Zoo', aquarium: 'Aquarium',
+    amusement_park: 'Amusement park', water_park: 'Water park', casino: 'Casino',
+    bowling_alley: 'Bowling', stadium: 'Stadium', arena: 'Arena', sports_complex: 'Sports complex',
+    gym: 'Gym', fitness_center: 'Gym', spa: 'Spa', wellness_center: 'Spa',
+    tourist_attraction: 'Attraction', observation_deck: 'Viewpoint', ferris_wheel: 'Attraction',
+    // Shop
+    shopping_mall: 'Shopping centre', department_store: 'Department store', market: 'Market',
+    supermarket: 'Supermarket', grocery_store: 'Grocery', convenience_store: 'Convenience store',
+    clothing_store: 'Clothes shop', shoe_store: 'Shoe shop', jewelry_store: 'Jewellery',
+    book_store: 'Bookshop', gift_shop: 'Gift shop', electronics_store: 'Electronics',
+    cell_phone_store: 'Phone shop', telecommunications_service_provider: 'Mobile operator',
+    liquor_store: 'Wine shop', pharmacy: 'Pharmacy', drugstore: 'Pharmacy',
+    // Move
+    car_rental: 'Car rental', car_repair: 'Car repair', car_dealer: 'Car dealer',
+    gas_station: 'Petrol station', electric_vehicle_charging_station: 'EV charging',
+    airport: 'Airport', international_airport: 'Airport', train_station: 'Train station',
+    light_rail_station: 'Metro station', subway_station: 'Metro station', bus_station: 'Bus station',
+    bus_stop: 'Bus stop', transit_station: 'Transit stop', taxi_stand: 'Taxi rank',
+    parking: 'Parking', ferry_terminal: 'Ferry terminal',
+    // Errands a traveler actually runs
+    bank: 'Bank', atm: 'ATM', post_office: 'Post office', hospital: 'Hospital',
+    doctor: 'Clinic', dentist: 'Dentist', police: 'Police', embassy: 'Embassy',
+    travel_agency: 'Travel agency', tourist_information_center: 'Tourist info',
+    beauty_salon: 'Beauty salon', hair_salon: 'Hair salon', laundry: 'Laundry',
+};
+
+// Families Google names by suffix — catches the long tail (`greek_restaurant`,
+// `sporting_goods_store`, `hamburger_restaurant`) without listing every member.
+const TYPE_SUFFIXES = [
+    [/_restaurant$/, 'Restaurant'], [/_museum$/, 'Museum'], [/_gallery$/, 'Gallery'],
+    [/_(store|shop)$/, 'Shop'], [/_station$/, 'Transit stop'], [/_market$/, 'Market'],
+    [/_hotel$/, 'Hotel'], [/_park$/, 'Park'], [/_temple$/, 'Temple'], [/_bar$/, 'Bar'],
+];
+
+/** Best label Google's own typing supports, or null when it says nothing useful. */
+function labelForTypes(place) {
+    const all = [place.primaryType, ...(Array.isArray(place.types) ? place.types : [])]
+        .filter(Boolean).map(t => String(t).toLowerCase());
+    for (const t of all) if (TYPE_LABELS[t]) return TYPE_LABELS[t];
+    for (const t of all) for (const [re, label] of TYPE_SUFFIXES) if (re.test(t)) return label;
+    return null;
+}
+
 function categoryFor(place, action) {
+    // A dated listing is an event whatever else it looks like — and 'Event' is
+    // the exact string the frontend's isEventRec() matches on.
+    if (place.eventSchedule) return 'Event';
+    const typed = labelForTypes(place);
+    if (typed) return typed;
+    // The turn's category is a weaker signal than the place's own type: it
+    // labelled every card in a "shopping" turn 'Shop', mobile operator or not.
     if (action && CATEGORY_LABELS[action]) return CATEGORY_LABELS[action];
-    const t = String(place.primaryType || (place.types || [])[0] || '').toLowerCase();
-    if (t.includes('bar') || t.includes('night_club') || t.includes('pub')) return 'Bar';
-    if (t.includes('restaurant') || t.includes('cafe') || t.includes('food')) return 'Restaurant';
-    if (t.includes('lodging') || t.includes('hotel')) return 'Hotel';
-    if (t.includes('museum') || t.includes('gallery')) return 'Museum';
-    if (t.includes('park') || t.includes('garden')) return 'Park';
-    return 'Attraction';
+    // Honest last resort. Calling an unknown row "Attraction" is a claim we
+    // cannot support; "Place" says only what we know.
+    return 'Place';
 }
 
 /** Factual one-liner card description — only facts the candidate carries. */
@@ -93,6 +167,10 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         // Present ⇒ the frontend's isEventRec() renders the date row on the
         // card (v1's exact contract). Event candidates carry it; places don't.
         eventSchedule: place.eventSchedule || null,
+        // Ticket price EXACTLY as the listing printed it ("3000 AMD") — never
+        // a guess, never converted. Read by the info modal; absent when the
+        // page didn't say, which must keep looking absent.
+        eventPrice: place.price || null,
         // Source link shown below event cards (frontend rec.sourceUrl).
         sourceUrl: place.sourceUrl || null,
         _isExpired: false,
