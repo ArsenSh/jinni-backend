@@ -152,6 +152,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // not be consumed by the consent logic below, and it must survive this block
     // to be completed once the budget lands. Cleared where it is resolved.
     let deferredStyle = null;
+    // The Discovery/Nearby toggle as it applies to THIS turn. The body carries
+    // what the client had on screen when the message was sent, which is by
+    // definition before any switch asked for IN that message. Without this a
+    // "switch to nearby" turn would save the new mode and then answer in the
+    // old one, and the visible toggle — sitting right beside the input — would
+    // be the thing that showed the contradiction.
+    let effectiveNearbyMode = nearbyMode;
     const pending = sessionPeek?.pendingPrefChange?.field ? sessionPeek.pendingPrefChange : null;
     const awaitingStyle = (pending?.field === 'travelStyle' && pending.value === 'budget') ? pending : null;
     if (pending && !awaitingStyle) {
@@ -252,6 +259,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     } else {
                         intent._preferences[proposed.field] = proposed.value;
                     }
+                    // Applies immediately: the traveler asked for this mode, so
+                    // this answer is already in it.
+                    if (proposed.field === 'searchMode') effectiveNearbyMode = proposed.value === 'nearby';
                 } else settingsRefused.push(c.field);
             }
             // The figures arrived, so the switch that was waiting on them can
@@ -310,7 +320,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // and the one Jinni now writes; preferences.destination stays
                 // as the fallback so accounts set up before this still work.
                 savedDestination: intent._savedLocation || intent._preferences?.destination || null,
-                nearbyMode,
+                nearbyMode: effectiveNearbyMode,
                 // Which fact settings.location holds this turn: a snapshot of
                 // where they were (GPS mode) or the place they chose to explore
                 // (destination mode). Without it a GPS-mode traveler stays
@@ -525,7 +535,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             streamedOk = !!reply;
             meta.answerType = 'settings';
-            meta.settingsApplied = settingsApplied.map(p2 => ({ field: p2.field, label: p2.label }));
+            // `value` rides along so the client can move a CONTROL, not just a
+            // label — the Discovery/Nearby toggle sits beside the input and has
+            // to flip when Jinni switches it, or the screen contradicts the reply.
+            meta.settingsApplied = settingsApplied.map(p2 => ({ field: p2.field, label: p2.label, value: p2.value }));
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
@@ -584,15 +597,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Right-now context, decided ONCE: the AI's intent.when is the
             // brain; nearby/late-night/now-words are the degradation path.
             const rightNow = intent.when === 'planned' ? false
-                : (intent.when === 'now' || nearbyMode || timeContext.isLateNight || isRightNowAsk(message));
+                : (intent.when === 'now' || effectiveNearbyMode || timeContext.isLateNight || isRightNowAsk(message));
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
-            const mode = nearbyMode ? 'nearby' : 'discovery';
+            const mode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
             // distinctive words, and cap dining/shopping radius (local decisions).
             // Refill turns enrich from the PREVIOUS ask — "10 other results"
             // contributes nothing to relevance; "suggest historical places" does.
             const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
-            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
+            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: effectiveNearbyMode ? 5 : 50 });
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).
@@ -655,7 +668,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 enforceOpenNow: rightNow,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
-                weights: rankingWeights({ rightNow, nearbyMode, message }),
+                weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message }),
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 // Likes/saves climb, oft-seen-unacted sinks — a nudge on the
                 // fused order, never a filter (personalization/taste.js).
@@ -840,7 +853,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    Prose and deck AGREE: intro-named places lead the cards. ──
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode, description: hoisted.blurbs[i] || null }));
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode, description: hoisted.blurbs[i] || null }));
                 // What the listing printed stays exactly as printed; the
                 // traveler's own currency rides ALONGSIDE it, rounded and
                 // marked ≈ (Arsen 2026-08-24: "it will show what it found and

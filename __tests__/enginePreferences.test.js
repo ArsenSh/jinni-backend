@@ -474,3 +474,45 @@ describe('budget style without figures is asked about, never filled in', () => {
         expect(s).not.toMatch(/\$\s?\d/);
     });
 });
+
+// The Discovery/Nearby toggle, reachable by Jinni at last.
+//
+// It sits in the chat input container beside the preference chips, but it was
+// the only control there that lived in localStorage instead of the database —
+// so Jinni could change every setting around it and not that one, and it did
+// not survive a change of device. Arsen 2026-08-25: "user will see how it
+// sets" — the visible button flipping is the confirmation.
+describe('switching search mode', () => {
+    const { validateProposal, applyProposal, PREF_VOCAB } = require('../engine/preferences/proposal');
+    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
+
+    test('the vocabulary is the two words on the toggle', () => {
+        expect(PREF_VOCAB.searchMode).toEqual(['nearby', 'discovery']);
+    });
+
+    test('the WORD survives validation — a boolean would not round-trip', () => {
+        // applyProposal re-validates whatever comes back out of the database, so
+        // a proposal has to validate twice. 'true' is not in any vocabulary.
+        const p = validateProposal({ field: 'searchMode', value: 'Nearby' });
+        expect(p).toEqual({ field: 'searchMode', value: 'nearby', label: 'search mode to nearby' });
+        expect(validateProposal(p)).toEqual(p);
+    });
+
+    test('anything that is not one of the two words is dropped', () => {
+        for (const v of ['near', 'explore', true, 1, '', null]) {
+            expect(validateProposal({ field: 'searchMode', value: v })).toBeNull();
+        }
+    });
+
+    test('the word becomes the boolean exactly once, at the write', async () => {
+        const near = []; const disc = [];
+        await applyProposal('u1', { field: 'searchMode', value: 'nearby' }, { User: User(near) });
+        await applyProposal('u1', { field: 'searchMode', value: 'discovery' }, { User: User(disc) });
+        expect(near[0].u.$set).toEqual({ 'settings.nearbyMode': true });
+        expect(disc[0].u.$set).toEqual({ 'settings.nearbyMode': false });
+    });
+
+    test('the path it writes exists in the schema', () => {
+        expect(require('../models/User').schema.path('settings.nearbyMode')).toBeTruthy();
+    });
+});

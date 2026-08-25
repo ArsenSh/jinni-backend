@@ -51,6 +51,11 @@ const PREF_VOCAB = {
     // A model-supplied coordinate is still never accepted. It says WHICH of the
     // two, and code supplies the numbers either way.
     location: ['current', 'named'],
+    // The Discovery/Nearby toggle. Stored as a boolean, but the model proposes
+    // the WORD — a boolean has no meaning to read back to the traveler, and
+    // "searchMode: true" is exactly the kind of value that gets inverted by
+    // accident. Code does the conversion, once, here.
+    searchMode: ['nearby', 'discovery'],
 };
 
 // Search radii, in km. Arsen 2026-08-24: "the jinni can have access to
@@ -84,6 +89,7 @@ const PREF_PATHS = {
     // the two disagreeing. See LOCATION_PATHS below — this entry stays for the
     // single-path fields only.
     location: 'settings.location',
+    searchMode: 'settings.nearbyMode',
     nearbyRadius: RADIUS_LIMITS.nearbyRadius.path,
     discoveryRadius: RADIUS_LIMITS.discoveryRadius.path,
 };
@@ -185,6 +191,16 @@ function validateProposal(raw, ctx = {}) {
         };
     }
 
+    // Kept as the WORD all the way through validation, because a proposal is
+    // re-validated on its way out of the database and a boolean would not
+    // survive that round trip (the same trap the resolved-location branch
+    // above exists to dodge). applyProposal does the one conversion.
+    if (field === 'searchMode') {
+        const v = String(raw.value || '').trim().toLowerCase();
+        if (!PREF_VOCAB.searchMode.includes(v)) return null;
+        return { field, value: v, label: `search mode to ${v}` };
+    }
+
     if (RADIUS_LIMITS[field]) {
         const { min, max, label } = RADIUS_LIMITS[field];
         const n = Number(raw.value);
@@ -266,7 +282,8 @@ async function applyProposal(userId, proposal, deps = {}) {
         } else {
             const path = PREF_PATHS[valid.field];
             if (!path) return false;               // a field with no home is not writable
-            $set = { [path]: valid.value };
+            // The one place the toggle's word becomes its boolean.
+            $set = { [path]: valid.field === 'searchMode' ? valid.value === 'nearby' : valid.value };
             // Budget figures are not a standalone setting — they belong to the
             // budget style. OnboardingPage.vue's selectStyle() clears them for
             // any other style, and the inputs only render while 'budget' is
