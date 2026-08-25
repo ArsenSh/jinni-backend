@@ -516,3 +516,37 @@ describe('switching search mode', () => {
         expect(require('../models/User').schema.path('settings.nearbyMode')).toBeTruthy();
     });
 });
+
+// "from 10 to 10" is not a range, and storing it looked like agreement while
+// quietly gating retrieval to a single price point (Arsen 2026-08-25: "it will
+// set like that instead of notifing you are giving incorrect, minimum should be
+// little than maximum").
+describe('a flat budget range is refused, with a reason', () => {
+    const { validateProposal, budgetRefusalReason } = require('../engine/preferences/proposal');
+    const b = (min, max, currency = 'USD') => ({ field: 'budget', value: { min, max, currency } });
+
+    test('min === max is refused', () => {
+        expect(validateProposal(b(10, 10))).toBeNull();
+        expect(validateProposal(b(200, 200))).toBeNull();
+    });
+
+    test('a genuine range still passes', () => {
+        expect(validateProposal(b(10, 11)).value).toEqual({ min: 10, max: 11, currency: 'USD' });
+        expect(validateProposal(b(10, 200)).value).toEqual({ min: 10, max: 200, currency: 'USD' });
+    });
+
+    test('the reason names what to change, rather than just refusing', () => {
+        expect(budgetRefusalReason({ min: 10, max: 10, currency: 'USD' }))
+            .toMatch(/minimum has to be LOWER than the maximum/);
+        expect(budgetRefusalReason({ min: 200, max: 50, currency: 'USD' }))
+            .toMatch(/minimum was higher than the maximum/);
+        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'AMD' }))
+            .toMatch(/currency must be one of/);
+        expect(budgetRefusalReason({ min: 'a', max: 'b' }))
+            .toMatch(/both a minimum and a maximum/);
+    });
+
+    test('a valid budget has no reason to give', () => {
+        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'USD' })).toBeNull();
+    });
+});

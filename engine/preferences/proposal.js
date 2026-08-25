@@ -131,7 +131,14 @@ function validateProposal(raw, ctx = {}) {
         const currency = String(v.currency || 'USD').trim().toUpperCase();
         if (!PREF_VOCAB.currency.includes(currency)) return null;
         if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
-        if (min < 0 || max <= 0 || max < min || max > MAX_BUDGET) return null;
+        // max === min is REFUSED, not stored. "from 10 to 10" is not a range,
+        // and saving it looked like agreement while quietly gating retrieval to
+        // a single price point (Arsen 2026-08-25: "it will set like that instead
+        // of notifing you are giving incorrect"). Onboarding's own isBudgetValid
+        // is looser here (min <= max), so a band entered on the FORM may still
+        // be flat; chat refuses and says why, which is the behaviour worth
+        // having in both.
+        if (min < 0 || max <= 0 || max <= min || max > MAX_BUDGET) return null;
         return { field, value: { min, max, currency }, label: `budget to ${min}–${max} ${currency}` };
     }
 
@@ -346,4 +353,25 @@ function isExplicit(raw) {
     return raw?.explicit === true || raw?.explicit === 'true';
 }
 
-module.exports = { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, PREF_VOCAB, PREF_PATHS, RADIUS_LIMITS };
+/**
+ * WHY a budget was refused, in the traveler's terms — so the reply can say what
+ * is wrong instead of "I couldn't do that". validateProposal returns null for
+ * every failure, which is right for a gate and useless for an explanation.
+ * @returns {string|null} a short reason, or null when the value is fine.
+ */
+function budgetRefusalReason(raw) {
+    const v = (raw && typeof raw === 'object') ? raw : {};
+    const min = Number(v.min);
+    const max = Number(v.max);
+    const currency = String(v.currency || 'USD').trim().toUpperCase();
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return 'the budget needs both a minimum and a maximum number';
+    if (min < 0) return 'a budget cannot be negative';
+    if (max <= 0) return 'the maximum has to be above zero';
+    if (max === min) return 'the minimum has to be LOWER than the maximum — the two given were the same';
+    if (max < min) return 'the minimum was higher than the maximum';
+    if (max > MAX_BUDGET) return 'that maximum is far too large to be a daily budget';
+    if (!PREF_VOCAB.currency.includes(currency)) return `the currency must be one of ${PREF_VOCAB.currency.join(', ')}`;
+    return null;
+}
+
+module.exports = { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, budgetRefusalReason, PREF_VOCAB, PREF_PATHS, RADIUS_LIMITS };
