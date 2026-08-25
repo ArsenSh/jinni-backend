@@ -5,6 +5,14 @@
 
 /** One evidence line per place — the ONLY facts the model may assert. */
 const { CATEGORY_VOCABULARY, normalizeCategory } = require('../cards');
+// The vocabulary the Preferences screen offers, taken from the module that
+// VALIDATES it rather than retyped here. Asked "what interest I can select",
+// Jinni answered "family, adventure, food, culture, nature, shopping, or
+// relaxation" — inventing shopping, missing romantic/history/art/nightlife, and
+// naming two of them wrongly (live 2026-08-25). A second hardcoded copy of a
+// category list is the repo's oldest recurring bug; there is one list, and this
+// reads it.
+const { PREF_VOCAB } = require('../../preferences/proposal');
 
 function placeFactLine(p) {
     const bits = [
@@ -91,6 +99,15 @@ const IDENTITY_ROWS = [
     'The settings you can change are exactly these five: travel style (luxury or budget), interests, '
     + 'budget, saved location, and the nearby / discovery search radius. Anything else in the app — '
     + 'language, theme, password, account — you cannot change; for those, point to Settings.',
+    // Naming the settings without naming their VALUES left the model to invent
+    // the list when asked what it could pick from. These are the same ten the
+    // Preferences screen shows, and the only ten a proposal will validate
+    // against — anything else is silently dropped, so offering it is a promise
+    // the app will not keep.
+    'The interests they can choose are exactly these ten, and no others: '
+    + PREF_VOCAB.interests.map(i => i.replace(/_/g, ' & ')).join(', ')
+    + '. If asked which interests are available, list these — never improvise a category '
+    + '(there is no "shopping" interest) and never rename one.',
     // "can you change my preferences?" names no value, so nothing is written and
     // "it is done" would be a lie — but a flat "I can't" is false too, and that
     // is what shipped (live 2026-08-24). A question about the CAPABILITY is
@@ -131,9 +148,19 @@ function travelerRows(preferences) {
     }
     // The search radii, so it can answer "how far do you look?" and notice when
     // one is the reason a deck came back thin (Arsen 2026-08-24).
+    // 5 km and 50 km are what every account starts with, so they are present on
+    // EVERY traveler and were recited in every "what are my preferences?" answer
+    // as though the traveler had chosen them (Arsen 2026-08-25: "it is by
+    // default when user joins jinni … not tell all time"). The rows stay — they
+    // are how "how far do you look?" gets answered — but an untouched default is
+    // labelled as one, so it is background rather than news.
     const r = p._searchRadius || {};
-    if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)`);
-    if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)`);
+    const dflt = (isDefault) => isDefault
+        ? ' — the DEFAULT every account starts with, not a choice they made: never volunteer it, '
+          + 'state it only if this message asks about search distance'
+        : '';
+    if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)${dflt(r.nearby === 5)}`);
+    if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)${dflt(r.discovery === 50)}`);
     // Budget style with no budget is a gap worth closing, and only the traveler
     // can close it. Arsen 2026-08-24: "if user he wants budget places then
     // should give budget also min and max".

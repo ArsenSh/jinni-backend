@@ -149,3 +149,54 @@ describe('what Jinni says it can change', () => {
         expect(s).toMatch(/Only describe a change as done when this turn actually reports one/i);
     });
 });
+
+// What Jinni offers must be what the Preferences grid offers.
+//
+// Asked "what interest I can select" it answered "family, adventure, food,
+// culture, nature, shopping, or relaxation" (live 2026-08-25) — it invented
+// shopping, dropped romantic/history/art/nightlife, and renamed two. It was
+// improvising, because the prompt named the SETTINGS but never their VALUES.
+describe('the interests Jinni offers', () => {
+    const { buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+    const { PREF_VOCAB } = require('../engine/preferences/proposal');
+    // frontend/src/locales/en.json → onboarding.interests. Hardcoded rather than
+    // read from disk: the backend deploys on its own and that file is not in the
+    // container. If the grid ever gains an interest, this fails until the
+    // validator vocabulary gains it too — which is the point.
+    const UI_KEYS = ['family', 'romantic', 'nature', 'adventure', 'cultural',
+        'history', 'art', 'food_drink', 'nightlife', 'relaxation'];
+
+    test('the validator vocabulary IS the onboarding grid', () => {
+        expect(PREF_VOCAB.interests).toEqual(UI_KEYS);
+    });
+
+    test('all ten reach the prompt, and the invented one does not', () => {
+        const s = buildChitchatMessages({ message: 'what interests can I select?', langName: 'English' })[0].content;
+        for (const key of UI_KEYS) expect(s).toContain(key.replace(/_/g, ' & '));
+        expect(s).toMatch(/there is no "shopping" interest/i);
+    });
+});
+
+// 5 km and 50 km ship with every account, so they appeared in every "what are
+// my preferences?" answer as though they had been chosen (Arsen 2026-08-25:
+// "it is by default when user joins jinni … not tell all time").
+describe('default search radii are background, not news', () => {
+    const { buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+    const sys = (searchRadius) => buildChitchatMessages({
+        message: 'what are my preferences?', langName: 'English',
+        preferences: { travelStyle: 'luxury', _searchRadius: searchRadius },
+    })[0].content;
+
+    test('untouched defaults are labelled as defaults and not to be volunteered', () => {
+        const s = sys({ nearby: 5, discovery: 50 });
+        expect(s).toMatch(/nearby radius: 5 km.*never volunteer it/s);
+        expect(s).toMatch(/discovery radius: 50 km.*never volunteer it/s);
+    });
+
+    test('a radius the traveler actually changed is NOT marked default', () => {
+        const s = sys({ nearby: 12, discovery: 80 });
+        expect(s).toContain('nearby radius: 12 km');
+        expect(s).toContain('discovery radius: 80 km');
+        expect(s).not.toMatch(/never volunteer it/);
+    });
+});

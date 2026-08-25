@@ -11,6 +11,14 @@ const userSchema = new mongoose.Schema({
         interests: [String],
         budget: { min: Number, max: Number, currency: { type: String, default: 'USD' }},
         travelStyle: String,
+        // OnboardingPage.vue has ALWAYS sent this in its payload, and the
+        // onboarding route has always written `preferences` wholesale — but the
+        // field was never declared here, so Mongoose's default strict mode
+        // stripped it on every save, silently. The toggle therefore fell back to
+        // its `true` default on every load, and applyProposal's write of it
+        // (2026-08-25) went the same way: matched, acknowledged, discarded.
+        // A path absent from the schema is not a place to store anything.
+        useGPS: { type: Boolean, default: true },
         languages: { type: [String], default: ['en'] },
         accessibility: [String],
         destination: {

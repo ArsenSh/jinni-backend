@@ -391,3 +391,34 @@ describe('a location change writes what onboarding writes', () => {
         expect($set['preferences.destination']).toMatchObject({ city: 'Dubai' });
     });
 });
+
+// A path that is not in the schema is not a place to store anything.
+//
+// The applyProposal tests above stub User.updateOne, so they assert the $set we
+// BUILD — not what Mongoose agrees to write. preferences.useGPS was added to
+// that $set on 2026-08-25 and silently discarded in production, because it was
+// missing from the schema and strict mode drops unknown paths without a word.
+// The stub can never see that; this reads the schema itself.
+describe('every path applyProposal writes actually exists in the User schema', () => {
+    const User = require('../models/User');
+    const { PREF_PATHS, RADIUS_LIMITS } = require('../engine/preferences/proposal');
+
+    const PATHS = [
+        ...Object.values(PREF_PATHS),
+        ...Object.values(RADIUS_LIMITS).map(r => r.path),
+        'preferences.useGPS',
+        'settings.privacy.autoDetectLocation',
+        'settings.privacy.locationPermissionGranted',
+        'preferences.destination.city',
+        'settings.location.city',
+    ];
+
+    test.each(PATHS)('%s is declared', (path) => {
+        // Nested objects register as their leaves, so accept either a declared
+        // path or a declared child — what matters is that strict mode will
+        // not drop the write.
+        const declared = User.schema.path(path)
+            || Object.keys(User.schema.paths).some(p => p.startsWith(path + '.'));
+        expect(declared).toBeTruthy();
+    });
+});
