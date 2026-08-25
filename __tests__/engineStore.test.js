@@ -299,3 +299,4 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(out.map(c => c.name)).toContain('Fresh Find');
     });
 });
+

@@ -227,6 +227,10 @@ async function loadCandidates(params = {}, deps = {}) {
     const {
         category = null, subType = null, center = null,
         radiusKm = 50, preferences = {}, excludes = {}, requestId = null,
+        // Discovery shows every tier; Nearby is paid-tier ground. Flows
+        // straight through from the route, since findPlaces hands this whole
+        // params object down unchanged.
+        nearbyMode = false,
     } = params;
     if (!center || center.lat == null || center.lng == null) return [];
     // Events are never served from the place cache (a cached venue is not a
@@ -328,7 +332,8 @@ async function loadCandidates(params = {}, deps = {}) {
     let destinations = [], businesses = [];
     try {
         const proximity = deps.proximity || require('../../services/proximityService').findSmartProximityPlaces;
-        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType);
+        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType,
+            null, { nearbyMode });
         destinations = (res?.destinations || []).map(d => dbDocToCandidate(d, 'destination', center)).filter(Boolean);
         businesses = (res?.businesses || []).map(b => dbDocToCandidate(b, 'business', center)).filter(Boolean);
     } catch (err) {

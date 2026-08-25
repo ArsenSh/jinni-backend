@@ -198,7 +198,13 @@ function budgetMatchClause(budget) {
  *        returns only jewelry-tagged listings. Ignored for every other action.
  * @returns {Promise<Object>} { businesses: Array, destinations: Array, metadata: Object }
  */
-async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null, seenPenalty = null) {
+// `options` is trailing and optional ON PURPOSE. This function already carries
+// nine positional parameters — the codebase's own analysis calls that shape its
+// worst habit — so the tier gate arrives as a named field instead of a tenth
+// comma to count. Every existing caller keeps its exact behaviour by omitting
+// it, which is what lets v1 stay byte-identical while v2 opts in.
+async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null, seenPenalty = null, options = {}) {
+    const nearbyModeGate = options && options.nearbyMode === true;
     // Novelty bias: `seenPenalty` is a Map (identity → penalty) the caller
     // precomputes from the user's PlaceView history. A place already seen loses
     // a little score so fresh ones rise — SOFT (subtracted before the top-N cut,
@@ -271,6 +277,16 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             // budget-matched instead of ignored. See effectivePrice().
             baseQuery.$and.push(budgetMatchClause(normalizedBudget));
         }
+        // Nearby is paid-tier ground: Discovery shows every tier, Nearby is
+        // where a free Verified listing steps aside. That difference IS the
+        // Spotlight pitch ($29/mo) and the premise of the displacement emails,
+        // and it had never been implemented — every nearbyMode reference in the
+        // backend drove radius and geometry, so "Nearby" meant nothing but 5 km
+        // instead of 50. BUSINESSES only: destinations, cache and Google rows
+        // carry no partnership, and gating them would empty Nearby in any city
+        // with no paying partners — which is every city today. A missing tier
+        // counts as verified, because that is what an unpaid listing is.
+        if (nearbyModeGate) baseQuery.$and.push({ 'partnership.tier': { $in: ['spotlight', 'signature'] } });
         if (userRegion?.country) {
             const countryVariations = [userRegion.country, userRegion.region, userRegion.city].filter(Boolean);
             const regionFilter = {

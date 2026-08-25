@@ -633,6 +633,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const result = await findPlaces({
                 query: retrievalQuery,
                 eventWindow,
+                // Nearby is paid-tier ground: a free Verified listing steps
+                // aside there, which is the whole Spotlight pitch.
+                nearbyMode: effectiveNearbyMode,
                 regionCity: searchRegion.city || meta.searchCity || null,
                 regionCountry: searchRegion.country || null,
                 // Progress voice — the store calls this when it goes out to the
