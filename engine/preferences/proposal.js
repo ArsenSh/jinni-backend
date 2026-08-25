@@ -280,7 +280,27 @@ async function applyProposal(userId, proposal, deps = {}) {
         const modified = Number(res?.modifiedCount ?? res?.nModified ?? 0);
         const ok = matched > 0 || modified > 0;
         if (!ok) console.warn(`[prefs] ${userId}: ${valid.label} matched no document — nothing was written`);
-        if (ok) console.log(`[prefs] ${userId}: ${valid.label} (approved by the traveler)`);
+        if (ok) console.log(`[prefs] ${userId}: ${valid.label} (approved by the traveler) `
+            + `matched=${matched} modified=${modified}`);
+        // READ IT BACK. A location change logged success on 2026-08-25 and the
+        // very next turn still centred on the old city, which no amount of
+        // reading the code could explain: matchedCount says the document was
+        // found, not that the field now holds what we sent. Mongoose's strict
+        // mode drops an undeclared path SILENTLY, so "wrote" and "stored" are
+        // genuinely different questions and only the database can answer the
+        // second. Same reasoning as the region=/facts= log lines — the failure
+        // was invisible, so make it visible. One extra read, on settings
+        // changes only (a handful per user, ever).
+        if (ok && valid.field === 'location') {
+            try {
+                const back = await User.findById(userId).select('settings.location preferences.destination preferences.useGPS').lean();
+                const stored = back?.settings?.location?.city || '(none)';
+                const dest = back?.preferences?.destination?.city || '(none)';
+                const agrees = stored === (valid.value.city || '');
+                console.log(`[prefs] readback: settings.location="${stored}" preferences.destination="${dest}" `
+                    + `useGPS=${back?.preferences?.useGPS} — ${agrees ? 'STORED' : 'DID NOT STICK'}`);
+            } catch (e) { console.warn(`[prefs] readback failed: ${e.message}`); }
+        }
         return ok;
     } catch (err) {
         console.warn(`[prefs] update failed for ${userId}: ${err.message}`);
