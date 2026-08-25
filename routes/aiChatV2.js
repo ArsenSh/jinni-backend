@@ -288,6 +288,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // the destination resolver runs in the next one, so the flag rides
             // on intent. Absent/true = GPS mode, matching the schema default.
             intent._autoDetectLocation = user?.settings?.privacy?.autoDetectLocation !== false;
+            // Already in the request body every turn — it just never reached a
+            // prompt. Set after the settings loop, so a mode switched THIS turn
+            // is the one described.
+            intent._preferences._searchMode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // An approval a moment ago is already true for this turn.
             if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {

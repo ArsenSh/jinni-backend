@@ -96,9 +96,10 @@ const IDENTITY_ROWS = [
     // knows it may act but not on what, so it either refuses or promises
     // something the app cannot do. These five are exactly what
     // engine/preferences/proposal.js accepts and writes.
-    'The settings you can change are exactly these five: travel style (luxury or budget), interests, '
-    + 'budget, saved location, and the nearby / discovery search radius. Anything else in the app — '
-    + 'language, theme, password, account — you cannot change; for those, point to Settings.',
+    'The settings you can change are exactly these six: travel style (luxury or budget), interests, '
+    + 'budget, saved location, the search MODE (nearby or discovery), and the nearby / discovery search '
+    + 'radius. Anything else in the app — language, theme, password, account — you cannot change; for '
+    + 'those, point to Settings.',
     // Naming the settings without naming their VALUES left the model to invent
     // the list when asked what it could pick from. These are the same ten the
     // Preferences screen shows, and the only ten a proposal will validate
@@ -154,6 +155,16 @@ function travelerRows(preferences) {
     // default when user joins jinni … not tell all time"). The rows stay — they
     // are how "how far do you look?" gets answered — but an untouched default is
     // labelled as one, so it is background rather than news.
+    // Which of the two radii is actually in force. It arrives in the request
+    // body on EVERY turn, so this costs nothing to know — yet it never reached
+    // a prompt, and Jinni behaved differently per mode without being able to
+    // say which one it was in. Asked outright, it guessed.
+    if (p._searchMode) {
+        rows.push(p._searchMode === 'nearby'
+            ? 'search mode: NEARBY — you are searching tight around where they physically are right now'
+            : 'search mode: DISCOVERY — you are searching wide around the place they are exploring, '
+              + 'which is not necessarily where they are standing');
+    }
     const r = p._searchRadius || {};
     const dflt = (isDefault) => isDefault
         ? ' — the DEFAULT every account starts with, not a choice they made: never volunteer it, '
