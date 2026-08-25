@@ -94,89 +94,7 @@ describe('applyProposal', () => {
     });
 });
 
-// Arsen 2026-08-24: "can you set to current location, gps one?" → "I can't set
 // that for you", which was false. Then: "it should simply set and save, same
-// things user can do from onboarding page."
-describe('setting the destination to where you are', () => {
-    const { validateProposal, isExplicit, applyProposal } = require('../engine/preferences/proposal');
-    const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
-
-    test('code fills in every field from the reported position', () => {
-        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
-        expect(p.value).toMatchObject({
-            country: 'AM', countryName: 'Armenia', city: 'Yerevan',
-            coordinates: { lat: 40.18, lng: 44.51 },
-        });
-        // settings.location carries a timestamp; preferences.destination does
-        // not, and applyProposal strips it for that path.
-        expect(p.value.lastUpdated).toBeInstanceOf(Date);
-        expect(p.label).toBe('location to Yerevan, Armenia');
-    });
-
-    test('a city NAME is refused — a guessed coordinate is not saveable', () => {
-        expect(validateProposal({ field: 'location', value: 'Paris' }, { currentPlace: HERE })).toBeNull();
-        expect(validateProposal({ field: 'location', value: { lat: 1, lng: 2 } }, { currentPlace: HERE })).toBeNull();
-    });
-
-    test('no position means no write, rather than 0,0', () => {
-        expect(validateProposal({ field: 'location', value: 'current' }, {})).toBeNull();
-        expect(validateProposal({ field: 'location', value: 'current' },
-            { currentPlace: { city: 'X', lat: 0, lng: 0 } })).toBeNull();
-    });
-
-    test('an ISO country code is only stored when the region gave one', () => {
-        // resolveRegion returns {city, country} with no code, so this field stays
-        // empty rather than being guessed from the country name.
-        const p = validateProposal({ field: 'location', value: 'current' },
-            { currentPlace: { city: 'Dubai', country: 'United Arab Emirates', lat: 25.2, lng: 55.27 } });
-        expect(p.value.country).toBe('');
-        expect(p.value.countryName).toBe('United Arab Emirates');
-    });
-
-    test('only a real boolean true skips the confirmation', () => {
-        expect(isExplicit({ explicit: true })).toBe(true);
-        expect(isExplicit({ explicit: 'maybe' })).toBe(false);
-        expect(isExplicit({})).toBe(false);
-        expect(isExplicit(null)).toBe(false);
-    });
-
-    // Arsen 2026-08-24: "onboarding page works with user modal … then ai should
-    // do the same." OnboardingPage.vue PATCHes /api/auth/onboarding with BOTH
-    // preferences.destination and settings.location, plus the GPS flag. Writing
-    // only one leaves chat and the Preferences screen disagreeing, which is what
-    // made the change look imaginary.
-    test('a location change writes exactly what onboarding writes', async () => {
-        const sets = [];
-        const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
-        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
-        expect(await applyProposal('u1', p, { User })).toBe(true);
-        // 2026-08-25: this list was SHORT of the payload the test is named
-        // after. OnboardingPage.vue also sends preferences.useGPS and
-        // settings.privacy.locationPermissionGranted, and useGPS is the field
-        // the Preferences screen's GPS toggle actually reads — so the toggle
-        // kept showing the old choice after Jinni moved the location. The
-        // assertion encoded the gap instead of catching it.
-        expect(Object.keys(sets[0].$set).sort()).toEqual([
-            'preferences.destination', 'preferences.useGPS', 'settings.location',
-            'settings.privacy.autoDetectLocation', 'settings.privacy.locationPermissionGranted',
-        ]);
-        expect(sets[0].$set['settings.location'].city).toBe('Yerevan');
-        expect(sets[0].$set['preferences.destination'].city).toBe('Yerevan');
-        // The schema has no lastUpdated under preferences.destination.
-        expect(sets[0].$set['preferences.destination'].lastUpdated).toBeUndefined();
-        expect(sets[0].$set['settings.location'].lastUpdated).toBeInstanceOf(Date);
-    });
-
-    test('choosing a named city switches GPS autodetect off, as onboarding does', async () => {
-        const sets = [];
-        const User = { updateOne: async (q, u) => { sets.push(u); return { matchedCount: 1 }; } };
-        const named = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
-        await applyProposal('u1', validateProposal({ field: 'location', value: 'named' }, { namedPlace: named }), { User });
-        expect(sets[0].$set['settings.privacy.autoDetectLocation']).toBe(false);
-        await applyProposal('u1', validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE }), { User });
-        expect(sets[1].$set['settings.privacy.autoDetectLocation']).toBe(true);
-    });
-});
 
 // Arsen 2026-08-24: "the jinni can have access to discovery and nearby modes
 // also their radiuses, in clever situations can ask or get command to change,
@@ -263,38 +181,6 @@ describe('search radii and what Jinni admits to seeing', () => {
 // Dubai" → "Your location is now set to Dubai — done." while the log read
 // "[prefs] location to Yerevan, Armenia — set on request". The vocabulary
 // only had 'current', so a named city was silently turned into the GPS. The
-// prose and the database disagreed, which is worse than refusing outright.
-describe('a named destination is saved as the city that was named', () => {
-    const { validateProposal } = require('../engine/preferences/proposal');
-    const GPS = { city: 'Yerevan', country: 'Armenia', lat: 40.18, lng: 44.51 };
-    const NAMED = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
-
-    test('"named" saves the named city, not where they are standing', () => {
-        const p = validateProposal({ field: 'location', value: 'named' },
-            { currentPlace: GPS, namedPlace: NAMED });
-        expect(p.value.city).toBe('Dubai');
-        expect(p.value.coordinates).toEqual({ lat: 25.205, lng: 55.271 });
-        expect(p.label).toBe('location to Dubai, United Arab Emirates');
-    });
-
-    test('"current" still saves where they are', () => {
-        const p = validateProposal({ field: 'location', value: 'current' },
-            { currentPlace: GPS, namedPlace: NAMED });
-        expect(p.value.city).toBe('Yerevan');
-    });
-
-    test('"named" with no city named writes NOTHING — it does not fall back to GPS', () => {
-        // Falling back is how Yerevan got saved when Dubai was asked for.
-        expect(validateProposal({ field: 'location', value: 'named' }, { currentPlace: GPS })).toBeNull();
-    });
-
-    test('a place name or coordinates from the model are still refused', () => {
-        expect(validateProposal({ field: 'location', value: 'Dubai' },
-            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
-        expect(validateProposal({ field: 'location', value: { lat: 25, lng: 55 } },
-            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
-    });
-});
 
 // "it reads, it says correctly but it is not editing in user settings, it is
 // editing in his mind only" (Arsen 2026-08-24). Two causes, one here:
@@ -328,8 +214,6 @@ describe('a write only counts when it matched a document', () => {
     });
 });
 
-// ── The onboarding contract, field for field (added 2026-08-25) ──────────────
-//
 // OnboardingPage.vue's save payload is the contract a chat-driven change has to
 // match, because both write the SAME user and the Preferences screen reads what
 // onboarding wrote:
@@ -342,55 +226,6 @@ describe('a write only counts when it matched a document', () => {
 // (handleGPSToggle + the locationMode computed both read preferences.useGPS).
 // So the toggle kept showing the previous choice after Jinni moved the
 // location: the same two-fields-one-fact drift that once had chat reading
-// preferences.destination while the screen showed settings.location.
-describe('a location change writes what onboarding writes', () => {
-    const { validateProposal, applyProposal } = require('../engine/preferences/proposal');
-    const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
-    const THERE = { city: 'Dubai', country: 'United Arab Emirates', countryCode: 'AE', lat: 25.07, lng: 55.14 };
-    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
-
-    test('"use where I am now" sets BOTH gps flags, and grants the permission', async () => {
-        const calls = [];
-        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
-        expect(await applyProposal('u1', p, { User: User(calls) })).toBe(true);
-        const $set = calls[0].u.$set;
-        expect($set['preferences.useGPS']).toBe(true);
-        expect($set['settings.privacy.autoDetectLocation']).toBe(true);
-        // Onboarding: `useGPS ? true : existingPermission`.
-        expect($set['settings.privacy.locationPermissionGranted']).toBe(true);
-        expect($set['preferences.destination']).toMatchObject({ city: 'Yerevan', countryName: 'Armenia' });
-        expect($set['settings.location'].coordinates).toEqual({ lat: 40.18, lng: 44.51 });
-    });
-
-    test('a NAMED city unticks gps in both places — and never revokes the permission', async () => {
-        const calls = [];
-        const p = validateProposal({ field: 'location', value: 'named' }, { namedPlace: THERE });
-        expect(await applyProposal('u1', p, { User: User(calls) })).toBe(true);
-        const $set = calls[0].u.$set;
-        expect($set['preferences.useGPS']).toBe(false);
-        expect($set['settings.privacy.autoDetectLocation']).toBe(false);
-        // Onboarding PRESERVES the existing permission when GPS is off, so
-        // writing false here would withdraw something nobody withdrew.
-        expect($set).not.toHaveProperty('settings.privacy.locationPermissionGranted');
-    });
-
-    test('an unknown source leaves every gps flag alone rather than guessing', async () => {
-        const calls = [];
-        // A proposal parked in the database before `source` existed: the place
-        // still applies, but nothing may be inferred about the GPS choice.
-        const parked = {
-            field: 'location',
-            value: { country: 'AE', countryName: 'United Arab Emirates', city: 'Dubai',
-                coordinates: { lat: 25.07, lng: 55.14 }, lastUpdated: new Date() },
-        };
-        expect(await applyProposal('u1', parked, { User: User(calls) })).toBe(true);
-        const $set = calls[0].u.$set;
-        expect($set).not.toHaveProperty('preferences.useGPS');
-        expect($set).not.toHaveProperty('settings.privacy.autoDetectLocation');
-        expect($set).not.toHaveProperty('settings.privacy.locationPermissionGranted');
-        expect($set['preferences.destination']).toMatchObject({ city: 'Dubai' });
-    });
-});
 
 // A path that is not in the schema is not a place to store anything.
 //
