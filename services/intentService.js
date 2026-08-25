@@ -175,6 +175,10 @@ Rules:
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
     budget        -> {"min":50,"max":200,"currency":"USD"} (currency one of AED, USD, RUB, EUR, GBP).
+                     NAMING AN AMOUNT IS A BUDGET CHANGE AND NOTHING ELSE. "consider 500 usd",
+                     "my budget is 50-200", "make it 20 a day" set the figures and leave travelStyle
+                     exactly as it is — a luxury traveler stating a number stays luxury. Only add a
+                     travelStyle entry when they actually say the STYLE should change.
     searchMode    -> "nearby" (search tight around where they physically are) or "discovery"
                      (search wide around the place they are exploring). This is the Discovery/Nearby
                      toggle beside the chat box: "switch to nearby", "search around me instead",
