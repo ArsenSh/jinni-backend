@@ -37,20 +37,6 @@ const PREF_VOCAB = {
     interests: ['family', 'romantic', 'nature', 'adventure', 'cultural',
         'history', 'art', 'food_drink', 'nightlife', 'relaxation'],
     currency: ['AED', 'USD', 'RUB', 'EUR', 'GBP'],
-    // Two values, and both are resolved by CODE:
-    //   'current' — where the app says they are now.
-    //   'named'   — the city THIS TURN's destination resolver already geocoded
-    //               through Google. Not a name the model typed.
-    //
-    // 'current' alone was a bug with teeth: "change my location, choose Dubai"
-    // had no other option, so the model proposed 'current', code resolved it to
-    // the GPS, and Yerevan was saved while the reply said "now set to Dubai"
-    // (live 2026-08-24). The prose and the database disagreed, which is worse
-    // than refusing outright.
-    //
-    // A model-supplied coordinate is still never accepted. It says WHICH of the
-    // two, and code supplies the numbers either way.
-    location: ['current', 'named'],
     // The Discovery/Nearby toggle. Stored as a boolean, but the model proposes
     // the WORD — a boolean has no meaning to read back to the traveler, and
     // "searchMode: true" is exactly the kind of value that gets inverted by
@@ -58,40 +44,32 @@ const PREF_VOCAB = {
     searchMode: ['nearby', 'discovery'],
 };
 
-// Search radii, in km. Arsen 2026-08-24: "the jinni can have access to
-// discovery and nearby modes also their radiuses, in clever situations can ask
-// or get command to change".
-//
-// The bounds are the User schema's own (settings.searchRadius), not new numbers
-// invented here — a value the UI slider could not produce is a value the
-// traveler cannot undo. Out of range is DROPPED rather than clamped: silently
-// storing 100 after someone asked for 200 would make Jinni's "done" a lie. The
-// prompt states the limits, so the model proposes inside them.
+
+// Which document path each field writes to. Radii live under settings, the rest
+// under preferences, and getting that wrong would write a field nothing reads.
+// Search radii, in km. The bounds are the User schema's own
+// (settings.searchRadius), not new numbers invented here — a value the UI
+// slider could not produce is a value the traveler cannot undo. Out of range is
+// DROPPED rather than clamped: silently storing 100 after someone asked for 200
+// would make Jinni's "done" a lie.
 const RADIUS_LIMITS = {
     nearbyRadius: { min: 1, max: 20, path: 'settings.searchRadius.nearby', label: 'nearby radius' },
     discoveryRadius: { min: 10, max: 100, path: 'settings.searchRadius.discovery', label: 'discovery radius' },
 };
 
-// Which document path each field writes to. Radii live under settings, the rest
-// under preferences, and getting that wrong would write a field nothing reads.
 const PREF_PATHS = {
     travelStyle: 'preferences.travelStyle',
     interests: 'preferences.interests',
     budget: 'preferences.budget',
-    // A location change touches THREE paths, because that is what the
-    // onboarding screen writes (frontend OnboardingPage.vue → PATCH
-    // /api/auth/onboarding). Arsen 2026-08-24: "onboarding page works with user
-    // modal … then ai should do the same."
-    //
-    // Writing only one of them is why the change kept looking imaginary: chat
-    // reads preferences.destination, the Preferences screen shows
-    // settings.location, and updating either alone leaves the other stale and
-    // the two disagreeing. See LOCATION_PATHS below — this entry stays for the
-    // single-path fields only.
-    location: 'settings.location',
     searchMode: 'settings.nearbyMode',
     nearbyRadius: RADIUS_LIMITS.nearbyRadius.path,
     discoveryRadius: RADIUS_LIMITS.discoveryRadius.path,
+    // NO 'location'. Jinni may READ the saved location and may search a city
+    // named in a message, but it does not WRITE where the traveler lives or is
+    // heading (Arsen 2026-08-26: "it can say open preferences and change …  but
+    // not do by himself"). One edit there moves the search centre, the mode, the
+    // GPS flags and every surface that reads them — too many consequences to
+    // police for a setting the Preferences screen already handles well.
 };
 
 const MAX_BUDGET = 100000;
@@ -140,62 +118,6 @@ function validateProposal(raw, ctx = {}) {
         // having in both.
         if (min < 0 || max <= 0 || max <= min || max > MAX_BUDGET) return null;
         return { field, value: { min, max, currency }, label: `budget to ${min}–${max} ${currency}` };
-    }
-
-    // 'destination' is still accepted so a proposal parked in the database
-    // before the rename still applies instead of silently doing nothing.
-    if (field === 'location' || field === 'destination') {
-        // IDEMPOTENT. applyProposal re-validates as a safety net — a pending
-        // proposal comes back out of the database, so re-checking it is right —
-        // and it has no position context to hand. So an already-resolved
-        // destination must validate on its own coordinates, or the write could
-        // never happen (caught by the test below before it shipped).
-        const already = raw.value && typeof raw.value === 'object' ? raw.value : null;
-        if (already) {
-            const lat0 = Number(already.coordinates?.lat);
-            const lng0 = Number(already.coordinates?.lng);
-            if (!Number.isFinite(lat0) || !Number.isFinite(lng0) || (lat0 === 0 && lng0 === 0)) return null;
-            const where0 = [already.city, already.countryName].filter(Boolean).join(', ');
-            return {
-                field: 'location',
-                // Carried through the re-validation. Dropping it silently reset
-                // the GPS-autodetect flag to true for a named city, and lost
-                // the timestamp settings.location expects.
-                source: raw.source === 'named' ? 'named' : (raw.source === 'current' ? 'current' : null),
-                value: {
-                    country: String(already.country || ''),
-                    countryName: String(already.countryName || ''),
-                    city: String(already.city || ''),
-                    coordinates: { lat: lat0, lng: lng0 },
-                    lastUpdated: already.lastUpdated instanceof Date ? already.lastUpdated : new Date(),
-                },
-                label: where0 ? `location to ${where0}` : 'location to where you are now',
-            };
-        }
-        const v = String(raw.value || '').trim().toLowerCase();
-        if (!PREF_VOCAB.location.includes(v)) return null;
-        // 'named' uses the city the resolver already geocoded this turn; nothing
-        // is written when no city was named, rather than falling back to the
-        // GPS and saving somewhere the traveler did not ask for.
-        const src = v === 'named' ? ctx.namedPlace : ctx.currentPlace;
-        if (!src) return null;
-        const where = [src.city, src.country].filter(Boolean).join(', ');
-        const lat = Number(src.lat);
-        const lng = Number(src.lng);
-        // No position, nothing to save. Refusing beats storing 0,0.
-        if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
-        return {
-            field: 'location',
-            source: v,                                 // 'current' | 'named'
-            value: {
-                country: src.countryCode || '',
-                countryName: src.country || '',
-                city: src.city || '',
-                coordinates: { lat, lng },
-                lastUpdated: new Date(),
-            },
-            label: where ? `location to ${where}` : 'location to where you are now',
-        };
     }
 
     // Kept as the WORD all the way through validation, because a proposal is
@@ -255,38 +177,7 @@ async function applyProposal(userId, proposal, deps = {}) {
     const User = deps.User || require('../../models/User');
     try {
         let $set;
-        if (valid.field === 'location') {
-            // Exactly the fields the onboarding screen sets, and nothing else.
-            // preferences.destination has no lastUpdated in the schema, so it
-            // does not get one.
-            const { lastUpdated, ...place } = valid.value;
-            const usesGps = valid.source === 'current';
-            $set = {
-                'preferences.destination': place,
-                'settings.location': valid.value,
-                // Onboarding derives this from "use my GPS?" — choosing a named
-                // city is the same answer as unticking it.
-                // Only a deliberate 'current' turns GPS autodetect back on; an
-                // unknown source leaves the flag alone rather than guessing.
-                ...(valid.source ? { 'settings.privacy.autoDetectLocation': usesGps } : {}),
-                // preferences.useGPS is the SAME answer stored a second time,
-                // and it is the one the Preferences screen actually renders
-                // (OnboardingPage.vue: handleGPSToggle and the locationMode
-                // computed both read preferences.useGPS, not the privacy flag).
-                // Writing only the privacy flag left the toggle showing the
-                // previous choice after Jinni moved the location — the same
-                // two-fields-one-fact drift that once had chat reading
-                // preferences.destination while the screen showed
-                // settings.location. Onboarding writes BOTH in one payload; so
-                // does this now.
-                ...(valid.source ? { 'preferences.useGPS': usesGps } : {}),
-                // Onboarding: `useGPS ? true : existingPermission` — turning GPS
-                // ON grants it, choosing a named city PRESERVES whatever was
-                // there. Hence written only for 'current': storing false on a
-                // named city would revoke a permission nobody withdrew.
-                ...(usesGps ? { 'settings.privacy.locationPermissionGranted': true } : {}),
-            };
-        } else {
+        {
             const path = PREF_PATHS[valid.field];
             if (!path) return false;               // a field with no home is not writable
             // The one place the toggle's word becomes its boolean.
@@ -320,25 +211,6 @@ async function applyProposal(userId, proposal, deps = {}) {
         if (!ok) console.warn(`[prefs] ${userId}: ${valid.label} matched no document — nothing was written`);
         if (ok) console.log(`[prefs] ${userId}: ${valid.label} (approved by the traveler) `
             + `matched=${matched} modified=${modified}`);
-        // READ IT BACK. A location change logged success on 2026-08-25 and the
-        // very next turn still centred on the old city, which no amount of
-        // reading the code could explain: matchedCount says the document was
-        // found, not that the field now holds what we sent. Mongoose's strict
-        // mode drops an undeclared path SILENTLY, so "wrote" and "stored" are
-        // genuinely different questions and only the database can answer the
-        // second. Same reasoning as the region=/facts= log lines — the failure
-        // was invisible, so make it visible. One extra read, on settings
-        // changes only (a handful per user, ever).
-        if (ok && valid.field === 'location') {
-            try {
-                const back = await User.findById(userId).select('settings.location preferences.destination preferences.useGPS').lean();
-                const stored = back?.settings?.location?.city || '(none)';
-                const dest = back?.preferences?.destination?.city || '(none)';
-                const agrees = stored === (valid.value.city || '');
-                console.log(`[prefs] readback: settings.location="${stored}" preferences.destination="${dest}" `
-                    + `useGPS=${back?.preferences?.useGPS} — ${agrees ? 'STORED' : 'DID NOT STICK'}`);
-            } catch (e) { console.warn(`[prefs] readback failed: ${e.message}`); }
-        }
         return ok;
     } catch (err) {
         console.warn(`[prefs] update failed for ${userId}: ${err.message}`);

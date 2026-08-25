@@ -135,7 +135,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     let namedPlace = null;
     let settingsApplied = [];
     let settingsRefused = [];
-    let pendingLocationChange = null;      // needs the geocoded city, resolved below
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -235,14 +234,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     currentPlace: null,          // filled below when it is needed
                     namedPlace: null,
                 });
-                if (!proposed && c.field !== 'location') {
+                if (!proposed) {
                     // A refusal the traveler can act on. "budget" alone told them
                     // nothing; the reason names what to change.
                     const why = c.field === 'budget' ? budgetRefusalReason(c.value) : null;
                     settingsRefused.push(why ? `budget — ${why}` : c.field);
                     continue;
                 }
-                if (c.field === 'location') { pendingLocationChange = c; continue; }
                 // Budget style with no figures is a state the Preferences form
                 // will not let anyone save (OnboardingPage isBudgetValid: min >
                 // 0, max > 0, min <= max). So the ASK comes first and the switch
@@ -345,27 +343,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
                 namedPlace = { city: dest.city, country: null, countryCode: '', lat: dest.center.lat, lng: dest.center.lng };
-            }
-            // The location command waited for this: the city geocoded through
-            // Google, never a name the model typed.
-            if (pendingLocationChange && req.user?.id) {
-                const nr = namedPlace
-                    ? await resolveRegion({ center: { lat: namedPlace.lat, lng: namedPlace.lng } })
-                    : null;
-                const proposed = validateProposal(pendingLocationChange, {
-                    currentPlace: hereRegion && gpsCenter
-                        ? { ...hereRegion, lat: gpsCenter.lat, lng: gpsCenter.lng } : null,
-                    namedPlace: namedPlace
-                        ? { ...namedPlace, city: nr?.city || namedPlace.city, country: nr?.country || null } : null,
-                });
-                if (proposed && await applyProposal(req.user.id, proposed)) {
-                    settingsApplied.push(proposed);
-                    // So THIS turn's reply reflects the change it just made.
-                    intent._preferences._savedLocation = proposed.value;
-                    intent._savedLocation = proposed.value;
-                } else {
-                    settingsRefused.push('location');
-                }
             }
             if (dest.source !== 'gps') {
                 console.log(`[v2] centre=${dest.source}${dest.city ? ` "${dest.city}"` : ''} (${center?.lat?.toFixed(3)},${center?.lng?.toFixed(3)})`);

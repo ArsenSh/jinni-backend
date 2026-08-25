@@ -64,13 +64,15 @@ describe('intent reports the command', () => {
 
     test('the prompt names every settable field and its allowed values', () => {
         const src = require('fs').readFileSync(require.resolve('../services/intentService.js'), 'utf8');
-        for (const f of ['location', 'travelStyle', 'interests', 'budget', 'nearbyRadius', 'discoveryRadius']) {
+        // 'location' is deliberately absent since 2026-08-26 — see the
+        // "saved location is not Jinni's to change" suite below.
+        for (const f of ['travelStyle', 'interests', 'budget', 'searchMode', 'nearbyRadius', 'discoveryRadius']) {
             expect(src).toContain(f);
         }
         // A one-off want must not be read as a lasting change.
         expect(src).toMatch(/Wanting something once is NOT a setting change/);
-        // Coordinates and place names never come from the model.
-        expect(src).toMatch(/never a place name or coordinates here/);
+        // A city in the message is somewhere to look, never a setting to write.
+        expect(src).toMatch(/There is NO location field/);
     });
 
     test('malformed entries are dropped rather than repaired', () => {
@@ -105,8 +107,8 @@ describe('recognising a settings command', () => {
     test('a polite question is stated to be a command, with examples', () => {
         const p = prompt();
         expect(p).toMatch(/POLITE QUESTION IS STILL A COMMAND/i);
-        expect(p).toContain('can you set my location to Dubai?');
         expect(p).toContain('could you change my style to budget?');
+        expect(p).toContain('can you make my interests family?');
     });
 
     test('the rule is non-Latin too — the phrasing trap is not English-only', () => {
@@ -136,10 +138,10 @@ describe('what Jinni says it can change', () => {
 
     test('the five settable fields are named, so nothing wider is promised', () => {
         const s = sys();
-        for (const field of ['travel style', 'interests', 'budget', 'saved location', 'search radius']) {
+        for (const field of ['travel style', 'interests', 'budget', 'search MODE', 'search radius']) {
             expect(s).toContain(field);
         }
-        expect(s).toMatch(/language, theme, password, account — you cannot change/i);
+        expect(s).toMatch(/Language, theme, password and account you also cannot change/i);
     });
 
     test('asked whether it CAN, the answer is yes-then-which, never a refusal', () => {
@@ -257,7 +259,7 @@ describe('Jinni knows which search mode it is in', () => {
 
     test('the capability list counts the mode among what it can change', () => {
         const s = sys('nearby');
-        expect(s).toMatch(/exactly these six/);
+        expect(s).toMatch(/exactly these five/);
         expect(s).toMatch(/search MODE \(nearby or discovery\)/);
     });
 });
@@ -279,5 +281,47 @@ describe('an amount does not imply a style', () => {
         expect(p).toContain('consider 500 usd');
         expect(p).toMatch(/a luxury traveler stating a number stays luxury/);
         expect(p).toMatch(/Only add a\s+travelStyle entry when they actually say the STYLE should change/);
+    });
+});
+
+// Location came OUT of the settable set (Arsen 2026-08-26: "it can say open
+// preferences and change … but not do by himself"). One edit there moves the
+// search centre, the GPS/destination mode and every surface reading them; the
+// Preferences screen already does it properly. Searching a named city is
+// untouched — that was never a setting change.
+describe('the saved location is not Jinni\'s to change', () => {
+    const { validateProposal, PREF_VOCAB, PREF_PATHS } = require('../engine/preferences/proposal');
+    const { buildUserPrompt } = require('../services/intentService');
+    const { buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+
+    test('no vocabulary, no path, no proposal survives', () => {
+        expect(PREF_VOCAB.location).toBeUndefined();
+        expect(PREF_PATHS.location).toBeUndefined();
+        for (const v of ['current', 'named', 'Dubai']) {
+            expect(validateProposal({ field: 'location', value: v })).toBeNull();
+            expect(validateProposal({ field: 'destination', value: v })).toBeNull();
+        }
+    });
+
+    test('the classifier is not offered the field at all', () => {
+        const p = buildUserPrompt('set my location to Dubai', []);
+        expect(p).not.toMatch(/"field":"<location\|/);
+        expect(p).toMatch(/There is NO location field/);
+        expect(p).toMatch(/a city named in the message is a place to SEARCH/);
+    });
+
+    test('asked to change it, Jinni points at Preferences instead', () => {
+        const s = buildChitchatMessages({ message: 'set my location to Dubai', langName: 'English' })[0].content;
+        expect(s).toMatch(/SAVED LOCATION is NOT yours to change/);
+        expect(s).toMatch(/they can change it in Preferences/);
+        // and it must not read as "I can't help with Dubai at all"
+        expect(s).toMatch(/hotels in Dubai" needs no setting changed/);
+    });
+
+    test('the radii and the mode are still settable', () => {
+        expect(PREF_PATHS.nearbyRadius).toBe('settings.searchRadius.nearby');
+        expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
+        expect(PREF_PATHS.searchMode).toBe('settings.nearbyMode');
+        expect(validateProposal({ field: 'nearbyRadius', value: 10 }).value).toBe(10);
     });
 });
