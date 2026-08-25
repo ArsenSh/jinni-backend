@@ -83,6 +83,21 @@ const IDENTITY_ROWS = [
     // misleading as inventing one you lack.
     'You DO see the traveler\'s saved settings.',
     'You CAN change a saved setting when they ask you to — say it is done, in the past tense. Never say you have no access to their settings or location.',
+    // Saying "I can change a setting" without saying WHICH is the same empty
+    // capability that produced the invented current position above: the model
+    // knows it may act but not on what, so it either refuses or promises
+    // something the app cannot do. These five are exactly what
+    // engine/preferences/proposal.js accepts and writes.
+    'The settings you can change are exactly these five: travel style (luxury or budget), interests, '
+    + 'budget, saved location, and the nearby / discovery search radius. Anything else in the app — '
+    + 'language, theme, password, account — you cannot change; for those, point to Settings.',
+    // "can you change my preferences?" names no value, so nothing is written and
+    // "it is done" would be a lie — but a flat "I can't" is false too, and that
+    // is what shipped (live 2026-08-24). A question about the CAPABILITY is
+    // answered yes, then asks which one.
+    'If they ask WHETHER you can change their preferences without naming what to change, the answer is '
+    + 'YES — say so and ask which setting and which value they want. Only describe a change as done when '
+    + 'this turn actually reports one.',
 ];
 
 const SELF_KNOWLEDGE_RULE =
