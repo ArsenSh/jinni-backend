@@ -160,7 +160,7 @@ Return ONLY this JSON object:
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'), or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
-"settings_change":[{"field":"<location|travelStyle|interests|budget|nearbyRadius|discoveryRadius>","value":<see below>}]}
+"settings_change":[{"field":"<location|travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
 Rules:
 - is_travel is true when the current message asks about places, food, dining, lodging, attractions, sights, events, activities, shopping, nightlife, directions, or trip planning — OR when it clearly continues such a topic from the conversation (e.g. "any cheaper ones?" right after hotels were shown, "what about near the old town").
@@ -175,6 +175,10 @@ Rules:
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
     budget        -> {"min":50,"max":200,"currency":"USD"} (currency one of AED, USD, RUB, EUR, GBP).
+    searchMode    -> "nearby" (search tight around where they physically are) or "discovery"
+                     (search wide around the place they are exploring). This is the Discovery/Nearby
+                     toggle beside the chat box: "switch to nearby", "search around me instead",
+                     "go back to discovery mode".
     nearbyRadius  -> a number of km, 1-20.  discoveryRadius -> a number of km, 10-100.
   Several at once is fine: "set location to Dubai and style to budget" is two entries. This is a COMMAND being carried out, not a question about places — when it is filled, the traveler is not asking to be shown anything.
 - needs_weather is true only if answering requires current weather or forecast data (weather, temperature, rain, what to pack, what to wear). It STAYS true for elliptical follow-ups that shift a weather exchange to another place ("what about Dubai?" right after a weather answer) — and put that place in place_names.`;
