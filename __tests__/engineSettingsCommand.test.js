@@ -261,3 +261,23 @@ describe('Jinni knows which search mode it is in', () => {
         expect(s).toMatch(/search MODE \(nearby or discovery\)/);
     });
 });
+
+// Naming an amount is a budget change and nothing else (Arsen 2026-08-25: "if
+// i say consider this x amount of money that will not set style automatically
+// to budget … it will set the amount but the style will remain luxury").
+//
+// The rule tells the classifier that several changes at once are fine, so an
+// amount was one plausible inference away from dragging travelStyle along with
+// it — and a luxury traveler stating a number would have been demoted by their
+// own sentence.
+describe('an amount does not imply a style', () => {
+    const { buildUserPrompt } = require('../services/intentService');
+
+    test('the rule says so, with the examples that would have triggered it', () => {
+        const p = buildUserPrompt('consider 500 usd', []);
+        expect(p).toMatch(/NAMING AN AMOUNT IS A BUDGET CHANGE AND NOTHING ELSE/);
+        expect(p).toContain('consider 500 usd');
+        expect(p).toMatch(/a luxury traveler stating a number stays luxury/);
+        expect(p).toMatch(/Only add a\s+travelStyle entry when they actually say the STYLE should change/);
+    });
+});
