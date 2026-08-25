@@ -98,6 +98,12 @@ function _samePlace(a, b) {
 async function resolveDestination({
     placeNames = [], gps = null, sessionDestination = null, savedDestination = null,
     nearbyMode = false, currentRegion = null,
+    // settings.privacy.autoDetectLocation. TRUE (the schema default) means the
+    // traveler is in GPS mode and savedDestination is only a snapshot of where
+    // they were; FALSE means they deliberately chose a place to explore. See
+    // step 4. Defaults to true to match the schema, so a caller that omits it
+    // gets the live position rather than a stale one.
+    autoDetectLocation = true,
 } = {}, deps = {}) {
     const gpsCenter = (gps && gps.lat != null && gps.lng != null) ? { lat: gps.lat, lng: gps.lng } : null;
 
@@ -163,8 +169,24 @@ async function resolveDestination({
     // 4. The destination chosen in Settings. A fresh chat has no session
     //    destination, so without this the setting was invisible on exactly the
     //    turn that matters most — the first one.
+    //
+    //    settings.location holds TWO different facts, and only the mode flag
+    //    says which. adminRoutes.js:104 already spells it out: with
+    //    autoDetectLocation true it is where the traveler WAS when it was last
+    //    written; with it false it is the place they chose to explore.
+    //    Onboarding writes the same object in both modes, so the field alone
+    //    cannot be read correctly.
+    //
+    //    Ranking it above GPS in BOTH modes pinned a GPS-mode traveler to a
+    //    stale snapshot: the log read "User location: Yerevan, Armenia" on
+    //    every turn while the centre stayed `saved "Dubai"` (live 2026-08-25).
+    //    A record of where someone used to be must not outrank where they are
+    //    now — in GPS mode it is the FALLBACK, for when no position is reported
+    //    at all (location switched off, permission denied, a desktop with no
+    //    fix). In destination mode the saved city still wins, which is the
+    //    entire point of choosing one.
     const saved = _savedCentre(savedDestination);
-    if (saved) {
+    if (saved && !(autoDetectLocation && gpsCenter)) {
         return { center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name, remember: null };
     }
 

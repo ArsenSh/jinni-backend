@@ -163,11 +163,45 @@ describe('the destination saved in Settings', () => {
     const DUBAI = { country: 'AE', countryName: 'United Arab Emirates', city: 'Dubai',
         coordinates: { lat: 25.205, lng: 55.271 } };
 
-    test('beats GPS — that is the point of choosing one', async () => {
-        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI });
+    // 2026-08-25: this used to assert the saved value beats GPS in EVERY mode,
+    // which is only true when the traveler actually chose it. In GPS mode
+    // settings.location is a snapshot of where they WERE (adminRoutes.js:104),
+    // and ranking a snapshot above the live position pinned them to it.
+    test('beats GPS in destination mode — that is the point of choosing one', async () => {
+        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI, autoDetectLocation: false });
         expect(d.source).toBe('saved');
         expect(d.city).toBe('Dubai');
         expect(d.center.lat).toBeCloseTo(25.205, 2);
+    });
+
+    test('in GPS mode the live position wins — a snapshot is not where they are', async () => {
+        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI, autoDetectLocation: true });
+        expect(d.source).toBe('gps');
+        expect(d.center.lat).toBeCloseTo(40.1814, 2);
+    });
+
+    test('in GPS mode with NO fix, the saved value is still the fallback', async () => {
+        // Location off, permission denied, a desktop with no fix — a stale
+        // centre beats no centre at all.
+        const d = await resolveDestination({ gps: null, savedDestination: DUBAI, autoDetectLocation: true });
+        expect(d.source).toBe('saved');
+        expect(d.city).toBe('Dubai');
+    });
+
+    test('an omitted flag means GPS mode, matching the schema default', async () => {
+        const d = await resolveDestination({ gps: YEREVAN, savedDestination: DUBAI });
+        expect(d.source).toBe('gps');
+    });
+
+    test('nearby and the session destination are unaffected by the mode', async () => {
+        const near = await resolveDestination({ nearbyMode: true, gps: YEREVAN, savedDestination: DUBAI, autoDetectLocation: false });
+        expect(near.source).toBe('nearby');
+        const sess = await resolveDestination({
+            gps: YEREVAN, savedDestination: DUBAI, autoDetectLocation: true,
+            sessionDestination: { name: 'Batumi', latitude: 41.64, longitude: 41.64 },
+        });
+        // A destination THIS conversation chose still outranks the live position.
+        expect(sess.source).toBe('session');
     });
 
     test('a city named in the message still wins over it', async () => {

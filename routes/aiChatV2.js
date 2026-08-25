@@ -274,6 +274,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
+            // GPS mode vs destination mode. `user` is scoped to this block, and
+            // the destination resolver runs in the next one, so the flag rides
+            // on intent. Absent/true = GPS mode, matching the schema default.
+            intent._autoDetectLocation = user?.settings?.privacy?.autoDetectLocation !== false;
             // An approval a moment ago is already true for this turn.
             if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {
@@ -307,6 +311,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // as the fallback so accounts set up before this still work.
                 savedDestination: intent._savedLocation || intent._preferences?.destination || null,
                 nearbyMode,
+                // Which fact settings.location holds this turn: a snapshot of
+                // where they were (GPS mode) or the place they chose to explore
+                // (destination mode). Without it a GPS-mode traveler stays
+                // pinned to wherever they last saved.
+                autoDetectLocation: intent._autoDetectLocation !== false,
                 // Where we are now, so naming it is understood as "here" rather
                 // than as a move to its centroid. Same 1km grid cache the
                 // search region uses a moment later, so it costs nothing.
