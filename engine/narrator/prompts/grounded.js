@@ -596,10 +596,20 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
  * anything — "set style to budget" once produced "that's done" when nothing had
  * been written at all (live 2026-08-24).
  */
-function buildSettingsMessages({ message, langName, done = [], failed = [], needsBudget = false }) {
+// `awaiting` is a change that has NOT been made yet and is waiting on one more
+// answer. Onboarding will not let anyone finish on budget style without figures
+// (isBudgetValid: min > 0, max > 0, min <= max), so writing the style first put
+// the traveler in a state the form forbids. Arsen 2026-08-25: "ai should ask
+// minimum and maximum budget initially, then switch to budget". The ask comes
+// first, the switch follows the answer — so the reply must not say "done".
+function buildSettingsMessages({ message, langName, done = [], failed = [], needsBudget = false, awaiting = [] }) {
     const lines = [];
     if (done.length) lines.push('CHANGED, and already saved: ' + done.join('; ') + '.');
     if (failed.length) lines.push('NOT changed — you could not do this: ' + failed.join(', ') + '.');
+    if (awaiting.length) {
+        lines.push('NOT changed YET, waiting on their answer: ' + awaiting.join('; ')
+            + '. Do NOT say this one is done or saved — say you will set it once you have the figures.');
+    }
     return [
         { role: 'system', content:
             `You are Jinni. Reply in ${langName}, in ONE short sentence (two only if there is a question to ask).\n`

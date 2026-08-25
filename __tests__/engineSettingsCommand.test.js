@@ -200,3 +200,31 @@ describe('default search radii are background, not news', () => {
         expect(s).not.toMatch(/never volunteer it/);
     });
 });
+
+// Ask first, switch second (Arsen 2026-08-25: "ai should ask minimum and
+// maximum budget initially, then swithc to budget"). Onboarding refuses to
+// finish on budget style without figures, so announcing the switch before
+// having them puts the traveler in a state the form forbids.
+describe('a budget-style switch that is still waiting on figures', () => {
+    const { buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
+
+    test('it is reported as NOT done yet, and the figures are asked for', () => {
+        const s = buildSettingsMessages({
+            message: 'change style to budget', langName: 'English',
+            done: [], awaiting: ['travel style to budget'], needsBudget: true,
+        }).map(x => x.content).join('\n');
+        expect(s).toMatch(/NOT changed YET/);
+        expect(s).toMatch(/Do NOT say this one is done or saved/);
+        expect(s).toMatch(/minimum and maximum budget/i);
+        expect(s).not.toMatch(/CHANGED, and already saved/);
+    });
+
+    test('once the figures land, both are reported as done together', () => {
+        const s = buildSettingsMessages({
+            message: '10 and 200 usd', langName: 'English',
+            done: ['travel style to budget', 'budget to 10–200 USD'], needsBudget: false,
+        }).map(x => x.content).join('\n');
+        expect(s).toMatch(/CHANGED, and already saved: travel style to budget; budget to 10–200 USD/);
+        expect(s).not.toMatch(/NOT changed YET/);
+    });
+});

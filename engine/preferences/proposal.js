@@ -267,6 +267,20 @@ async function applyProposal(userId, proposal, deps = {}) {
             const path = PREF_PATHS[valid.field];
             if (!path) return false;               // a field with no home is not writable
             $set = { [path]: valid.value };
+            // Budget figures are not a standalone setting — they belong to the
+            // budget style. OnboardingPage.vue's selectStyle() clears them for
+            // any other style, and the inputs only render while 'budget' is
+            // chosen (Arsen 2026-08-25: "when user selects luxury and if he had
+            // budget in before, app drops budget min max numbers").
+            //
+            // Writing only travelStyle left a luxury traveler carrying their old
+            // 10–200 band, and that band is not decoration: it gates retrieval,
+            // so they kept being filtered to budget places by a number the
+            // screen no longer shows them. Same reset as the screen performs,
+            // currency included.
+            if (valid.field === 'travelStyle' && valid.value !== 'budget') {
+                $set['preferences.budget'] = { min: 0, max: 0, currency: 'USD' };
+            }
         }
         const res = await User.updateOne({ _id: userId }, { $set });
         // `acknowledged` means "the server received the write", NOT "a document
