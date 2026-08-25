@@ -147,8 +147,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    reply or silence all leave the settings alone. Either way the question
     //    is closed — Jinni asks once (Arsen 2026-08-24). ──
     let prefApplied = null;
+    // A budget-style switch parked last turn while Jinni asked for the figures.
+    // It is NOT a yes/no question — the answer is a pair of numbers — so it must
+    // not be consumed by the consent logic below, and it must survive this block
+    // to be completed once the budget lands. Cleared where it is resolved.
+    let deferredStyle = null;
     const pending = sessionPeek?.pendingPrefChange?.field ? sessionPeek.pendingPrefChange : null;
-    if (pending) {
+    const awaitingStyle = (pending?.field === 'travelStyle' && pending.value === 'budget') ? pending : null;
+    if (pending && !awaitingStyle) {
         const said = isAffirmative(message);
         if (said) prefApplied = (await applyProposal(req.user.id, pending)) ? pending : null;
         else if (!isNegative(message)) console.log('[prefs] no clear answer — leaving the setting as it is');
@@ -224,6 +230,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 });
                 if (!proposed && c.field !== 'location') { settingsRefused.push(c.field); continue; }
                 if (c.field === 'location') { pendingLocationChange = c; continue; }
+                // Budget style with no figures is a state the Preferences form
+                // will not let anyone save (OnboardingPage isBudgetValid: min >
+                // 0, max > 0, min <= max). So the ASK comes first and the switch
+                // waits for the answer (Arsen 2026-08-25: "ai should ask minimum
+                // and maximum budget initially, then switch to budget").
+                // Writing it now would leave the traveler on budget style with a
+                // 0–0 band that gates nothing, while the reply said it was done.
+                if (proposed.field === 'travelStyle' && proposed.value === 'budget') {
+                    const have = intent._preferences?.budget;
+                    if (!(have && (have.min > 0 || have.max > 0))) { deferredStyle = proposed; continue; }
+                }
                 if (req.user?.id && await applyProposal(req.user.id, proposed)) {
                     settingsApplied.push(proposed);
                     // The reply is written from these rows, so they must show
@@ -236,6 +253,24 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         intent._preferences[proposed.field] = proposed.value;
                     }
                 } else settingsRefused.push(c.field);
+            }
+            // The figures arrived, so the switch that was waiting on them can
+            // happen now — and both are reported in the same breath, which is
+            // the order the form uses: fill the budget in, then the style is
+            // complete. Jinni asks once, so the slot is released either way.
+            if (awaitingStyle && req.user?.id) {
+                if (settingsApplied.some(p2 => p2.field === 'budget')) {
+                    const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
+                    if (await applyProposal(req.user.id, style)) {
+                        settingsApplied.unshift(style);
+                        intent._preferences.travelStyle = 'budget';
+                    }
+                } else console.log('[prefs] budget style still waiting on figures — not switched');
+                if (sessionId) {
+                    require('../models/ChatSession')
+                        .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { field: null, value: null, label: null, askedAt: null } } })
+                        .catch(() => {});
+                }
             }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
@@ -441,7 +476,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             meta.answerType = 'getting_around';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
-        } else if (settingsApplied.length || settingsRefused.length) {
+        } else if (settingsApplied.length || settingsRefused.length || deferredStyle) {
             // A COMMAND WAS CARRIED OUT. Nothing was asked for, so nothing is
             // retrieved and no cards are produced (Arsen 2026-08-24: "this kind
             // of commands why it triggers to show locations???").
@@ -455,10 +490,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Budget style with no numbers behind it cannot be used for
             // anything, and only the traveler knows the figures.
             const b = intent._preferences?.budget;
-            const needsBudget = settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
-                && !(b && (b.min > 0 || b.max > 0));
+            // Two ways to need the figures: the switch is WAITING on them (this
+            // turn asked), or an older account is already on budget style with
+            // none. Either way, ask — and never fill them in.
+            const awaiting = deferredStyle ? [deferredStyle.label] : [];
+            const needsBudget = !!deferredStyle
+                || (settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
+                    && !(b && (b.min > 0 || b.max > 0)));
+            // Park the waiting switch so the next turn's figures can complete
+            // it. Without this the traveler answers "10 and 200 usd" and gets a
+            // budget saved against the style they were trying to leave.
+            if (deferredStyle && sessionId) {
+                require('../models/ChatSession')
+                    .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { ...deferredStyle, askedAt: new Date() } } })
+                    .catch(() => {});
+            }
             const out = await narrator.stream({
-                messages: buildSettingsMessages({ message, langName, done, failed, needsBudget }),
+                messages: buildSettingsMessages({ message, langName, done, failed, needsBudget, awaiting }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 120,
                 realStream: true,

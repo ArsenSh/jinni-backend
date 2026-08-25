@@ -422,3 +422,55 @@ describe('every path applyProposal writes actually exists in the User schema', (
         expect(declared).toBeTruthy();
     });
 });
+
+// Budget figures belong to the budget style — they are not a standalone setting.
+//
+// OnboardingPage.vue's selectStyle() clears min/max/currency for any style other
+// than 'budget', and the inputs only render while 'budget' is chosen (Arsen
+// 2026-08-25: "when user selects luxury and if he had budget in before, app
+// drops budget min max numbers"). Chat wrote travelStyle alone, so a traveler
+// who switched to luxury kept their old band — and that band GATES RETRIEVAL,
+// so they went on being filtered to budget places by a number the Preferences
+// screen no longer showed them.
+describe('switching travel style keeps budget in step with the screen', () => {
+    const { applyProposal } = require('../engine/preferences/proposal');
+    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
+
+    test('luxury clears the figures, exactly as selectStyle does', async () => {
+        const calls = [];
+        expect(await applyProposal('u1', { field: 'travelStyle', value: 'luxury' }, { User: User(calls) })).toBe(true);
+        expect(calls[0].u.$set).toEqual({
+            'preferences.travelStyle': 'luxury',
+            'preferences.budget': { min: 0, max: 0, currency: 'USD' },
+        });
+    });
+
+    test('budget style leaves the figures alone — they are about to be asked for', async () => {
+        const calls = [];
+        expect(await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User: User(calls) })).toBe(true);
+        expect(calls[0].u.$set).toEqual({ 'preferences.travelStyle': 'budget' });
+    });
+
+    test('setting a budget on its own never touches the style', async () => {
+        const calls = [];
+        await applyProposal('u1', { field: 'budget', value: { min: 10, max: 200, currency: 'USD' } }, { User: User(calls) });
+        expect(Object.keys(calls[0].u.$set)).toEqual(['preferences.budget']);
+    });
+});
+
+// Onboarding will not let the traveler finish on budget style without figures
+// (isBudgetValid: min > 0, max > 0, min <= max). Chat cannot block a turn the
+// way a form blocks a save, so it asks instead — and must never invent them.
+describe('budget style without figures is asked about, never filled in', () => {
+    const { buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
+
+    test('the ask happens, and no numbers are supplied', () => {
+        const m = buildSettingsMessages({
+            message: 'change style to budget', langName: 'English',
+            done: ['travel style to budget'], needsBudget: true,
+        });
+        const s = m.map(x => x.content).join('\n');
+        expect(s).toMatch(/budget/i);
+        expect(s).not.toMatch(/\$\s?\d/);
+    });
+});
