@@ -34,7 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
-const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit } = require('../engine/preferences/proposal');
+const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, budgetRefusalReason } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -235,7 +235,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     currentPlace: null,          // filled below when it is needed
                     namedPlace: null,
                 });
-                if (!proposed && c.field !== 'location') { settingsRefused.push(c.field); continue; }
+                if (!proposed && c.field !== 'location') {
+                    // A refusal the traveler can act on. "budget" alone told them
+                    // nothing; the reason names what to change.
+                    const why = c.field === 'budget' ? budgetRefusalReason(c.value) : null;
+                    settingsRefused.push(why ? `budget — ${why}` : c.field);
+                    continue;
+                }
                 if (c.field === 'location') { pendingLocationChange = c; continue; }
                 // Budget style with no figures is a state the Preferences form
                 // will not let anyone save (OnboardingPage isBudgetValid: min >
