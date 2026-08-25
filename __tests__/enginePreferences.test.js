@@ -150,8 +150,15 @@ describe('setting the destination to where you are', () => {
         const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
         const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
         expect(await applyProposal('u1', p, { User })).toBe(true);
+        // 2026-08-25: this list was SHORT of the payload the test is named
+        // after. OnboardingPage.vue also sends preferences.useGPS and
+        // settings.privacy.locationPermissionGranted, and useGPS is the field
+        // the Preferences screen's GPS toggle actually reads — so the toggle
+        // kept showing the old choice after Jinni moved the location. The
+        // assertion encoded the gap instead of catching it.
         expect(Object.keys(sets[0].$set).sort()).toEqual([
-            'preferences.destination', 'settings.location', 'settings.privacy.autoDetectLocation',
+            'preferences.destination', 'preferences.useGPS', 'settings.location',
+            'settings.privacy.autoDetectLocation', 'settings.privacy.locationPermissionGranted',
         ]);
         expect(sets[0].$set['settings.location'].city).toBe('Yerevan');
         expect(sets[0].$set['preferences.destination'].city).toBe('Yerevan');
@@ -318,5 +325,69 @@ describe('a write only counts when it matched a document', () => {
             res({ n: 1, nModified: 1 }))).toBe(true);
         expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
             res({ n: 0, nModified: 0 }))).toBe(false);
+    });
+});
+
+// ── The onboarding contract, field for field (added 2026-08-25) ──────────────
+//
+// OnboardingPage.vue's save payload is the contract a chat-driven change has to
+// match, because both write the SAME user and the Preferences screen reads what
+// onboarding wrote:
+//
+//   preferences: { travelStyle, interests, budget, useGPS, destination }
+//   settings:    { location, privacy: { autoDetectLocation, locationPermissionGranted } }
+//
+// applyProposal wrote destination, settings.location and autoDetectLocation —
+// but not useGPS, which is the field the screen's GPS toggle actually renders
+// (handleGPSToggle + the locationMode computed both read preferences.useGPS).
+// So the toggle kept showing the previous choice after Jinni moved the
+// location: the same two-fields-one-fact drift that once had chat reading
+// preferences.destination while the screen showed settings.location.
+describe('a location change writes what onboarding writes', () => {
+    const { validateProposal, applyProposal } = require('../engine/preferences/proposal');
+    const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
+    const THERE = { city: 'Dubai', country: 'United Arab Emirates', countryCode: 'AE', lat: 25.07, lng: 55.14 };
+    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
+
+    test('"use where I am now" sets BOTH gps flags, and grants the permission', async () => {
+        const calls = [];
+        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
+        expect(await applyProposal('u1', p, { User: User(calls) })).toBe(true);
+        const $set = calls[0].u.$set;
+        expect($set['preferences.useGPS']).toBe(true);
+        expect($set['settings.privacy.autoDetectLocation']).toBe(true);
+        // Onboarding: `useGPS ? true : existingPermission`.
+        expect($set['settings.privacy.locationPermissionGranted']).toBe(true);
+        expect($set['preferences.destination']).toMatchObject({ city: 'Yerevan', countryName: 'Armenia' });
+        expect($set['settings.location'].coordinates).toEqual({ lat: 40.18, lng: 44.51 });
+    });
+
+    test('a NAMED city unticks gps in both places — and never revokes the permission', async () => {
+        const calls = [];
+        const p = validateProposal({ field: 'location', value: 'named' }, { namedPlace: THERE });
+        expect(await applyProposal('u1', p, { User: User(calls) })).toBe(true);
+        const $set = calls[0].u.$set;
+        expect($set['preferences.useGPS']).toBe(false);
+        expect($set['settings.privacy.autoDetectLocation']).toBe(false);
+        // Onboarding PRESERVES the existing permission when GPS is off, so
+        // writing false here would withdraw something nobody withdrew.
+        expect($set).not.toHaveProperty('settings.privacy.locationPermissionGranted');
+    });
+
+    test('an unknown source leaves every gps flag alone rather than guessing', async () => {
+        const calls = [];
+        // A proposal parked in the database before `source` existed: the place
+        // still applies, but nothing may be inferred about the GPS choice.
+        const parked = {
+            field: 'location',
+            value: { country: 'AE', countryName: 'United Arab Emirates', city: 'Dubai',
+                coordinates: { lat: 25.07, lng: 55.14 }, lastUpdated: new Date() },
+        };
+        expect(await applyProposal('u1', parked, { User: User(calls) })).toBe(true);
+        const $set = calls[0].u.$set;
+        expect($set).not.toHaveProperty('preferences.useGPS');
+        expect($set).not.toHaveProperty('settings.privacy.autoDetectLocation');
+        expect($set).not.toHaveProperty('settings.privacy.locationPermissionGranted');
+        expect($set['preferences.destination']).toMatchObject({ city: 'Dubai' });
     });
 });

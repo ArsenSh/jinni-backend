@@ -237,6 +237,7 @@ async function applyProposal(userId, proposal, deps = {}) {
             // preferences.destination has no lastUpdated in the schema, so it
             // does not get one.
             const { lastUpdated, ...place } = valid.value;
+            const usesGps = valid.source === 'current';
             $set = {
                 'preferences.destination': place,
                 'settings.location': valid.value,
@@ -244,7 +245,23 @@ async function applyProposal(userId, proposal, deps = {}) {
                 // city is the same answer as unticking it.
                 // Only a deliberate 'current' turns GPS autodetect back on; an
                 // unknown source leaves the flag alone rather than guessing.
-                ...(valid.source ? { 'settings.privacy.autoDetectLocation': valid.source === 'current' } : {}),
+                ...(valid.source ? { 'settings.privacy.autoDetectLocation': usesGps } : {}),
+                // preferences.useGPS is the SAME answer stored a second time,
+                // and it is the one the Preferences screen actually renders
+                // (OnboardingPage.vue: handleGPSToggle and the locationMode
+                // computed both read preferences.useGPS, not the privacy flag).
+                // Writing only the privacy flag left the toggle showing the
+                // previous choice after Jinni moved the location — the same
+                // two-fields-one-fact drift that once had chat reading
+                // preferences.destination while the screen showed
+                // settings.location. Onboarding writes BOTH in one payload; so
+                // does this now.
+                ...(valid.source ? { 'preferences.useGPS': usesGps } : {}),
+                // Onboarding: `useGPS ? true : existingPermission` — turning GPS
+                // ON grants it, choosing a named city PRESERVES whatever was
+                // there. Hence written only for 'current': storing false on a
+                // named city would revoke a permission nobody withdrew.
+                ...(usesGps ? { 'settings.privacy.locationPermissionGranted': true } : {}),
             };
         } else {
             const path = PREF_PATHS[valid.field];

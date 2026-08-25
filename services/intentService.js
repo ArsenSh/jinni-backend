@@ -170,7 +170,7 @@ Rules:
 - action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). This INCLUDES elliptical follow-ups whose whole point is the place — "in Dubai", "what about Paris?", "and for Tbilisi?" after a search all mean the CURRENT ask targets that destination, so include it. NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
 - info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi", "can I walk there", "which metro line", "do I need a visa" all want answers; "where can I eat", "suggest rooftop bars" want places). A message can be travel-related AND info_ask — that is normal. Judge by what a GOOD answer looks like: prose, or a list of places? You are not limited to the example labels — name the topic yourself when none fits.
-- settings_change: [] on almost every message. Fill it ONLY when the traveler TELLS you to change a saved setting ("set my location to Dubai", "change my style to budget", "make my interests family", "search 10 km around me"). Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
+- settings_change: [] on almost every message. Fill it ONLY when the traveler ASKS FOR a saved setting to change ("set my location to Dubai", "change my style to budget", "make my interests family", "search 10 km around me"). A POLITE QUESTION IS STILL A COMMAND — "can you set my location to Dubai?", "could you change my style to budget?", "would you make my interests family?", "можешь поставить бюджетный стиль?", "можешь установить текущее местоположение?" all fill settings_change. What decides it is whether the message NAMES A SETTING AND THE VALUE to give it, never the grammar. A question that names NO value is not a change ("can you change my preferences?", "what are my preferences?") — leave settings_change empty for those. Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
     location      -> "current" (where they are now) or "named" (the city in place_names) — never a place name or coordinates here.
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
@@ -438,4 +438,10 @@ async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg
 
 // validateIntent exported for tests only — it is the deterministic BRAKE on
 // the model's JSON (enum/format checks, open-vocabulary info_ask folding).
-module.exports = { classify, validateIntent };
+// buildUserPrompt is exported for TESTS only. Whether a message is recognised
+// as a settings command is decided by an LLM reading this prompt, so it is the
+// one step in the chain no unit test can execute — and it is exactly where the
+// chain broke live (a polite "can you set…?" read as a question, so nothing was
+// ever written). Asserting the RULE still names its cases is the closest thing
+// to coverage available, and it stops the wording being trimmed away later.
+module.exports = { classify, validateIntent, buildUserPrompt };
