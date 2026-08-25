@@ -228,3 +228,36 @@ describe('a budget-style switch that is still waiting on figures', () => {
         expect(s).not.toMatch(/NOT changed YET/);
     });
 });
+
+// The mode arrives in the request body on every single turn, so knowing it
+// costs nothing — yet it reached radius, ranking weights and retrieval without
+// ever reaching a prompt. Jinni behaved differently per mode and could not say
+// which one it was in; asked outright, it guessed.
+describe('Jinni knows which search mode it is in', () => {
+    const { buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+    const sys = (mode) => buildChitchatMessages({
+        message: 'am I in nearby mode?', langName: 'English',
+        preferences: { travelStyle: 'luxury', _searchMode: mode },
+    })[0].content;
+
+    test('nearby is described as tight around where they physically are', () => {
+        expect(sys('nearby')).toMatch(/search mode: NEARBY/);
+        expect(sys('nearby')).not.toMatch(/search mode: DISCOVERY/);
+    });
+
+    test('discovery says plainly it is not necessarily where they are standing', () => {
+        const s = sys('discovery');
+        expect(s).toMatch(/search mode: DISCOVERY/);
+        expect(s).toMatch(/not necessarily where they are standing/);
+    });
+
+    test('no mode supplied means no row invented', () => {
+        expect(sys(null)).not.toMatch(/search mode:/);
+    });
+
+    test('the capability list counts the mode among what it can change', () => {
+        const s = sys('nearby');
+        expect(s).toMatch(/exactly these six/);
+        expect(s).toMatch(/search MODE \(nearby or discovery\)/);
+    });
+});

@@ -284,6 +284,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
+            // Already in the request body every turn — it just never reached a
+            // prompt. Set after the settings loop, so a mode switched THIS turn
+            // is the one described.
+            intent._preferences._searchMode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // An approval a moment ago is already true for this turn.
             if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {
