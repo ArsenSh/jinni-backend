@@ -180,7 +180,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // What the engine did this turn. Reported ONCE, at the bottom of the reply
     // (it used to be pasted into the prose, where it read as something Jinni
     // was saying). Filled by whichever branch answers.
-    const stats = { candidates: null, cacheHit: false, path: null };
+    // What the engine did this turn. Reported at the bottom of the reply AND
+    // written to ChatTurn — the same facts the [v2] log line prints, but as
+    // fields something can aggregate. `path` finally has a reader.
+    const stats = {
+        candidates: null, cacheHit: false, path: null,
+        evidence: 'none', lexical: 0, lexicalTop: 0, lexicalShare: 0,
+        vector: false, taste: false, category: null, subType: null,
+        mode: null, radiusKm: null, googleCalls: 0, huntFired: false,
+    };
+    // Spend reported by the store (same optional shape as onStage). Counted
+    // here because the route is the only place that knows the whole turn.
+    const onSpend = (kind, n = 1) => {
+        if (kind === 'google') stats.googleCalls += Number(n) || 0;
+        if (kind === 'hunt') stats.huntFired = true;
+    };
     // Genie-voiced progress. The traveler waits 8–24s on an event hunt with no
     // sign of life; these say what is happening in Jinni's own voice, not the
     // engine's. Unknown SSE types are ignored by older clients, so this is safe
@@ -394,6 +408,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
         }
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
+        meta.langUsed = intent.language || intent._userLanguage || null;
 
         // ── WHERE we are searching. Until now a chosen destination was only a
         //    fallback for missing GPS, and a city named in the message was
@@ -425,6 +440,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // search region uses a moment later, so it costs nothing.
                 currentRegion: hereRegion,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
+            meta.centreSource = dest.source;
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
@@ -458,6 +474,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
             || (appCfg.aiEventsUseClaude && intent.actionType === 'events'))
             ? 'claude' : 'deepseek';
+        meta.provider = providerName;
         const modelName = providerName === 'claude' ? (appCfg.claudeModel || null) : null;
         const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
             ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
@@ -567,6 +584,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             }
             meta.answerType = 'getting_around';
+            stats.path = 'transport';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
         } else if (settingsApplied.length || settingsRefused.length || deferredStyle) {
             // A COMMAND WAS CARRIED OUT. Nothing was asked for, so nothing is
@@ -609,6 +627,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             streamedOk = !!reply;
             meta.answerType = 'settings';
+            stats.path = 'settings';
             // `value` rides along so the client can move a CONTROL, not just a
             // label — the Discovery/Nearby toggle sits beside the input and has
             // to flip when Jinni switches it, or the screen contradicts the reply.
@@ -628,6 +647,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                 send(res, { type: 'token', content: chunk });
             }
+            stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
         } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
@@ -657,9 +677,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 modelName,
             });
             reply = out.text;
+            stats.path = 'chitchat';
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
         } else if (!center) {
+            stats.path = 'no_centre';
             reply = 'I need a location to search — enable GPS or pick a destination, then ask again.';
             send(res, { type: 'token', content: reply });
         } else {
@@ -723,6 +745,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // Progress voice — the store calls this when it goes out to the
                 // city's listings or to Google, the two waits worth narrating.
                 onStage: stage,
+                onSpend,
                 // Hunt permission rides the SAME admin gate as narration web
                 // search: events category enabled + master switch on. The
                 // store decides WHEN (unseen shelf thin for the asked window)
@@ -765,6 +788,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
             meta.provenance = result.provenance;
+            // Every branch below this point shares these, including the two
+            // that ship no cards — a turn that found nothing is the one most
+            // worth counting.
+            stats.category = category;
+            stats.subType = intent.subType || null;
+            stats.mode = mode;
+            stats.radiusKm = radiusKm;
+            stats.lexical = result.provenance.lexical || 0;
+            stats.lexicalTop = result.provenance.lexicalTop || 0;
+            stats.lexicalShare = result.provenance.lexicalShare || 0;
+            stats.vector = !!result.provenance.vector;
+            stats.taste = !!result.provenance.taste;
+            stats.evidence = [category ? 'category' : null, result.provenance.lexical ? 'text' : null]
+                .filter(Boolean).join('+') || 'none';
+            if (result.degraded || !result.places.length) stats.path = 'empty';
             if (result.degraded || !result.places.length) {
                 // Honest empty (copy refreshed 2026-08-22 — the old text
                 // claimed the Google tier wasn't wired; it is, and events now
@@ -814,6 +852,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 reply = out.text;
                 actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                 meta.answerType = 'no_match';
+                stats.path = 'no_match';
                 console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
             } else {
                 stage('writing', 'Almost there — putting it together…');
@@ -933,6 +972,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         send(res, { type: 'token', content: chunk });
                     }
                 }
+                stats.path = 'deck';
                 stats.candidates = result.provenance.candidateCount;
                 stats.cacheHit = !!result.provenance.cacheHit;
                 reply = intro;
@@ -982,6 +1022,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         }
     } catch (err) {
         console.error('[v2] turn failed:', err.message);
+        stats.path = 'error';
         reply = 'this turn hit an error (logged server-side). Switch to V1 for real answers.';
         send(res, { type: 'token', content: reply });
     }
@@ -1012,6 +1053,45 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         cacheHit: stats.cacheHit,
         ms: Date.now() - t0,
     };
+
+    // ── TURN LOG (2026-08-26) ──────────────────────────────────────────────
+    // Everything above already reached a console line; none of it could be
+    // counted. One row per turn makes "what happens in turns" answerable —
+    // what share of decks had no evidence, which asks buy a Google search,
+    // p95 per branch, whether the token estimate tracks the real cost.
+    // Fire-and-forget: never awaited, and a failure here can only cost a row.
+    // The message text is NOT stored, only its length.
+    try {
+        require('../models/ChatTurn').record({
+            userId: req.user?.id || null,
+            sessionId: sessionId || null,
+            branch: stats.path || 'deck',
+            askLen: String(message || '').length,
+            lang: meta.langUsed || null,
+            category: stats.category,
+            subType: stats.subType,
+            refill: !!meta.refill,
+            evidence: stats.evidence,
+            lexical: stats.lexical,
+            lexicalTop: stats.lexicalTop,
+            lexicalShare: stats.lexicalShare,
+            vector: stats.vector,
+            taste: stats.taste,
+            candidateCount: stats.candidates || 0,
+            shown: recommendations.length,
+            mode: stats.mode,
+            radiusKm: stats.radiusKm,
+            centreSource: meta.centreSource || null,
+            city: meta.searchCity || null,
+            googleCalls: stats.googleCalls,
+            huntFired: stats.huntFired,
+            cacheHit: stats.cacheHit,
+            provider: meta.provider || null,
+            tokensEst: estimatedTokens,
+            tokensActual: actualTokens,
+            ms: Date.now() - t0,
+        });
+    } catch (e) { console.warn('[v2][turnlog] skipped:', e.message); }
 
     send(res, {
         type: 'complete',
