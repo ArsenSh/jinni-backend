@@ -66,6 +66,9 @@ describe('intent reports the command', () => {
         const src = require('fs').readFileSync(require.resolve('../services/intentService.js'), 'utf8');
         // 'location' is deliberately absent since 2026-08-26 — see the
         // "saved location is not Jinni's to change" suite below.
+        // The radii stay in the INTENT prompt on purpose: the model should keep
+        // reporting a radius ask so code can refuse it with the line that tells
+        // the traveler where to do it himself. Reporting is not writing.
         for (const f of ['travelStyle', 'interests', 'budget', 'searchMode', 'nearbyRadius', 'discoveryRadius']) {
             expect(src).toContain(f);
         }
@@ -259,7 +262,13 @@ describe('Jinni knows which search mode it is in', () => {
 
     test('the capability list counts the mode among what it can change', () => {
         const s = sys('nearby');
-        expect(s).toMatch(/exactly these five/);
+        // Assert the DERIVATION, not the wording. The old test pinned the
+        // literal phrase "exactly these five" and went on passing after the
+        // settable set changed twice — which is how the prompt came to promise
+        // fields the validator refuses. Now the sentence is generated, so the
+        // test checks it against the same registry the validator uses.
+        const { settableSentence } = require('../engine/preferences/proposal');
+        expect(s).toContain(settableSentence());
         expect(s).toMatch(/search MODE \(nearby or discovery\)/);
     });
 });
@@ -312,16 +321,31 @@ describe('the saved location is not Jinni\'s to change', () => {
 
     test('asked to change it, Jinni points at Preferences instead', () => {
         const s = buildChitchatMessages({ message: 'set my location to Dubai', langName: 'English' })[0].content;
-        expect(s).toMatch(/SAVED LOCATION is NOT yours to change/);
-        expect(s).toMatch(/they can change it in Preferences/);
+        const { readOnlySentence, SELF_SERVE_SCREEN } = require('../engine/preferences/proposal');
+        expect(s).toContain(readOnlySentence());
+        expect(s).toMatch(new RegExp(`do it themselves in ${SELF_SERVE_SCREEN}`));
+        expect(s).toMatch(/saved location/i);
         // and it must not read as "I can't help with Dubai at all"
         expect(s).toMatch(/hotels in Dubai" needs no setting changed/);
     });
 
-    test('the radii and the mode are still settable', () => {
-        expect(PREF_PATHS.nearbyRadius).toBe('settings.searchRadius.nearby');
-        expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
+    // Arsen 2026-08-26: "we can let only discovery and nearby context to toggle,
+    // for radius it can say user to do from settings manually."
+    test('the MODE is settable; the radii are not', () => {
         expect(PREF_PATHS.searchMode).toBe('settings.nearbyMode');
-        expect(validateProposal({ field: 'nearbyRadius', value: 10 }).value).toBe(10);
+        expect(validateProposal({ field: 'searchMode', value: 'nearby' }).value).toBe('nearby');
+        expect(validateProposal({ field: 'nearbyRadius', value: 10 })).toBeNull();
+        expect(validateProposal({ field: 'discoveryRadius', value: 40 })).toBeNull();
+    });
+
+    // The registry is the ONLY list. A field it does not own cannot be written,
+    // and cannot be advertised to the model either — the prompt sentence below
+    // is generated from the same object.
+    test('what the prompt promises is exactly what the validator accepts', () => {
+        const { SETTINGS, settableSentence, readOnlySentence } = require('../engine/preferences/proposal');
+        expect(Object.keys(SETTINGS).sort()).toEqual(['budget', 'interests', 'searchMode', 'travelStyle']);
+        for (const f of Object.keys(SETTINGS)) expect(settableSentence()).toContain(f === 'searchMode' ? 'search MODE' : (f === 'travelStyle' ? 'travel style' : f));
+        for (const f of ['radius', 'location']) expect(readOnlySentence()).toContain(f);
+        expect(settableSentence()).not.toMatch(/radius|location/i);
     });
 });
