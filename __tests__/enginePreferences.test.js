@@ -130,7 +130,7 @@ describe('search radii and what Jinni admits to seeing', () => {
         for (const f of ['nearbyRadius', 'discoveryRadius']) {
             const why = refusalReason(f);
             expect(why).toMatch(/radius/i);
-            expect(why).toMatch(/Preferences/);
+            expect(why).toMatch(/Settings/);   // radius sliders live in the Settings modal
             expect(why).toMatch(/you cannot do it for them/i);
         }
     });
