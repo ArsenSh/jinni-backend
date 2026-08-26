@@ -87,7 +87,7 @@ function tierMismatch(tier, travelStyle) {
 // tier and is filtered; a hidden-gem viewpoint has tier=null and stays neutral.
 // Shop sub-type tags included: Explore gates rows by their own action tags
 // (jewelry/souvenirs/…), not the 'shopping' umbrella the chat action uses.
-const PRICE_ACTIONS = new Set(['restaurants', 'hotels', 'shopping', 'hidden_gems', 'souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food']);
+const PRICE_ACTIONS = new Set(['restaurants', 'hotels', 'shopping', 'hidden_gems', 'activities', 'souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food']);
 function isPriceAction(action) { return PRICE_ACTIONS.has(action); }
 
 // '$'..'$$$$' for display straight from a raw Google priceLevel ('' when absent).

@@ -161,7 +161,7 @@ function buildPlaceScopeFilter(user) {
 // Post-moderation queue over PlaceCache: everything is 'visible' by default;
 // staff bury garbage ('hidden') or endorse good places ('verified').
 // ─────────────────────────────────────────────────────────────────────────────
-const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping',
+const EXPLORE_MOD_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities',
     // Shopping sub-types — curatable so validators can mark WHICH kind of shop
     // a cached place is (drives the sub-typed quick-action/chat backfill).
     // The umbrella 'shopping' tag is AUTO-derived in the PATCH below whenever a

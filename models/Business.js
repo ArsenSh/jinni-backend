@@ -13,6 +13,11 @@ const businessSchema = new mongoose.Schema({
             'luxury', 'budget',
             // Primary categories
             'restaurants', 'hotels', 'events', 'historical', 'hidden_gems',
+            // Activities — ONE primary, deliberately with NO sub-types (unlike
+            // shopping). A spa and a club do not pick different chips: Google's
+            // own types carry the kind, and the interests the user already set
+            // at onboarding do the narrowing (V3 §10.2, Arsen 2026-08-26).
+            'activities',
             // Shopping sub-categories. There is deliberately NO 'shopping' tag:
             // "Shopping" is only the quick-action button, which makes the user
             // pick one of these before any search runs. A listing is always a
@@ -262,7 +267,7 @@ businessSchema.index({ 'auction.isBidding': 1, 'auction.targetZoneKey': 1 });
 businessSchema.index({ 'auction.mustDefend': 1, 'auction.defendDeadline': 1 });
 
 businessSchema.methods.getMainCategory = function () {
-    const cats = ['restaurants', 'historical', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food'];
+    const cats = ['restaurants', 'historical', 'hotels', 'events', 'hidden_gems', 'activities', 'souvenirs', 'clothing', 'jewelry', 'food'];
     return this.type.find(t => cats.includes(t)) || null;
 };
 
@@ -368,6 +373,9 @@ const ZONE_RADIUS_M = {
     events:      300,
     historical:  500,
     hidden_gems: 900,
+    // Activities: venue-scale, like hidden gems — a spa or a karting track
+    // draws from across the city, not from the street it sits on.
+    activities:  900,
     // Shop sub-categories: street-level zones like restaurants.
     souvenirs:   300,
     clothing:    300,
@@ -381,6 +389,7 @@ const ZONE_GRID_STEP = {
     events:      0.003,
     historical:  0.005,
     hidden_gems: 0.009,
+    activities:  0.009,
     souvenirs:   0.003,
     clothing:    0.003,
     jewelry:     0.003,

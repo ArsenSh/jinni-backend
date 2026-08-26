@@ -322,7 +322,7 @@ function resolveZoneEntry(businesses, incomingTier) {
     return {canEnter: false, displaces: false, waitlisted: false, blocked: true, mustUpgradeTo: 'spotlight', message: 'This zone is full. A free Verified listing cannot enter — please apply as Spotlight or Signature.'}
 }
 // ── Multi-source business verification ───────────────────────────────────────
-const GOOGLE_VERIFIABLE = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food']
+const GOOGLE_VERIFIABLE = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'activities', 'souvenirs', 'clothing', 'jewelry', 'food']
 
 function nameSimilarity(a, b) {
     if (!a || !b) return 0
@@ -1161,7 +1161,7 @@ router.post('/apply', applyLimiter, conditionalUpload, async (req, res) => {
         // rows with those types keep working — every preserve/display set
         // (PRIMARY_CATS in PATCH, getMainCategory, zone maps, labels) still
         // includes them; only new applications are gated here.
-        const mainCategories = ['restaurants', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food']
+        const mainCategories = ['restaurants', 'hotels', 'events', 'hidden_gems', 'activities', 'souvenirs', 'clothing', 'jewelry', 'food']
         const mainCategory = type.find(t => mainCategories.includes(t))
         if (!mainCategory) {return res.status(400).json({ error: 'A main business category is required' })}
         // ── Server-side tier enforcement ────────────────────────────────────
@@ -2146,7 +2146,13 @@ router.put('/:id', auth, editLimiter, async (req, res) => {
         if (Array.isArray(req.body.type)) {
             // Must include every primary a business can hold, or an edit-save
             // filters the primary OUT of `type` and the listing loses its category.
-            const PRIMARY_CATS = new Set(['restaurants','hotels','events','historical','hidden_gems','souvenirs','clothing','market','jewelry','food'])
+            // SUPERSET, never an offer list: this set decides which primaries
+            // SURVIVE an owner's edit-save, so a key missing here silently
+            // deletes that category from a live listing. 'mall' was missing
+            // while the Business enum and EXPLORE_MOD_CATEGORIES both carried
+            // it — a mall business lost its category on any save. Added here
+            // alongside 'activities' (2026-08-27).
+            const PRIMARY_CATS = new Set(['restaurants','hotels','events','historical','hidden_gems','activities','souvenirs','clothing','market','mall','jewelry','food'])
             const existingPrimary = (business.type || []).filter(t => PRIMARY_CATS.has(t))
             const incomingNonPrimary = req.body.type.filter(t => !PRIMARY_CATS.has(t))
             // Enforce tag limits per tier

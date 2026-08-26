@@ -13,6 +13,10 @@ const destinationSchema = new mongoose.Schema({
             'luxury', 'budget',
             // Action buttons
             'restaurants', 'hotels', 'historical', 'events', 'hidden_gems',
+            // Parity with Business.type — a validator must be able to curate an
+            // activity (spa, karting, escape room) the same way as any other
+            // primary. ONE category, narrowed by the user's interests (V3 §10.2).
+            'activities',
             // Shopping sub-categories (parity with Business). No 'shopping' tag:
             // "Shopping" is only the button; the user picks a concrete sub-type,
             // so a shop/market modelled as a destination is tagged accordingly

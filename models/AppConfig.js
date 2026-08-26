@@ -90,6 +90,7 @@ const appConfigSchema = new mongoose.Schema({
         events:      { type: Number, default: 300 },
         historical:  { type: Number, default: 500 },
         hidden_gems: { type: Number, default: 900 },
+        activities:  { type: Number, default: 900 },
         souvenirs:   { type: Number, default: 300 },
         clothing:    { type: Number, default: 300 },
         jewelry:     { type: Number, default: 300 },

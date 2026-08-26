@@ -10,7 +10,7 @@ const ChatSession = require('../models/ChatSession');
 const ACTION_LABELS = {
     restaurants: 'Restaurants', hotels: 'Hotels', hidden_gems: 'Hidden Gems',
     historical: 'Historical', events: 'Local Events', photo_spots: 'Photo Spots',
-    shopping: 'Shopping', itinerary: 'Itinerary'
+    shopping: 'Shopping', activities: 'Activities', itinerary: 'Itinerary'
 };
 
 /* Builds the retention report served to the admin dashboard and the

@@ -26,8 +26,12 @@ const ACTION_QUERY = {
     hotels:       'hotels',
     historical:   'historical landmarks and monuments',
     hidden_gems:  'local hidden gem spots',
-    events:       'things to do and attractions',
+    // 'things to do and attractions' used to live here, on EVENTS — which is
+    // what ACTIVITIES means. Events are dated happenings; the phrase moved with
+    // the meaning, or the two prefetch pools would be near-identical.
+    events:       'upcoming events and festivals',
     photo_spots:  'scenic viewpoints and photo spots',
+    activities:   'things to do — spas, nightlife, bowling, cinemas and activity centers',
 };
 
 const SHOPPING_QUERY = {

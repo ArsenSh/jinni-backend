@@ -50,7 +50,7 @@ try { AiProviderDailyStats = require('../models/AiProviderDailyStats'); } catch 
 // typical calls return in 1–3s, especially with the "" -translation shortcut
 // below that keeps output tiny for English messages.
 const INTENT_TIMEOUT_MS = parseInt(process.env.INTENT_TIMEOUT_MS, 10) || 8000;
-const ACTION_TYPES = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots', 'general']);
+const ACTION_TYPES = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots', 'activities', 'general']);
 // Same six sub-types the Shopping quick-action's chips send (proximityService
 // SHOPPING_SUBTYPES / googleService._SHOPPING_BASE). Chat has no chips, so the
 // classifier picks the sub-type from the message itself — without it a
@@ -150,7 +150,7 @@ Return ONLY this JSON object:
 {"language":"<ISO 639-1 code of the language the CURRENT message is WRITTEN in — judge only its own words, NOT the conversation's language; 'compare these two' in an otherwise-Russian chat is en>",
 "translated":"<the current message translated to English — or an empty string "" if the message is already in English>",
 "is_travel":<true or false>,
-"action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, shopping, photo_spots, general>",
+"action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, shopping, photo_spots, activities, general>",
 "shopping_subtype":"<ONLY when action_type is shopping, one of: souvenirs, clothing, market, mall, jewelry, food — otherwise an empty string "">",
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
 "place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
@@ -374,7 +374,13 @@ async function fallbackClassify(message, userLanguage) {
     else if (/\b(food|street food|gourmet)\b/i.test(lower)) { actionType = 'restaurants'; }
     else if (/\b(historical|history|ancient|monument|heritage|archaeological|ruins|fortress|castle)\b/i.test(lower)) { actionType = 'historical'; }
     else if (/\b(hidden|secret|local|gems|off the beaten path|lesser known|underrated)\b/i.test(lower)) { actionType = 'hidden_gems'; }
-    else if (/\b(event|events|activity|activities|festival|festivals|celebration|concert|concerts|show|shows|performance|exhibition)\b/i.test(lower)) { actionType = 'events'; }
+    // Activities BEFORE events: "activity/activities" used to live in the events
+    // regex below, so a "suggest clubs" or "where can I relax" ask was classified
+    // as a dated happening and carded restaurants (Testbook 2026-08-20). An
+    // activity is a place that is open — a spa, a club, a bowling alley; an event
+    // is something with a DATE. The words move with the meaning.
+    else if (/\b(activity|activities|things to do|what to do|entertainment|nightlife|night club|nightclub|clubbing|karaoke|bowling|billiards|cinema|movie theater|movie theatre|casino|spa|spas|wellness|massage|hammam|sauna|thermal|water park|aqua park|amusement park|theme park|arcade|escape room|karting|go.?kart|paintball|zip.?line|climbing|rafting|paragliding|golf)\b/i.test(lower)) { actionType = 'activities'; }
+    else if (/\b(event|events|festival|festivals|celebration|concert|concerts|show|shows|performance|exhibition)\b/i.test(lower)) { actionType = 'events'; }
     else if (/\b(photo spot|photo spots|viewpoint|viewpoints|panorama|panoramic|scenic|instagram|instagrammable|photogenic|take photos|take pictures)\b/i.test(lower)) { actionType = 'photo_spots'; }
 
     // Sub-type guess for shopping (mirrors the quick-action chips).

@@ -31,8 +31,11 @@ const Destination = require('../models/Destination');
 const Business = require('../models/Business');
 const AppConfig = require('../models/AppConfig');
 
-const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
-const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30, jinni_events: 30 };
+// CATEGORIES and DEFAULT_TARGETS must ALWAYS be edited together: a category
+// listed here with no target makes warmth NaN, and `NaN < cutoff` is false —
+// which reads as "already warm" and blocks Google for it in every city.
+const CATEGORIES = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events', 'activities'];
+const DEFAULT_TARGETS = { restaurants: 300, hotels: 80, historical: 60, hidden_gems: 30, photo_spots: 30, shopping: 80, events: 30, activities: 60, jinni_events: 30 };
 // The admin table also shows Jinni-found events (AiFoundEvent, non-hidden) as
 // an informational column. It is NOT in CATEGORIES: the Google gate never
 // consults it — event listings come from Claude web search, not Google.
