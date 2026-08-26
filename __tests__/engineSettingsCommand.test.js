@@ -59,6 +59,38 @@ describe('reporting a settings change', () => {
     });
 });
 
+// Live 2026-08-26. A turn that changed ONLY the budget replied "Your travel
+// style is now budget" while the saved style was still luxury. Nothing in the
+// engine had gone wrong: the prompt carried a worked example — «second person,
+// e.g. "your travel style is now budget"» — and the model copied the sample
+// instead of the line it was handed. A report must have no pre-written sentence
+// lying beside it to reach for.
+describe('the settings prompt offers no sentence to copy', () => {
+    const { buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
+
+    test('a budget-only change never puts the words "travel style" in the prompt', () => {
+        const sys = buildSettingsMessages({
+            message: 'set 10 - 100', langName: 'English',
+            done: ['budget to 10–100 USD'], failed: [],
+        })[0].content;
+        expect(sys).toContain('budget to 10–100 USD');
+        expect(sys).not.toMatch(/travel style/i);
+    });
+
+    test('no settable VALUE appears unless this turn actually changed it', () => {
+        const { PREF_VOCAB } = require('../engine/preferences/proposal');
+        const sys = buildSettingsMessages({
+            message: 'make my interests family', langName: 'English',
+            done: ['interests to family'], failed: [],
+        })[0].content;
+        // 'luxury', 'nearby', 'discovery' — none of them were touched, so none
+        // of them may be sitting in the prompt for the model to pick up.
+        for (const v of [...PREF_VOCAB.travelStyle, ...PREF_VOCAB.searchMode]) {
+            expect(sys.toLowerCase()).not.toContain(v);
+        }
+    });
+});
+
 describe('intent reports the command', () => {
     const intentService = require('../services/intentService');
 
