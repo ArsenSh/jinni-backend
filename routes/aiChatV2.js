@@ -34,7 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
-const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, budgetRefusalReason } = require('../engine/preferences/proposal');
+const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -235,10 +235,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     namedPlace: null,
                 });
                 if (!proposed) {
-                    // A refusal the traveler can act on. "budget" alone told them
-                    // nothing; the reason names what to change.
-                    const why = c.field === 'budget' ? budgetRefusalReason(c.value) : null;
-                    settingsRefused.push(why ? `budget — ${why}` : c.field);
+                    // A refusal the traveler can act on, written where the
+                    // decision is made. "nearbyRadius" alone told them nothing;
+                    // refusalReason names the setting and the screen to change it
+                    // on — so the reply explains itself with no prompt sentence
+                    // about what Jinni cannot do.
+                    settingsRefused.push(refusalReason(c.field, c.value));
                     continue;
                 }
                 // Budget style with no figures is a state the Preferences form
@@ -252,17 +254,38 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     const have = intent._preferences?.budget;
                     if (!(have && (have.min > 0 || have.max > 0))) { deferredStyle = proposed; continue; }
                 }
+                // Whether there WAS a band to drop, read before the write.
+                // applyProposal clears preferences.budget whenever the style
+                // moves off 'budget' (the Preferences screen does the same), but
+                // only this side knows if that cleared anything real — and a
+                // reply must never announce a change that did not happen.
+                const _hadBudget = !!(intent._preferences?.budget
+                    && (intent._preferences.budget.min > 0 || intent._preferences.budget.max > 0));
                 if (req.user?.id && await applyProposal(req.user.id, proposed)) {
+                    // Switching off budget style DROPS the figures, and the
+                    // traveler has to be told: the band gates retrieval, so
+                    // losing it silently changes what they are shown with no
+                    // visible cause (Arsen 2026-08-26 — "it is not just setting
+                    // luxury, it has to also delete minimum and maximum budget").
+                    //
+                    // The label is amended by CODE, from what the write actually
+                    // did. buildSettingsMessages forbids the model from adding
+                    // anything not on its lines, which is why no prompt sentence
+                    // could have produced this — and why none was added.
+                    if (proposed.field === 'travelStyle' && proposed.value !== 'budget' && _hadBudget) {
+                        proposed.label += ' (your saved budget range was cleared with it)';
+                        // The rest of THIS turn must not keep reading the band we
+                        // just deleted — travelerRows would print it back as a
+                        // current fact while the reply says it is gone.
+                        intent._preferences.budget = { min: 0, max: 0, currency: 'USD' };
+                    }
                     settingsApplied.push(proposed);
                     // The reply is written from these rows, so they must show
                     // the NEW value — reporting the old one while having saved
-                    // the new one is exactly what went wrong before.
-                    if (proposed.field === 'nearbyRadius' || proposed.field === 'discoveryRadius') {
-                        const key = proposed.field === 'nearbyRadius' ? 'nearby' : 'discovery';
-                        intent._preferences._searchRadius = { ...(intent._preferences._searchRadius || {}), [key]: proposed.value };
-                    } else {
-                        intent._preferences[proposed.field] = proposed.value;
-                    }
+                    // the new one is exactly what went wrong before. The radius
+                    // branch that used to sit here went with the radius write
+                    // (2026-08-26): only the four registry fields reach this line.
+                    intent._preferences[proposed.field] = proposed.value;
                     // Applies immediately: the traveler asked for this mode, so
                     // this answer is already in it.
                     if (proposed.field === 'searchMode') effectiveNearbyMode = proposed.value === 'nearby';
@@ -293,7 +316,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // is the one described.
             intent._preferences._searchMode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // An approval a moment ago is already true for this turn.
-            if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
+            if (prefApplied) {
+                intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
+                // A style approved a moment ago took the budget band with it in
+                // the database (applyProposal), so this turn must not go on
+                // reading the old figures — same rule as the command path above.
+                if (prefApplied.field === 'travelStyle' && prefApplied.value !== 'budget') {
+                    intent._preferences.budget = { min: 0, max: 0, currency: 'USD' };
+                }
+            }
         } catch (err) {
             console.warn('[v2] intent failed, treating as place query:', err.message);
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
@@ -583,7 +614,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Refill turns enrich from the PREVIOUS ask — "10 other results"
             // contributes nothing to relevance; "suggest historical places" does.
             const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
-            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: effectiveNearbyMode ? 5 : 50 });
+            // HOW FAR to look is the traveler's setting, not a constant. v2 hard-
+            // coded 5/50 km, so the Preferences slider — and every radius Jinni
+            // itself wrote — changed nothing at all: the reply said "I've widened
+            // your search to 100 km" and the very next search still ran at 50
+            // (found 2026-08-26). Same "saved it in his mind only" failure as the
+            // prefs write, one layer down.
+            //
+            // It matters most in the case the setting exists for: a thin deck.
+            // Jinni may notice and offer to widen — the Tinder distance slider —
+            // and the offer is worthless if the number never reaches the query.
+            // _searchRadius carries the value applied THIS turn, so a widening
+            // asked for in this very message is already in force below.
+            // Bounds and defaults come from proposal.js, which owns them — the
+            // same numbers the Preferences slider enforces, stated once.
+            const baseRadiusKm = radiusKmFor(mode, intent._preferences?._searchRadius);
+            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: baseRadiusKm });
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).

@@ -12,7 +12,7 @@ const { CATEGORY_VOCABULARY, normalizeCategory } = require('../cards');
 // naming two of them wrongly (live 2026-08-25). A second hardcoded copy of a
 // category list is the repo's oldest recurring bug; there is one list, and this
 // reads it.
-const { PREF_VOCAB } = require('../../preferences/proposal');
+const { PREF_VOCAB, settableSentence, readOnlySentence, SELF_SERVE_SCREEN } = require('../../preferences/proposal');
 
 function placeFactLine(p) {
     const bits = [
@@ -94,18 +94,19 @@ const IDENTITY_ROWS = [
     // Saying "I can change a setting" without saying WHICH is the same empty
     // capability that produced the invented current position above: the model
     // knows it may act but not on what, so it either refuses or promises
-    // something the app cannot do. These five are exactly what
-    // engine/preferences/proposal.js accepts and writes.
-    'The settings you can change are exactly these five: travel style (luxury or budget), interests, '
-    + 'budget, the search MODE (nearby or discovery), and the nearby / discovery search radius.',
-    // Location came OUT of the settable set on 2026-08-26. One edit there moves
-    // the search centre, the GPS/destination mode and every surface that reads
-    // them, and the Preferences screen already does it properly. Arsen: "it can
-    // say open preferences and change … but not do by himself."
-    'Their SAVED LOCATION is NOT yours to change. If they ask you to set, move or update it, say plainly '
-    + 'that they can change it in Preferences and that you will not do it for them. This does NOT limit '
-    + 'searching: a city named in their message is somewhere you look for places right now, and asking '
-    + 'for "hotels in Dubai" needs no setting changed at all.',
+    // something the app cannot do.
+    //
+    // BOTH lists are GENERATED from proposal.js's registry, never typed here.
+    // The typed version said "exactly these five" and went on saying it after
+    // the set changed twice — a hand-written list is a promise that stops being
+    // checked the moment it is written. Now removing a setting from the registry
+    // rewrites this sentence on the next request, and the model cannot be told
+    // about a field the validator would refuse.
+    `The settings you can change are exactly these: ${settableSentence()} — and nothing else.`,
+    `NOT yours to change: ${readOnlySentence()}. If they ask you to set or update one, say plainly `
+    + `that they can do it themselves in ${SELF_SERVE_SCREEN} and that you will not do it for them. `
+    + 'This does NOT limit searching: a city named in their message is somewhere you look for places '
+    + 'right now, and asking for "hotels in Dubai" needs no setting changed at all.',
     'Language, theme, password and account you also cannot change; for those, point to Settings.',
     // Naming the settings without naming their VALUES left the model to invent
     // the list when asked what it could pick from. These are the same ten the
@@ -484,12 +485,20 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'LASTING change to one (e.g. their style is luxury and they say they always travel cheap). One of '
               + '{"field":"travelStyle","value":"luxury|budget"}, {"field":"interests","value":["family","romantic"]}, '
               + '{"field":"budget","value":{"min":50,"max":200,"currency":"USD"}}, '
-              + '{"field":"location","value":"current"} (where they are NOW) or '
-              + '{"field":"location","value":"named"} (the city THEY NAMED in this message — say which of the '
-              + 'two, never a place name or coordinates of your own; code fills in the city), '
-              + '{"field":"nearbyRadius","value":5} (km, 1-20), {"field":"discoveryRadius","value":50} (km, 10-100). '
-              + 'Those two are how far you search in nearby and discovery modes; propose one when a thin result or '
-              + 'their own words call for it, and stay inside the range — a value outside it is dropped. '
+              // The two location options that used to sit here were removed on
+              // 2026-08-26. They had already stopped working — proposal.js holds
+              // no `location` path, so every one was silently dropped — and they
+              // contradicted the identity row above, which tells the model the
+              // saved location is not its to change. Offering a field code
+              // refuses to write is how "I've set that for you" gets said about
+              // nothing at all.
+              + 'or {"field":"searchMode","value":"nearby|discovery"}. '
+              // The two radius options were removed on 2026-08-26 along with the
+              // location pair above. Same reason each time: the prompt was
+              // offering a field the validator refuses. The rows above already
+              // say the radius is theirs to set in Preferences, and those rows
+              // are generated from the registry — so this list and that sentence
+              // cannot drift apart again.
               + 'A one-off ask is NOT a change: wanting a cheap lunch on a luxury trip changes nothing.\n'
               // A style with no numbers behind it cannot be used for anything.
               + '- If you set their style to budget and no budget range is saved, ASK for a min and max in the '

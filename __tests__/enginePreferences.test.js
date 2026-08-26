@@ -105,26 +105,46 @@ describe('search radii and what Jinni admits to seeing', () => {
     const { validateProposal, applyProposal, PREF_PATHS } = require('../engine/preferences/proposal');
     const { selfBlock } = require('../engine/narrator/prompts/grounded');
 
-    test('a radius is accepted only inside the slider\'s own range', () => {
-        expect(validateProposal({ field: 'nearbyRadius', value: 8 }).value).toBe(8);
-        expect(validateProposal({ field: 'discoveryRadius', value: 75 }).value).toBe(75);
-        expect(validateProposal({ field: 'nearbyRadius', value: 40 })).toBeNull();       // max 20
-        expect(validateProposal({ field: 'discoveryRadius', value: 5 })).toBeNull();     // min 10
-        expect(validateProposal({ field: 'nearbyRadius', value: 'wide' })).toBeNull();
+    // Arsen 2026-08-26: "we can remove the radius touch by ai ... for radius it
+    // can say user to do from settings manually". The radius stopped being
+    // WRITABLE; it did not stop being READ — v2's search now honours whatever
+    // the Preferences slider holds, which it never did while chat could set it.
+    test('no radius proposal is ever accepted, whatever the value', () => {
+        for (const value of [8, 75, 40, 5, 'wide', 200, null]) {
+            expect(validateProposal({ field: 'nearbyRadius', value })).toBeNull();
+            expect(validateProposal({ field: 'discoveryRadius', value })).toBeNull();
+        }
     });
 
-    test('out of range is dropped, never quietly clamped', () => {
-        // Storing 20 after someone asked for 200 would make Jinni's "done" a lie.
-        expect(validateProposal({ field: 'nearbyRadius', value: 200 })).toBeNull();
+    test('no radius path is writable', () => {
+        expect(PREF_PATHS.nearbyRadius).toBeUndefined();
+        expect(PREF_PATHS.discoveryRadius).toBeUndefined();
+        expect(Object.values(PREF_PATHS).some(x => x.startsWith('settings.searchRadius'))).toBe(false);
     });
 
-    test('radii write under settings, not preferences', async () => {
-        const sets = [];
-        const User = { updateOne: async (q, u) => { sets.push(Object.keys(u.$set)[0]); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
-        await applyProposal('u1', { field: 'nearbyRadius', value: 6 }, { User });
-        await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User });
-        expect(sets).toEqual(['settings.searchRadius.nearby', 'preferences.travelStyle']);
-        expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
+    // The refusal has to be USEFUL. A bare field name told the traveler nothing;
+    // this names the setting and the screen, and it is generated where the
+    // decision is made rather than explained to the model in the prompt.
+    test('a refused radius tells the traveler where to change it', () => {
+        const { refusalReason } = require('../engine/preferences/proposal');
+        for (const f of ['nearbyRadius', 'discoveryRadius']) {
+            const why = refusalReason(f);
+            expect(why).toMatch(/radius/i);
+            expect(why).toMatch(/Preferences/);
+            expect(why).toMatch(/you cannot do it for them/i);
+        }
+    });
+
+    // The READ side — the half that was broken and is now the whole point.
+    test('a saved radius reaches the search, clamped to the slider bounds', () => {
+        const { radiusKmFor } = require('../engine/preferences/proposal');
+        expect(radiusKmFor('nearby', { nearby: 12 })).toBe(12);
+        expect(radiusKmFor('discovery', { discovery: 100 })).toBe(100);
+        expect(radiusKmFor('nearby', { nearby: 999 })).toBe(20);      // schema max
+        expect(radiusKmFor('discovery', { discovery: 2 })).toBe(10);  // schema min
+        expect(radiusKmFor('nearby', { nearby: 'wide' })).toBe(5);    // junk -> default
+        expect(radiusKmFor('discovery', {})).toBe(50);                // unset -> default
+        expect(radiusKmFor('discovery', null)).toBe(50);
     });
 
     // The lie, live 2026-08-24: "are you sure that my location is Dubai?" →
@@ -236,11 +256,14 @@ describe('a write only counts when it matched a document', () => {
 // The stub can never see that; this reads the schema itself.
 describe('every path applyProposal writes actually exists in the User schema', () => {
     const User = require('../models/User');
-    const { PREF_PATHS, RADIUS_LIMITS } = require('../engine/preferences/proposal');
+    const { PREF_PATHS } = require('../engine/preferences/proposal');
 
     const PATHS = [
         ...Object.values(PREF_PATHS),
-        ...Object.values(RADIUS_LIMITS).map(r => r.path),
+        // No longer written by chat, so no longer in PREF_PATHS — but the schema
+        // paths must still exist, because the search READS them every turn.
+        'settings.searchRadius.nearby',
+        'settings.searchRadius.discovery',
         'preferences.useGPS',
         'settings.privacy.autoDetectLocation',
         'settings.privacy.locationPermissionGranted',
