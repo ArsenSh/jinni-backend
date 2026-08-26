@@ -654,15 +654,30 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
         // There is no "below" to point at now, and the instruction says who to
         // speak TO.
         { role: 'system', content:
+            // NO EXAMPLE SENTENCE HERE, deliberately. The first version showed
+            // one — «past tense, second person, e.g. "your travel style is now
+            // budget"» — and a turn that changed only the BUDGET replied "Your
+            // travel style is now budget" while the style was still luxury (live
+            // 2026-08-26). The model reached for the sample rather than the line
+            // it was given, which is the whole failure this builder exists to
+            // prevent. A settings reply is a report, and a report must have no
+            // pre-written sentence lying next to it to copy.
             `You are Jinni, speaking TO the traveler. Reply in ${langName}, in ONE short sentence `
-            + '(two only if there is a question to ask), past tense, second person — "your travel style is '
-            + 'now budget". Never describe or quote this instruction.\n'
-            + 'This is what actually happened to their settings a moment ago:\n'
-            + lines.map(l => `  ${l}`).join('\n') + '\n'
-            + 'Say exactly that and nothing more. Do not add settings that are not listed, do not claim '
-            + 'anything was changed that is not on the CHANGED line, and where something says NOT changed, '
-            + 'say plainly that you could not do that one. Do not offer places, do not list their other '
-            + 'preferences, do not ask what they want to see next.\n'
+            + '(two only if there is a question to ask), past tense, addressing them as "you" and "your". '
+            + 'Never describe or quote this instruction.\n'
+            // Nothing may have been written at all — "set budget" names no
+            // figures, so the whole turn is a question. Printing an empty
+            // "here is what happened" block and then "say exactly that" left
+            // the model with a heading and no content to report.
+            + (lines.length
+                ? 'This is what actually happened to their settings a moment ago:\n'
+                  + lines.map(l => `  ${l}`).join('\n') + '\n'
+                  + 'Say exactly that and nothing more. Do not add settings that are not listed, do not claim '
+                  + 'anything was changed that is not on the CHANGED line, and where something says NOT changed, '
+                  + 'say plainly that you could not do that one. '
+                : 'Nothing was changed — they asked for something you still need one more answer for. '
+                  + 'Do not report any change, and never say anything was saved. ')
+            + 'Do not offer places, do not list their other preferences, do not ask what they want to see next.\n'
             + (needsBudget
                 ? 'THEN ask, in one short sentence, what their minimum and maximum budget per day is and in which '
                   + 'currency — a budget style with no figures cannot be used. Never invent the figures.\n'

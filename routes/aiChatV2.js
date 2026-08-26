@@ -135,6 +135,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     let namedPlace = null;
     let settingsApplied = [];
     let settingsRefused = [];
+    // They asked for a budget without naming one. Not a refusal — a question.
+    let budgetFiguresWanted = false;
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -229,11 +231,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // retrieval, no cards, nothing to disagree with.
             settingsApplied = [];
             settingsRefused = [];
+            budgetFiguresWanted = false;
             for (const c of (intent.settingsChange || [])) {
                 const proposed = validateProposal(c, {
                     currentPlace: null,          // filled below when it is needed
                     namedPlace: null,
                 });
+                // "set budget" with no numbers in it is a REQUEST, not a bad
+                // value. Validation is right to refuse it, but the reply then
+                // read "I could not set your budget because the maximum has to
+                // be above zero" (live 2026-08-26) — an error message for
+                // someone who simply hasn't been asked yet. Only the traveler
+                // knows the figures, so ask; never invent them.
+                if (c.field === 'budget' && !(Number(c.value?.min) > 0) && !(Number(c.value?.max) > 0)) {
+                    budgetFiguresWanted = true;
+                    continue;
+                }
                 if (!proposed) {
                     // A refusal the traveler can act on, written where the
                     // decision is made. "nearbyRadius" alone told them nothing;
@@ -544,7 +557,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // turn asked), or an older account is already on budget style with
             // none. Either way, ask — and never fill them in.
             const awaiting = deferredStyle ? [deferredStyle.label] : [];
-            const needsBudget = !!deferredStyle
+            const needsBudget = budgetFiguresWanted
+                || !!deferredStyle
                 || (settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
                     && !(b && (b.min > 0 || b.max > 0)));
             // Park the waiting switch so the next turn's figures can complete
