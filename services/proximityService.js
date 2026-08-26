@@ -324,7 +324,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // 'photo_spots' tag is the only DB source now, same trust rule as every
         // other category; scenic non-tagged places still arrive via the
         // model+Google path with the landmark kind filter.
-        const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots'];
+        const destinationActionFirstClass = ['restaurants', 'hotels', 'historical', 'hidden_gems', 'events', 'shopping', 'photo_spots', 'activities'];
         const PHOTO_DEST_TAGS = ['photo_spots', 'nature', 'art', 'cultural', 'history', 'historical', 'hidden_gems'];
         // Event freshness applies here too. Destinations tagged 'events' are
         // validator-curated concerts/festivals with a real date, and once that
@@ -338,7 +338,10 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // turn; $20 cafés carded against a $5–10 budget). General means
         // sightseeing: gate to visit-worthy tags. Dining/lodging destinations
         // still surface on their own action turns.
-        const GENERAL_DEST_TAGS = [...PHOTO_DEST_TAGS, 'events'];
+        // 'activities' joins the visit-worthy set: a free-chat "what should I
+        // do here" turn classifies as general, and an activity is exactly the
+        // kind of place that answers it.
+        const GENERAL_DEST_TAGS = [...PHOTO_DEST_TAGS, 'events', 'activities'];
         const destinationQuery = { isActive: true, $and: [eventFreshnessClause()] };
         if (actionType === 'general') {
             destinationQuery.type = { $in: GENERAL_DEST_TAGS };
@@ -488,6 +491,10 @@ function deriveCategoryFromType(types) {
     if (types.includes('souvenirs')) return 'Souvenir Shop';
     if (types.includes('food'))      return 'Food & Gourmet';
     if (types.includes('food&drink')) return 'Restaurant';
+    // BEFORE the nightlife/adventure interest tags below: an activity carrying
+    // 'nightlife' is an Activity, not a "Bar" — the interest is how it was
+    // matched, not what it IS.
+    if (types.includes('activities')) return 'Activity';
     if (types.includes('nightlife')) return 'Bar';
     if (types.includes('cultural')) return 'Cultural Site';
     if (types.includes('nature')) return 'Natural Attraction';

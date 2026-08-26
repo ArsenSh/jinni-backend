@@ -49,6 +49,16 @@ function _prefFitScore(types, primaryType, preferences) {
     if (/relax|wellness|spa/.test(interests)) want.push('spa', 'park', 'garden', 'resort_hotel');
     if (/family|kid/.test(interests)) want.push('zoo', 'aquarium', 'amusement_park', 'park', 'museum');
     if (/art|culture|histor/.test(interests)) want.push('museum', 'art_gallery', 'tourist_attraction', 'historical_landmark');
+    // ── The three interests that had NO branch at all (fixed 2026-08-27) ──
+    // Live report: travel style luxury + interest romantic returned a deck the
+    // preferences had no hand in. The cause was not weak weighting — it was
+    // that `romantic`, `nightlife` and `adventure` matched none of the regexes
+    // above, so `want` stayed empty, every candidate returned the same 0.5, and
+    // the term carried ZERO discriminating power while looking like it worked.
+    // A constant is worse than an absent signal: it is invisible in the logs.
+    if (/romantic|romance|date/.test(interests)) want.push('wine_bar', 'bar', 'fine_dining_restaurant', 'observation_deck', 'garden', 'spa');
+    if (/night|club|party/.test(interests)) want.push('night_club', 'bar', 'pub', 'casino', 'karaoke', 'comedy_club');
+    if (/adventure|active|sport/.test(interests)) want.push('hiking_area', 'adventure_sports_center', 'sports_complex', 'ski_resort', 'water_park', 'golf_course', 'marina');
     if (!want.length) return 0.5;                       // no interests → neutral
     return t.some(tt => want.some(w => tt.includes(w))) ? 1 : 0;
 }

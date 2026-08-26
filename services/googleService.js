@@ -412,6 +412,48 @@ const _SHOPPING_BASE = {
  * photo_spots, historical, events) or when no type info is available — so we
  * never wrongly drop a place we can't classify.
  */
+// ── Activities: what a traveler DOES that isn't a meal, a bed or a monument ──
+// One category, no sub-types — the interests picked at onboarding do the
+// narrowing (V3 §10.2). These are Places API (New) type ids; the set is
+// generous because the interest weighting decides what surfaces, while this
+// gate only decides what is eligible at all.
+const _ACTIVITY_BASE = new Set([
+    // nightlife
+    'night_club', 'bar', 'pub', 'wine_bar', 'karaoke', 'comedy_club', 'casino',
+    // wellness
+    'spa', 'wellness_center', 'sauna', 'massage', 'public_bath', 'yoga_studio',
+    // play, indoor
+    'bowling_alley', 'movie_theater', 'video_arcade', 'amusement_center',
+    'internet_cafe', 'banquet_hall', 'community_center', 'cultural_center',
+    // play, outdoor & big-ticket
+    'amusement_park', 'water_park', 'theme_park', 'zoo', 'wildlife_park',
+    'aquarium', 'ferris_wheel', 'roller_coaster', 'planetarium',
+    'ice_skating_rink', 'swimming_pool', 'skateboard_park', 'playground',
+    'hiking_area', 'marina', 'ski_resort', 'golf_course', 'dog_park',
+    // sport & adventure
+    'adventure_sports_center', 'sports_activity_location', 'sports_complex',
+    'athletic_field', 'gym', 'fitness_center', 'cycling_park', 'off_roading_area',
+    // the generic ones Google falls back to for tours and operators
+    'tourist_attraction', 'visitor_center', 'event_venue', 'tour_agency',
+]);
+
+// Rejected when they are the place's PRIMARY identity. A hotel with a spa is
+// still a hotel; a mall with a cinema is still a mall.
+const _NONACTIVITY_PRIMARY = new Set([
+    'lodging', 'hotel', 'resort_hotel', 'motel', 'guest_house', 'hostel',
+    'bed_and_breakfast', 'campground', 'cottage',
+    'store', 'shopping_mall', 'department_store', 'supermarket', 'grocery_store',
+    'convenience_store', 'clothing_store', 'jewelry_store', 'shoe_store',
+    'book_store', 'gift_shop', 'liquor_store', 'pharmacy', 'drugstore',
+    'bank', 'atm', 'post_office', 'hospital', 'doctor', 'dentist',
+    'school', 'university', 'library',
+    'gas_station', 'car_repair', 'car_dealer', 'car_rental', 'parking',
+    'airport', 'train_station', 'bus_station', 'transit_station', 'subway_station',
+    'real_estate_agency', 'insurance_agency', 'lawyer', 'corporate_office',
+    'church', 'mosque', 'synagogue', 'hindu_temple', 'place_of_worship',
+    'museum', 'art_gallery', 'historical_landmark', 'historical_place', 'monument',
+]);
+
 function placeMatchesActionType(action, subType, types = [], primaryType = null) {
     const all = [primaryType, ...(Array.isArray(types) ? types : [])].filter(Boolean).map(t => String(t).toLowerCase());
     if (!all.length) return true; // unknown → don't drop (lenient, self-heals on re-fetch)
@@ -434,6 +476,20 @@ function placeMatchesActionType(action, subType, types = [], primaryType = null)
         const allowed = _SHOPPING_BASE[subType];
         if (!allowed) return true; // unknown sub-type → lenient
         return all.some(t => allowed.includes(t));
+    }
+    if (action === 'activities') {
+        // INCLUSION gate, like restaurants/hotels — deliberately NOT a member of
+        // _LANDMARK_ACTIONS: that path runs _NONLANDMARK_PRIMARY, which drops
+        // night_club, spa, gym and fitness_center, i.e. exactly the venues this
+        // category exists to find.
+        //
+        // bar / pub / wine_bar appear here AND in _RESTAURANT_BASE on purpose.
+        // The gate is asked one action at a time, so a wine bar can honestly
+        // answer both "where do I eat" and "where do I go tonight" — the V3
+        // lens table (§10.2) lists bars under both nightlife and romantic.
+        const pt = (primaryType ? String(primaryType).toLowerCase() : '');
+        if (pt && (_NONACTIVITY_PRIMARY.has(pt) || pt.endsWith('restaurant'))) return false;
+        return all.some(t => _ACTIVITY_BASE.has(t));
     }
     if (_LANDMARK_ACTIONS.has(action)) {
         // Exclusion gate (no inclusion list — see _LANDMARK_ACTIONS note above).
@@ -459,7 +515,12 @@ function placeMatchesActionType(action, subType, types = [], primaryType = null)
 // placeMatchesActionType. (The cache backfill does NOT use this — it gates on the
 // recorded `actions` category a place was shown under, not on type heuristics.)
 function actionHasTypeFilter(action, subType = null) {
-    return !!actionIncludedType(action, subType) || _LANDMARK_ACTIONS.has(action);
+    // 'activities' has no single Google includedType to bias a search with (it
+    // spans spa → night_club → bowling_alley), so actionIncludedType returns
+    // null for it — but it DOES have a real gate in placeMatchesActionType.
+    // Without this clause that gate would never be consulted from the
+    // quick-action path and off-type places would sail through.
+    return !!actionIncludedType(action, subType) || _LANDMARK_ACTIONS.has(action) || action === 'activities';
 }
 
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
