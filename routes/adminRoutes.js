@@ -1751,6 +1751,7 @@ router.get('/quick-action-stats', async (req, res) => {
             events:       { label: 'Local Events',   icon: 'events' },
             photo_spots:  { label: 'Photo Spots',    icon: 'photo_spots' },
             shopping:     { label: 'Shopping',       icon: 'shopping' },
+            activities:   { label: 'Activities',     icon: 'activities' },
             itinerary:    { label: 'Itinerary',      icon: 'itinerary' },
         };
         // Sub-types the user picks after tapping Shopping. Reported separately
@@ -2292,7 +2293,7 @@ router.get('/limits', async (req, res) => {
                 limitFreeDailyPlaces: cfg.limitFreeDailyPlaces || 100,
                 limitPremiumDailyTokens: cfg.limitPremiumDailyTokens || 50000,
                 limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200,
-                zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, hidden_gems: 900, souvenirs: 300, clothing: 300, jewelry: 300, food: 300 }
+                zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, hidden_gems: 900, activities: 900, souvenirs: 300, clothing: 300, jewelry: 300, food: 300 }
             },
             free: tier(false),
             premium: tier(true)
@@ -2319,7 +2320,10 @@ router.post('/limits', async (req, res) => {
             // as historical; legacy rows fall back to the schema default (500 m).
             // The validation loop REQUIRES every listed key in the payload, so
             // this list must exactly match the Limits form's rows.
-            for (const k of ['restaurants', 'hotels', 'events', 'hidden_gems', 'souvenirs', 'clothing', 'jewelry', 'food']) {
+            // This loop REQUIRES every listed key in the payload, so it must
+            // match the Limits form's rows exactly — add one here without the
+            // matching frontend row and every save 400s.
+            for (const k of ['restaurants', 'hotels', 'events', 'hidden_gems', 'activities', 'souvenirs', 'clothing', 'jewelry', 'food']) {
                 const v = parseInt(req.body.zoneRadiusM[k], 10);
                 if (!Number.isFinite(v) || v < 50 || v > 5000) {
                     return res.status(400).json({ success: false, error: `zoneRadiusM.${k} must be 50–5000 meters` });

@@ -99,6 +99,9 @@ const DWELL_MIN = {
   restaurants: 75, cafe: 40, historical: 70, museum: 90,
   photo_spots: 30, viewpoint: 30, hidden_gems: 45, shopping: 60,
   events: 90, nature: 60, hotels: 20,
+  // Longest stop type in the day: a spa visit, a karting session or a
+  // climbing wall is not a 45-minute default.
+  activities: 120,
 };
 const DAY_START_MIN = 9 * 60;                       // 09:00
 const DAY_END_MIN   = 21 * 60;                      // 21:00 — the horizon the prompt promises
@@ -251,6 +254,9 @@ function destTypeToItinCategory(types) {
   if (T.has('events')) return 'events';
   if (T.has('museum')) return 'museum';
   if (T.has('historical') || T.has('history')) return 'historical';
+  // Before hidden_gems and nature: a curated spa or karting track carries
+  // 'activities' and must not be relabelled by a co-occurring tag.
+  if (T.has('activities')) return 'activities';
   if (T.has('hidden_gems')) return 'hidden_gems';
   if (T.has('market') || T.has('mall') || T.has('shopping') || T.has('souvenirs') || T.has('clothing') || T.has('jewelry')) return 'shopping';
   if (T.has('nature')) return 'nature';
@@ -611,6 +617,9 @@ const SLOT_CATEGORY_TO_ACTION = {
   hidden_gems: 'hidden_gems', historical: 'historical', museum: 'historical',
   events: 'events', photo_spots: 'photo_spots', viewpoint: 'photo_spots',
   shopping: 'shopping', nature: 'hidden_gems',
+  // Mirrors the frontend ItineraryView.CATEGORY_TO_ACTION — if the two
+  // disagree, a slot dislike never hides the place it was cast on.
+  activities: 'activities',
 };
 const slotVoteAction = (category) => SLOT_CATEGORY_TO_ACTION[category] || 'hidden_gems';
 
@@ -721,6 +730,9 @@ function extractJson(text) {
 const VALID_CATEGORIES = new Set([
   'restaurants', 'cafe', 'hotels', 'hidden_gems', 'historical',
   'events', 'photo_spots', 'shopping', 'nature', 'museum', 'viewpoint',
+  // Without this every activities slot is coerced to hidden_gems by
+  // sanitizeSkeleton/addSlot, and replaceSlot ignores the edit outright.
+  'activities',
 ]);
 
 /** Coerce whatever the model returned into a clean, bounded day plan. */
@@ -836,7 +848,7 @@ function skeletonPrompt({ destination, daysCount, pace, interests, homeBase, sta
     `Every stop MUST be a real, currently existing, findable-on-Google place located IN ${destination.name} or within roughly ${Math.max(3, Math.min(30, Math.round(maxKm / 2)))} km of it. NEVER suggest a place in another city, region, or country, and never use a brand's branch from elsewhere. Do not invent names. Prefer well-known, verifiable places over obscure guesses. Mix categories through the day (sights, food around meal times, a viewpoint or walk, etc.).`,
     `Write each day's "title" in this language: ${language}. Keep place names as they are.`,
     `Respond with ONLY a JSON object, no prose, no markdown fences, exactly this shape:`,
-    `{"days":[{"day":1,"title":"short theme","slots":[{"time":"09:30","name":"Real Place Name","category":"restaurants|cafe|historical|hidden_gems|photo_spots|shopping|events|nature|museum|viewpoint","note":"one short practical tip"}]}]}`,
+    `{"days":[{"day":1,"title":"short theme","slots":[{"time":"09:30","name":"Real Place Name","category":"restaurants|cafe|historical|hidden_gems|photo_spots|shopping|events|nature|museum|viewpoint|activities","note":"one short practical tip"}]}]}`,
   ].filter(Boolean).join('\n');
 }
 
@@ -1449,7 +1461,7 @@ router.post('/:id/regenerate-day-stream', auth, usageTracker, async (req, res) =
  */
 
 const TIER_SCORE = { signature: 3, spotlight: 2, verified: 1 };
-const POOL_ACTIONS = ['restaurants', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events'];
+const POOL_ACTIONS = ['restaurants', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'events', 'activities'];
 const BREAKFASTY = /caf[e\u00e9]|coffee|bakery|patisserie|brunch|breakfast|konditorei|boulangerie/i;
 
 function poolPlace(raw) {
@@ -1608,14 +1620,14 @@ const centroidOf = (arr) => ({
  *  tiny local dictionary (not getAllMessages) so the fallback has zero
  *  dependencies and works even when the i18n bundle lacks these keys. */
 const DAY_THEME_WORDS = {
-  en: { restaurants: 'food', cafe: 'coffee', historical: 'history', museum: 'museums', nature: 'nature', viewpoint: 'viewpoints', photo_spots: 'photo spots', shopping: 'shopping', events: 'events', hidden_gems: 'hidden gems' },
-  ru: { restaurants: 'еда', cafe: 'кофе', historical: 'история', museum: 'музеи', nature: 'природа', viewpoint: 'смотровые', photo_spots: 'фотоместа', shopping: 'шопинг', events: 'события', hidden_gems: 'скрытые жемчужины' },
-  hy: { restaurants: 'ուտեստներ', cafe: 'սուրճ', historical: 'պատմություն', museum: 'թանգարաններ', nature: 'բնություն', viewpoint: 'տեսարաններ', photo_spots: 'ֆոտոկետեր', shopping: 'գնումներ', events: 'միջոցառումներ', hidden_gems: 'թաքնված գոհարներ' },
-  el: { restaurants: 'φαγητό', cafe: 'καφές', historical: 'ιστορία', museum: 'μουσεία', nature: 'φύση', viewpoint: 'θέες', photo_spots: 'σημεία φωτογράφισης', shopping: 'ψώνια', events: 'εκδηλώσεις', hidden_gems: 'κρυμμένα διαμάντια' },
-  de: { restaurants: 'Essen', cafe: 'Kaffee', historical: 'Geschichte', museum: 'Museen', nature: 'Natur', viewpoint: 'Aussichten', photo_spots: 'Fotospots', shopping: 'Shopping', events: 'Events', hidden_gems: 'Geheimtipps' },
-  fr: { restaurants: 'gastronomie', cafe: 'café', historical: 'histoire', museum: 'musées', nature: 'nature', viewpoint: 'panoramas', photo_spots: 'spots photo', shopping: 'shopping', events: 'événements', hidden_gems: 'perles cachées' },
-  es: { restaurants: 'gastronomía', cafe: 'café', historical: 'historia', museum: 'museos', nature: 'naturaleza', viewpoint: 'miradores', photo_spots: 'sitios para fotos', shopping: 'compras', events: 'eventos', hidden_gems: 'joyas ocultas' },
-  it: { restaurants: 'cucina', cafe: 'caffè', historical: 'storia', museum: 'musei', nature: 'natura', viewpoint: 'panorami', photo_spots: 'punti foto', shopping: 'shopping', events: 'eventi', hidden_gems: 'gemme nascoste' },
+  en: { restaurants: 'food', cafe: 'coffee', historical: 'history', museum: 'museums', nature: 'nature', viewpoint: 'viewpoints', photo_spots: 'photo spots', shopping: 'shopping', events: 'events', hidden_gems: 'hidden gems', activities: 'activities' },
+  ru: { restaurants: 'еда', cafe: 'кофе', historical: 'история', museum: 'музеи', nature: 'природа', viewpoint: 'смотровые', photo_spots: 'фотоместа', shopping: 'шопинг', events: 'события', hidden_gems: 'скрытые жемчужины', activities: 'развлечения' },
+  hy: { restaurants: 'ուտեստներ', cafe: 'սուրճ', historical: 'պատմություն', museum: 'թանգարաններ', nature: 'բնություն', viewpoint: 'տեսարաններ', photo_spots: 'ֆոտոկետեր', shopping: 'գնումներ', events: 'միջոցառումներ', hidden_gems: 'թաքնված գոհարներ', activities: 'զբաղմունքներ' },
+  el: { restaurants: 'φαγητό', cafe: 'καφές', historical: 'ιστορία', museum: 'μουσεία', nature: 'φύση', viewpoint: 'θέες', photo_spots: 'σημεία φωτογράφισης', shopping: 'ψώνια', events: 'εκδηλώσεις', hidden_gems: 'κρυμμένα διαμάντια', activities: 'δραστηριότητες' },
+  de: { restaurants: 'Essen', cafe: 'Kaffee', historical: 'Geschichte', museum: 'Museen', nature: 'Natur', viewpoint: 'Aussichten', photo_spots: 'Fotospots', shopping: 'Shopping', events: 'Events', hidden_gems: 'Geheimtipps', activities: 'Aktivitäten' },
+  fr: { restaurants: 'gastronomie', cafe: 'café', historical: 'histoire', museum: 'musées', nature: 'nature', viewpoint: 'panoramas', photo_spots: 'spots photo', shopping: 'shopping', events: 'événements', hidden_gems: 'perles cachées', activities: 'activités' },
+  es: { restaurants: 'gastronomía', cafe: 'café', historical: 'historia', museum: 'museos', nature: 'naturaleza', viewpoint: 'miradores', photo_spots: 'sitios para fotos', shopping: 'compras', events: 'eventos', hidden_gems: 'joyas ocultas', activities: 'actividades' },
+  it: { restaurants: 'cucina', cafe: 'caffè', historical: 'storia', museum: 'musei', nature: 'natura', viewpoint: 'panorami', photo_spots: 'punti foto', shopping: 'shopping', events: 'eventi', hidden_gems: 'gemme nascoste', activities: 'attività' },
 };
 
 /** Language-neutral-ish day title from what the day visits: the one or two
@@ -2141,7 +2153,10 @@ const SNAPSHOT_CATEGORY_RULES = [
   [/caf\u00e9|cafe|coffee|bakery|brunch|dessert/i, 'cafe'],
   [/museum|gallery/i, 'museum'],
   [/histor|monaster|church|cathedral|castle|fortress|temple|mosque|ruin|heritage|archaeolog/i, 'historical'],
-  [/event|concert|festival|show|nightlife/i, 'events'],
+  [/event|concert|festival|show/i, 'events'],
+  // Ahead of the nature rule below, or a hike or zip line lands as 'nature'.
+  // 'nightlife' moved off the events rule: a club is a place, not a date.
+  [/spa|wellness|hammam|sauna|nightlife|night club|nightclub|bowling|karaoke|cinema|casino|karting|paintball|zip.?line|climb|rafting|escape room|water park|amusement/i, 'activities'],
   [/photo|view|panoram|lookout|sunset/i, 'photo_spots'],
   [/shop|market|bazaar|mall|boutique|souvenir|jewel/i, 'shopping'],
   [/nature|park|garden|beach|waterfall|lake|trail|hik|forest/i, 'nature'],
