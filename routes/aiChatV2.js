@@ -344,6 +344,35 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         .catch(() => {});
                 }
             }
+            // ── Setting a budget IS choosing the budget style. ──
+            //
+            // "set budget 10 to 100" saved the figures and left the style on
+            // luxury (live 2026-08-26) — a state the Preferences screen cannot
+            // even produce: the min/max inputs only render while budget style is
+            // selected, and switching away clears them. A band stored under
+            // luxury is invisible to its owner while still gating retrieval,
+            // which is the orphaned-figures problem from the other side.
+            //
+            // The model is NOT asked to infer this. intentService still says an
+            // amount is a budget change and nothing else, because "find me
+            // something under 50" must never rewrite anyone's style. What makes
+            // the derivation safe is that settings_change is filled only for an
+            // explicit command, so by this line the traveler has genuinely asked
+            // for a budget. Code derives the consequence, exactly as it already
+            // derives the clear-on-luxury in applyProposal.
+            if (req.user?.id
+                && settingsApplied.some(p2 => p2.field === 'budget')
+                // A style named IN THIS TURN is their own word and outranks the
+                // derivation — "set luxury style" plus figures stays luxury.
+                && !settingsApplied.some(p2 => p2.field === 'travelStyle')
+                && intent._preferences?.travelStyle !== 'budget') {
+                const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
+                if (await applyProposal(req.user.id, style)) {
+                    settingsApplied.push(style);
+                    intent._preferences.travelStyle = 'budget';
+                    console.log('[prefs] budget figures imply the budget style — switched with them');
+                }
+            }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
             // Already in the request body every turn — it just never reached a
