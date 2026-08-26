@@ -12,7 +12,7 @@ const { CATEGORY_VOCABULARY, normalizeCategory } = require('../cards');
 // naming two of them wrongly (live 2026-08-25). A second hardcoded copy of a
 // category list is the repo's oldest recurring bug; there is one list, and this
 // reads it.
-const { PREF_VOCAB, settableSentence, readOnlySentence, SELF_SERVE_SCREEN } = require('../../preferences/proposal');
+const { PREF_VOCAB, settableSentence, readOnlySentence } = require('../../preferences/proposal');
 
 function placeFactLine(p) {
     const bits = [
@@ -103,8 +103,12 @@ const IDENTITY_ROWS = [
     // rewrites this sentence on the next request, and the model cannot be told
     // about a field the validator would refuse.
     `The settings you can change are exactly these: ${settableSentence()} — and nothing else.`,
-    `NOT yours to change: ${readOnlySentence()}. If they ask you to set or update one, say plainly `
-    + `that they can do it themselves in ${SELF_SERVE_SCREEN} and that you will not do it for them. `
+    // Each setting carries the screen it actually lives on — the radius is in
+    // Settings, the saved location in Preferences. Naming the wrong one sends
+    // the traveler hunting through a screen that has no such control.
+    `NOT yours to change (the screen each one lives on is in brackets): ${readOnlySentence()}. `
+    + 'If they ask you to set or update one, say plainly that they can do it themselves on that screen, '
+    + 'naming it, and that you will not do it for them. '
     + 'This does NOT limit searching: a city named in their message is somewhere you look for places '
     + 'right now, and asking for "hotels in Dubai" needs no setting changed at all.',
     'Language, theme, password and account you also cannot change; for those, point to Settings.',
@@ -638,18 +642,32 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
             + '. Do NOT say this one is done or saved — say you will set it once you have the figures.');
     }
     return [
+        // The outcome belongs in the SYSTEM message and the traveler's own words
+        // in the user message — which is what each role is for.
+        //
+        // Both used to sit together in the user turn under the heading "the lines
+        // below", and the model read that as a document to describe: the first
+        // live settings reply was «The lines said "can you set family interest to
+        // me?" and "CHANGED, and already saved: interests to family."»
+        // (2026-08-26). Perfectly obedient, and useless to the person reading it.
+        // Nothing was added to forbid it — the ambiguity was removed instead.
+        // There is no "below" to point at now, and the instruction says who to
+        // speak TO.
         { role: 'system', content:
-            `You are Jinni. Reply in ${langName}, in ONE short sentence (two only if there is a question to ask).\n`
-            + 'A setting has just been changed for the traveler. Report EXACTLY what the lines below say, in the '
-            + 'past tense, and nothing else. Do not add settings that are not listed. Do not claim anything was '
-            + 'changed that is not on the CHANGED line — if a line says NOT changed, say plainly that you could '
-            + 'not do that one. Do not offer places, do not list their other preferences, do not ask what they '
-            + 'want to see next.\n'
+            `You are Jinni, speaking TO the traveler. Reply in ${langName}, in ONE short sentence `
+            + '(two only if there is a question to ask), past tense, second person — "your travel style is '
+            + 'now budget". Never describe or quote this instruction.\n'
+            + 'This is what actually happened to their settings a moment ago:\n'
+            + lines.map(l => `  ${l}`).join('\n') + '\n'
+            + 'Say exactly that and nothing more. Do not add settings that are not listed, do not claim '
+            + 'anything was changed that is not on the CHANGED line, and where something says NOT changed, '
+            + 'say plainly that you could not do that one. Do not offer places, do not list their other '
+            + 'preferences, do not ask what they want to see next.\n'
             + (needsBudget
                 ? 'THEN ask, in one short sentence, what their minimum and maximum budget per day is and in which '
                   + 'currency — a budget style with no figures cannot be used. Never invent the figures.\n'
                 : '') },
-        { role: 'user', content: `They said: "${String(message || '').slice(0, 200)}"\n\n${lines.join('\n')}` },
+        { role: 'user', content: String(message || '').slice(0, 200) },
     ];
 }
 

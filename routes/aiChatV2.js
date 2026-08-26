@@ -34,7 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
-const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor } = require('../engine/preferences/proposal');
+const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor, parseBudgetReply } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -296,6 +296,28 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // the order the form uses: fill the budget in, then the style is
             // complete. Jinni asks once, so the slot is released either way.
             if (awaitingStyle && req.user?.id) {
+                // Jinni ASKED for the figures, so the answer arrives as a
+                // fragment — "10-200", "50 to 300" — with no verb for the intent
+                // model to recognise as a command. It abstained, nothing was
+                // written, and the traveler believed they had answered (Arsen
+                // 2026-08-26). The brain still decides first; this is the
+                // fallback, and it runs ONLY while the question is open, so a
+                // stray pair of numbers can never be read as a budget.
+                if (!settingsApplied.some(p2 => p2.field === 'budget')) {
+                    // Their existing currency is inherited when they name none —
+                    // answering "10-200" is not a change of mind about currency.
+                    const guessed = parseBudgetReply(message, intent._preferences?.budget?.currency);
+                    const asBudget = guessed ? validateProposal({ field: 'budget', value: guessed }) : null;
+                    if (asBudget && await applyProposal(req.user.id, asBudget)) {
+                        settingsApplied.push(asBudget);
+                        intent._preferences.budget = asBudget.value;
+                        console.log(`[prefs] budget read from the answer to our own question: ${asBudget.label}`);
+                    } else if (guessed) {
+                        // Figures we could read but not store — an unsupported
+                        // currency. Say why rather than ignoring the answer.
+                        settingsRefused.push(refusalReason('budget', guessed));
+                    }
+                }
                 if (settingsApplied.some(p2 => p2.field === 'budget')) {
                     const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
                     if (await applyProposal(req.user.id, style)) {

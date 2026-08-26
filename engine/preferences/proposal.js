@@ -152,15 +152,20 @@ const SETTINGS = {
 // anyway — v2's search hardcoded 5/50 km and never read it — so the honest
 // options were to wire it up or stop pretending. The READ still works: a radius
 // the traveler sets in Preferences now reaches the query.
+// `screen` is PER SETTING, because they genuinely live on different ones and a
+// refusal naming the wrong screen sends the traveler hunting (Arsen 2026-08-26:
+// "radius change is from settings, not preferences"). The radius sliders are in
+// the chat Settings modal (JinniChat.vue ~1282-1299); the saved location is on
+// the Preferences screen, which carries no radius control at all.
 const READ_ONLY = {
-    location: 'their saved location',
-    nearbyRadius: 'the nearby search radius',
-    discoveryRadius: 'the discovery search radius',
+    location: { says: 'their saved location', screen: 'Preferences' },
+    nearbyRadius: { says: 'the nearby search radius', screen: 'Settings' },
+    discoveryRadius: { says: 'the discovery search radius', screen: 'Settings' },
 };
 
-// Where the traveler changes a READ_ONLY setting himself. One noun, reused by
-// the refusal line and by the prompt row, so both always name the same screen.
-const SELF_SERVE_SCREEN = 'Preferences';
+// Every screen a READ_ONLY setting points at. The chat frontend turns these
+// exact words into tappable buttons, so they are a contract, not prose.
+const SELF_SERVE_SCREENS = [...new Set(Object.values(READ_ONLY).map(r => r.screen))];
 
 const PREF_PATHS = Object.fromEntries(
     Object.entries(SETTINGS).map(([field, s]) => [field, s.path])
@@ -175,7 +180,11 @@ const _list = (names) => names.length > 1
 function settableSentence() { return _list(Object.values(SETTINGS).map(s => s.says)); }
 
 /** The prompt's "what you cannot change" sentence, same trick. */
-function readOnlySentence() { return _list(Object.values(READ_ONLY)); }
+function readOnlySentence() {
+    // Each one names ITS OWN screen, so the sentence stays true even though the
+    // radius and the saved location live in different places.
+    return _list(Object.values(READ_ONLY).map(r => `${r.says} (${r.screen})`));
+}
 
 /**
  * A model's proposal → something safe to store and show, or null.
@@ -308,6 +317,63 @@ function budgetRefusalReason(raw) {
     return null;
 }
 
+// Currency words as a traveler actually types them, mapped to the five codes the
+// Preferences screen offers. Symbols included: "$10-200" is a currency answer.
+const _CURRENCY_WORDS = [
+    ['USD', /\b(usd|dollars?|bucks?)\b|\$/i],
+    ['EUR', /\b(eur|euros?)\b|€/i],
+    ['GBP', /\b(gbp|pounds?|sterling)\b|£/i],
+    ['AED', /\b(aed|dirhams?|dhs)\b/i],
+    ['RUB', /\b(rub|roubles?|rubles?)\b|₽|\bруб/i],
+];
+
+// Currencies a traveler in these markets might reasonably name that Jinni cannot
+// store. Listed so they are REFUSED loudly rather than silently replaced.
+const _OTHER_CURRENCY_RE = /\b(amd|gel|try|kzt|inr|jpy|cny|chf|sek|pln|uah|azn|dram|lari|lira|tenge|rupees?|yen|yuan|francs?)\b|֏/i;
+
+/**
+ * The traveler's ANSWER to "what is your min and max budget?" → a budget value.
+ *
+ * Jinni asks that question, so the reply is often just "10-200" or "50 to 300" —
+ * a fragment with no verb, which the intent model does not always recognise as a
+ * settings command. Then the style stayed unswitched while the traveler believed
+ * they had answered (Arsen 2026-08-26: "if user only gives min max without
+ * currency it seems it is not setting").
+ *
+ * Same split as everywhere else: the brain decides first, this is the fallback
+ * when it abstains. Only called while a budget question is actually open, so a
+ * bare pair of numbers cannot be mistaken for one in ordinary conversation.
+ *
+ * The currency is INHERITED when unstated — their saved one, else USD — because
+ * a person answering "10-200" has not changed their mind about the currency.
+ * A currency they DO name but we cannot store (AMD, say) is left in place so
+ * validateProposal refuses it and the reply explains why: quietly swapping it
+ * for USD would save a band they never agreed to.
+ *
+ * @returns {{min, max, currency}|null}
+ */
+function parseBudgetReply(message, fallbackCurrency = 'USD') {
+    const text = String(message || '');
+    // Two numbers, in order. Thousands separators tolerated; decimals ignored,
+    // since a daily budget of 10.50 is not what this question is asking.
+    const nums = (text.match(/\d[\d\s,]*/g) || [])
+        .map(n => Number(n.replace(/[\s,]/g, '')))
+        .filter(n => Number.isFinite(n) && n > 0);
+    if (nums.length < 2) return null;
+    const [min, max] = nums;
+    const named = _CURRENCY_WORDS.find(([, re]) => re.test(text));
+    if (named) return { min, max, currency: named[0] };
+    // A currency they DID name that we cannot store. Returned as written so
+    // validateProposal refuses it and the reply says which five are available —
+    // inheriting USD here would save a band in a currency they never agreed to,
+    // which is the exact class of silent-wrong-write this module exists to stop.
+    const other = text.match(_OTHER_CURRENCY_RE);
+    if (other) return { min, max, currency: (other[1] || other[0]).toUpperCase() };
+    const inherited = PREF_VOCAB.currency.includes(String(fallbackCurrency || '').toUpperCase())
+        ? String(fallbackCurrency).toUpperCase() : 'USD';
+    return { min, max, currency: inherited };
+}
+
 /**
  * WHY a change was refused, as a line the traveler can act on.
  *
@@ -321,7 +387,8 @@ function budgetRefusalReason(raw) {
  */
 function refusalReason(field, value) {
     if (Object.hasOwn(READ_ONLY, field)) {
-        return `${READ_ONLY[field]} — that one is theirs to set in ${SELF_SERVE_SCREEN}, and you cannot do it for them`;
+        const { says, screen } = READ_ONLY[field];
+        return `${says} — that one is theirs to set in ${screen}, and you cannot do it for them`;
     }
     if (field === 'budget') {
         const why = budgetRefusalReason(value);
@@ -335,6 +402,6 @@ function refusalReason(field, value) {
 module.exports = {
     validateProposal, isAffirmative, isNegative, applyProposal, isExplicit,
     budgetRefusalReason, refusalReason,
-    PREF_VOCAB, PREF_PATHS, SETTINGS, READ_ONLY, SELF_SERVE_SCREEN,
-    settableSentence, readOnlySentence, RADIUS_LIMITS, radiusKmFor,
+    PREF_VOCAB, PREF_PATHS, SETTINGS, READ_ONLY, SELF_SERVE_SCREENS,
+    settableSentence, readOnlySentence, RADIUS_LIMITS, radiusKmFor, parseBudgetReply,
 };

@@ -17,9 +17,9 @@ describe('reporting a settings change', () => {
             message: 'set style to budget', langName: 'English',
             done: ['travel style to budget'], failed: [],
         });
-        expect(m[1].content).toContain('CHANGED, and already saved: travel style to budget.');
+        expect(m[0].content).toContain('CHANGED, and already saved: travel style to budget.');
         expect(m[0].content).toMatch(/past tense/);
-        expect(m[0].content).toMatch(/Do not claim anything was changed that is not on the CHANGED line/);
+        expect(m[0].content).toMatch(/do not claim anything was changed that is not on the CHANGED line/i);
     });
 
     test('a refusal is reported as a refusal, not glossed over', () => {
@@ -27,7 +27,7 @@ describe('reporting a settings change', () => {
             message: 'set location to Atlantis', langName: 'English',
             done: [], failed: ['location'],
         });
-        expect(m[1].content).toContain('NOT changed — you could not do this: location.');
+        expect(m[0].content).toContain('NOT changed — you could not do this: location.');
     });
 
     test('it is told not to offer places on a command turn', () => {
@@ -321,9 +321,9 @@ describe('the saved location is not Jinni\'s to change', () => {
 
     test('asked to change it, Jinni points at Preferences instead', () => {
         const s = buildChitchatMessages({ message: 'set my location to Dubai', langName: 'English' })[0].content;
-        const { readOnlySentence, SELF_SERVE_SCREEN } = require('../engine/preferences/proposal');
+        const { readOnlySentence } = require('../engine/preferences/proposal');
         expect(s).toContain(readOnlySentence());
-        expect(s).toMatch(new RegExp(`do it themselves in ${SELF_SERVE_SCREEN}`));
+        expect(s).toMatch(/do it themselves on that screen/);
         expect(s).toMatch(/saved location/i);
         // and it must not read as "I can't help with Dubai at all"
         expect(s).toMatch(/hotels in Dubai" needs no setting changed/);
