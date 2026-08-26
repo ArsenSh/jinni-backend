@@ -687,7 +687,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // distinctive words, and cap dining/shopping radius (local decisions).
             // Refill turns enrich from the PREVIOUS ask — "10 other results"
             // contributes nothing to relevance; "suggest historical places" does.
-            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
+            // …and drop from that query whatever has ALREADY been applied as a
+            // filter. The centre selects the city and `actions` selects the kind,
+            // so repeating either as a search word can only match what already
+            // survived the filter — noise wearing the shape of signal (see
+            // tuning.js for the 44-of-52 measurement). Everything else the
+            // traveler said still enriches exactly as it did before.
+            const retrievalQuery = buildRetrievalQuery(
+                intent.searchQuery,
+                refillActive ? (prevUserAsk || message) : message,
+                { filters: [...(intent.placeNames || []), meta.searchCity, category, intent.subType] },
+            );
             // HOW FAR to look is the traveler's setting, not a constant. v2 hard-
             // coded 5/50 km, so the Preferences slider — and every radius Jinni
             // itself wrote — changed nothing at all: the reply said "I've widened
@@ -989,7 +999,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms ev=${[category ? 'category' : null, result.provenance.lexical ? 'text' : null].filter(Boolean).join('+') || 'NONE'} lex=${result.provenance.lexical}/${result.provenance.candidateCount}(top=${result.provenance.lexicalTop ?? 0} share=${result.provenance.lexicalShare ?? 0}) vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
             }
         }
     } catch (err) {

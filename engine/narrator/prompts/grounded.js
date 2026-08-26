@@ -201,8 +201,35 @@ function travelerRows(preferences) {
  *   location" — so this is not a constant. Claiming to see a location that was
  *   switched off is the same failure as denying one that was on.
  */
-function selfBlock(preferences, { knowsLocation = false } = {}) {
+function selfBlock(preferences, { knowsLocation = false, identity = true } = {}) {
     const rows = travelerRows(preferences);
+    // ── identity:false — the CARD path (2026-08-26). ──
+    //
+    // A places turn needs the traveler's rows: they quietly shape what is
+    // suggested, and prefUpdate cannot notice "their style is luxury and they
+    // say they always travel cheap" without seeing the saved style. Those stay.
+    // What a places turn does NOT need is the block about JINNI — who it is,
+    // which settings it can change, where the traveler is standing.
+    //
+    // Carrying that block anyway is how a deck turn opened with "My true name
+    // is Jinni — that's all I go by" and only then answered the question asked
+    // (live 2026-08-26). The previous turn had asked its name, the identity rows
+    // were sitting in the prompt, and the model reached for them.
+    // ANSWER_ONLY_CURRENT was present and lost — a rule competes badly against
+    // material. Removing the material wins outright.
+    //
+    // The rule is narrowed to match, so the model is not left pointed at rows
+    // about itself that are no longer there.
+    if (!identity) {
+        return rows.length
+            ? 'ABOUT THIS TRAVELER you may state ONLY what the rows below say — never describe a taste, '
+              + 'style or budget that is not listed.\n'
+              + 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
+              + rows.map(r => `- ${r}`).join('\n')
+              + '\nThese are BACKGROUND. Let them quietly shape WHAT you suggest — never announce them.\n'
+            : 'ROWS ABOUT THIS TRAVELER: none — they have saved no preferences. Do NOT describe any '
+              + 'taste, style or budget for them.\n';
+    }
     // NAME the place. Saying only "you can see where they are" told it that it
     // knew something without telling it what, so it filled the gap with the
     // saved destination and answered "Yes, your location is Dubai right now —
@@ -464,7 +491,11 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               // verified events…" came from (live 2026-08-24). A deck turn can
               // re-litigate an earlier turn just as easily as a prose one.
               + ANSWER_ONLY_CURRENT
-              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
+              // identity:false — the traveler's rows only. A deck turn has no
+              // business discussing what Jinni is, and holding those rows here
+              // is what made one open by re-answering "what is your true name"
+              // (2026-08-26). See selfBlock.
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation, identity: false })
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'

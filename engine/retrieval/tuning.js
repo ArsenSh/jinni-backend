@@ -36,19 +36,63 @@ const CHAT_STOPWORDS = new Set([
     'place', 'places', 'around', 'near', 'nearby',
 ]);
 
-function buildRetrievalQuery(searchQuery, rawMessage, maxTokens = 8) {
-    const base = tokenize(searchQuery || '');
+/* THE ONE HOLE IN THE RULE ABOVE (2026-08-26).
+ *
+ * Enrichment is right and stays. But it rests on the assumption stated above —
+ * "useless tokens cost nothing (idf ≈ 0 when they match no documents)" — and
+ * that only holds for tokens matching NOTHING. A token matching nearly
+ * EVERYTHING is the opposite case, and the enrichment had no guard for it.
+ *
+ * Live: "where can I get acquainted with a girl in Yerevan" searched
+ * `help acquainted normal girl yerevan` and matched 44 of 52 candidates. Every
+ * place in Yerevan carries "Yerevan" in its name or address, so the one word
+ * that means nothing INSIDE a Yerevan search was the only word matching
+ * anything. Its idf is not 0, it is small-but-positive, and when nothing else
+ * matches, small-but-positive is the entire ranking. The deck came back a
+ * jewellery shop, a nut shop and a helicopter tour, each with a blurb
+ * explaining why it suited meeting someone.
+ *
+ *     "help acquainted normal girl yerevan"  → 44 matches
+ *     "help acquainted normal girl"          →  0 matches   ← the truth
+ *
+ * Second harm: it inflated provenance.lexical, and the relevance brake fires
+ * only when that is 0 — so the guard built for exactly this deck was held shut
+ * by the bug it existed to catch.
+ *
+ * `filters` is whatever has ALREADY been applied structurally — the city, the
+ * country, the category, the sub-type. Those select the set; repeating them as
+ * text can only match what already survived, which is noise wearing the shape
+ * of signal. Everything else the traveler said still enriches exactly as before.
+ */
+function buildRetrievalQuery(searchQuery, rawMessage, { filters = [], maxTokens = 8 } = {}) {
+    const filtered = new Set(
+        (Array.isArray(filters) ? filters : [filters])
+            .filter(Boolean)
+            .flatMap(f => tokenize(String(f)))
+    );
+    const base = tokenize(searchQuery || '').filter(t => !filtered.has(t));
     const seen = new Set(base);
     const extra = [];
     for (const t of tokenize(rawMessage || '')) {
         if (t.length < 4) continue;
-        if (seen.has(t) || CHAT_STOPWORDS.has(t)) continue;
+        if (seen.has(t) || CHAT_STOPWORDS.has(t) || filtered.has(t)) continue;
         seen.add(t);
         extra.push(t);
         if (base.length + extra.length >= maxTokens) break;
     }
     const combined = [...base, ...extra].join(' ');
-    return combined || String(searchQuery || rawMessage || '');
+    if (combined) return combined;
+    // Nothing survived, and the filters are why. That is an honest empty query,
+    // not a failure: "restaurants in Dubai" carries no want beyond a kind and a
+    // place, and both are already applied. Empty makes findPlaces skip lexical
+    // and vector ranking and fall to the prior — correct, since there is no
+    // textual evidence to weigh — and it stops the Google fallback paying for a
+    // search whose only surviving term was the city.
+    if (filtered.size) return '';
+    // No filters were supplied, so this is the original path, unchanged: a
+    // message whose words were all too short to tokenize still searches for
+    // something rather than nothing.
+    return String(searchQuery || rawMessage || '');
 }
 
 /* 3. Right-now intent (Arsen's rule, 2026-08-22): "if the context is right now

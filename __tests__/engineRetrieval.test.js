@@ -110,6 +110,59 @@ describe('tuning: effectiveRadiusKm (the 37.7 km Tsaghkadzor fix)', () => {
     });
 });
 
+// Live 2026-08-26. "where can I get acquainted with a girl in Yerevan" searched
+// `help acquainted normal girl yerevan` and matched 44 of 52 candidates, because
+// every place in Yerevan carries "Yerevan" in its text. The deck came back a
+// jewellery shop, a nut shop and a helicopter tour. The enrichment rule assumed
+// "useless tokens cost nothing (idf ~ 0 when they match no documents)" — true of
+// a token matching NOTHING, false of one matching nearly EVERYTHING.
+describe('tuning: a word already applied as a filter is not a search word', () => {
+    const { rankLexical } = require('../engine/retrieval/lexical');
+    const POOL = [
+        ['GrandHotel', 'Grand Hotel Yerevan hotel Yerevan'],
+        ['Lavash', 'Lavash romantic rooftop restaurant Yerevan'],
+        ['Sherep', 'Sherep seafood restaurant Yerevan'],
+        ['Jewelry', 'De Laur Jewelry jewelry_store Yerevan'],
+        ['NutShop', 'Pnduk dried fruits nuts store Yerevan'],
+    ].map(([id, text]) => ({ id, text }));
+
+    test('the city is dropped, so an unanswerable ask matches nothing', () => {
+        const msg = 'Can you help me find where I can get acquainted with a normal girl in Yerevan?';
+        const withCity = buildRetrievalQuery('meet people Yerevan', msg);
+        const filtered = buildRetrievalQuery('meet people Yerevan', msg, { filters: ['Yerevan'] });
+        expect(withCity).toContain('yerevan');
+        expect(filtered).not.toContain('yerevan');
+        // The honest count is zero — nothing in a place corpus answers it.
+        expect(rankLexical(withCity, POOL).length).toBeGreaterThan(0);
+        expect(rankLexical(filtered, POOL)).toHaveLength(0);
+    });
+
+    test('a real ask keeps every distinctive word and ranks correctly', () => {
+        const q = buildRetrievalQuery('restaurant', 'a romantic rooftop seafood restaurant in Yerevan',
+            { filters: ['Yerevan', 'restaurants'] });
+        for (const w of ['romantic', 'rooftop', 'seafood']) expect(q).toContain(w);
+        expect(q).not.toContain('yerevan');
+        expect(rankLexical(q, POOL).map(r => r.id)).toEqual(['Lavash', 'Sherep']);
+    });
+
+    test('the category and sub-type are filters too', () => {
+        expect(buildRetrievalQuery('souvenir shopping', 'souvenir shops please',
+            { filters: ['shopping', 'souvenirs'] })).not.toContain('shopping');
+    });
+
+    test('filters stripping everything gives an honest empty query', () => {
+        // "restaurants in Dubai" carries no want beyond a kind and a place, and
+        // both are already applied — so findPlaces skips lexical/vector ranking
+        // rather than ranking on a word that matches the whole corpus.
+        expect(buildRetrievalQuery('restaurants Dubai', 'restaurants in Dubai',
+            { filters: ['Dubai', 'restaurants'] })).toBe('');
+    });
+
+    test('with no filters passed, behaviour is exactly as before', () => {
+        expect(buildRetrievalQuery('uzbek restaurant', 'uzbek restaurant please')).toBe('uzbek restaurant');
+    });
+});
+
 describe('tuning: buildRetrievalQuery (keep the distinctive message words)', () => {
     test('the girlfriend-dinner case: descriptive words survive, filler does not', () => {
         const q = buildRetrievalQuery('restaurant', 'I am looking for romantic restaurant to meet with my girlfriend');
