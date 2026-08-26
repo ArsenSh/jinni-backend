@@ -2822,4 +2822,89 @@ router.get('/ai-usage/by-provider', async (req, res) => {
 });
 
 
+// ── EVENT SOURCES — the registry the hunt reads instead of paying for search ──
+//
+// Validators already manage these per city through /api/staff/event-sources,
+// which filters by their assigned scope. Admin sees EVERY country and can add,
+// edit, enable/disable and delete — the staff route's isWithinScope checks are
+// deliberately absent here, and that is the only difference between the two.
+//
+// Disabling beats deleting: `enabled:false` is honoured by the hunt AND
+// remembered by discovery (_dropDisabled), so a page a human switched off is
+// never silently re-registered. A deleted row can simply be re-discovered.
+const EventSource = require('../models/EventSource');
+const _rxEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+router.get('/event-sources', async (req, res) => {
+    try {
+        const { country, city, enabled, origin } = req.query || {};
+        const q = {};
+        if (country) q.country = new RegExp(`^${_rxEscape(country)}$`, 'i');
+        if (city) q.city = new RegExp(`^${_rxEscape(city)}$`, 'i');
+        if (enabled === 'true' || enabled === 'false') q.enabled = enabled === 'true';
+        // Who put it there: 'staff' = a person registered it, 'discovered' =
+        // the hunt found it and it earned its row by producing dated events.
+        if (origin === 'staff') q.discoveredAt = null;
+        if (origin === 'discovered') q.discoveredAt = { $ne: null };
+        const rows = await EventSource.find(q).sort({ country: 1, city: 1, name: 1 }).limit(1000).lean();
+        res.json({ success: true, data: rows });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/event-sources', async (req, res) => {
+    try {
+        const { name, url, city, country, adapter } = req.body || {};
+        if (!name?.trim() || !url?.trim()) return res.status(400).json({ error: 'name and url are required' });
+        try {
+            const u = new URL(url.trim());
+            if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
+        } catch { return res.status(400).json({ error: 'url must be a valid http(s) address' }); }
+        // A row with neither is unreachable: the hunt looks sources up by city
+        // or by country, so it would sit in the registry and never be read.
+        if (!city?.trim() && !country?.trim()) return res.status(400).json({ error: 'city or country is required' });
+        const row = await EventSource.create({
+            name: name.trim(), url: url.trim(),
+            city: city?.trim() || null, country: country?.trim() || null,
+            adapter: adapter?.trim() || null,
+            addedBy: req.user?._id || req.user?.id || null,
+        });
+        res.json({ success: true, data: row });
+    } catch (err) {
+        if (err.code === 11000) return res.status(409).json({ error: 'This url is already registered for that city' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.patch('/event-sources/:id', async (req, res) => {
+    try {
+        const row = await EventSource.findById(req.params.id);
+        if (!row) return res.status(404).json({ error: 'Source not found' });
+        for (const k of ['name', 'url', 'city', 'country', 'adapter']) {
+            if (typeof req.body?.[k] === 'string') row[k] = req.body[k].trim() || null;
+        }
+        if (typeof req.body?.enabled === 'boolean') {
+            row.enabled = req.body.enabled;
+            // Re-enabling by hand clears the auto-prune state, or a source with
+            // three stale empty reads behind it would switch itself straight
+            // back off on the next nightly sweep.
+            if (row.enabled) { row.zeroStreak = 0; row.disabledReason = null; }
+        }
+        if (!row.name || !row.url) return res.status(400).json({ error: 'name and url are required' });
+        await row.save();
+        res.json({ success: true, data: row });
+    } catch (err) {
+        if (err.code === 11000) return res.status(409).json({ error: 'This url is already registered for that city' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.delete('/event-sources/:id', async (req, res) => {
+    try {
+        const row = await EventSource.findById(req.params.id);
+        if (!row) return res.status(404).json({ error: 'Source not found' });
+        await row.deleteOne();
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;
