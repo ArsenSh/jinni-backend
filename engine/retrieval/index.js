@@ -115,17 +115,6 @@ async function findPlaces(params = {}, deps = {}) {
         if (query) {
             const lex = rankLexical(query, withIds.map(({ c, id }) => ({ id, text: c.text || c.name || '' })));
             provenance.lexical = lex.length;
-            // MEASURED, not acted on (2026-08-26). The relevance brake asks
-            // "were there zero matches?", a yes/no that a single everything-
-            // matching token can flip (see tuning.js). These two numbers say how
-            // GOOD the match was, not merely whether one existed: the best BM25
-            // score, and what share of the pool matched at all. A high share is
-            // itself a warning — a term matching most of the corpus is telling
-            // you about the corpus, not about the ask. Logged so the threshold
-            // can be set from real traffic instead of guessed.
-            provenance.lexicalTop = lex.length ? Math.round(lex[0].score * 1000) / 1000 : 0;
-            provenance.lexicalShare = withIds.length
-                ? Math.round((lex.length / withIds.length) * 100) / 100 : 0;
             if (lex.length) lists.push({ ids: lex.map(r => r.id), weight: W.lexical });
             if (queryVector) {
                 const vec = rankByVector(queryVector, withIds.map(({ c, id }) => ({ id, vector: c.vector })), 0.1);

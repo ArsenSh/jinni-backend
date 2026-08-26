@@ -11,14 +11,6 @@ const userSchema = new mongoose.Schema({
         interests: [String],
         budget: { min: Number, max: Number, currency: { type: String, default: 'USD' }},
         travelStyle: String,
-        // OnboardingPage.vue has ALWAYS sent this in its payload, and the
-        // onboarding route has always written `preferences` wholesale — but the
-        // field was never declared here, so Mongoose's default strict mode
-        // stripped it on every save, silently. The toggle therefore fell back to
-        // its `true` default on every load, and applyProposal's write of it
-        // (2026-08-25) went the same way: matched, acknowledged, discarded.
-        // A path absent from the schema is not a place to store anything.
-        useGPS: { type: Boolean, default: true },
         languages: { type: [String], default: ['en'] },
         accessibility: [String],
         destination: {
@@ -45,18 +37,6 @@ const userSchema = new mongoose.Schema({
             nearby: { type: Number, default: 5, min: 1, max: 20 },
             discovery: { type: Number, default: 50, min: 10, max: 100 }
         },
-        // Which of those two radii is live — the Discovery/Nearby toggle sitting
-        // in the chat input container, beside the preference chips. It was
-        // client-only (localStorage 'nearbyMode'), which made it the one control
-        // in that container Jinni could not reach and the only one that did not
-        // survive a change of device.
-        //
-        // NULL means "never chosen", and it is deliberately not `false`: an
-        // existing traveler already has a choice in localStorage, and a boolean
-        // default would silently overwrite it the first time they loaded the
-        // app. The client seeds this once from its own value, and the server is
-        // authoritative from then on.
-        nearbyMode: { type: Boolean, default: null },
         privacy: {
             autoDetectLocation: { type: Boolean, default: true },
             locationPermissionGranted: { type: Boolean, default: false }

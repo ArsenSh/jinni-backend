@@ -71,57 +71,15 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
     return query;
 }
 
-// ── Community feedback, BOUNDED (2026-08-26) ─────────────────────────────────
-//
-// v1 scored this `net >= 0 ? 3*net : 8*net` — unbounded, and the only term in
-// the formula that was. Every other signal is normalised: `hits` is capped at
-// HIT_CAP and divided down to 0..1, `pref` is 0..1, `closeness` is 0..1, rating
-// is 0..5. Feedback alone grew without limit.
-//
-// Measured on the live Yerevan pool (scripts/explainRetrieval.js):
-//
-//     one like ................................. 3.00 points
-//     a perfect 5.0 Google rating .............. 5.00 points
-//     the whole 0 → 50 km distance range ....... 1.00 point
-//
-// A single vote outweighed proximity three times over. On a corpus where almost
-// nothing has votes, the few places that do became the answer to every ask
-// carrying no other evidence — and since PlaceCache.likes is the SHARED counter,
-// those were usually the asker's OWN votes handed back as community quality.
-// Live 2026-08-26: a jewellery shop, a diamond gallery, a dried-fruit shop and a
-// mall, ranked above everything, for "where can I meet someone".
-//
-// The asymmetry stays — it is deliberate and right: a disliked place should sink
-// faster than a liked one climbs. What changes is that feedback now behaves like
-// every other signal in the formula:
-//
-//   • a SHARE (net/votes, -1..+1) rather than a raw count, so 1-of-1 and 50-of-50
-//     are the same opinion at different confidence, not different scores;
-//   • CONFIDENCE ramps over the first few votes — one vote is a hint, three are
-//     a verdict;
-//   • BOUNDED: at most +2 for a loved place, down to -4 for a rejected one.
-//
-// Recalibrated, not replaced. v1 carries the same unbounded term and the same
-// behaviour, so this is worth porting there too.
-const FEEDBACK_TRUST_VOTES = 3;   // votes before feedback counts at full strength
-const FEEDBACK_REWARD = 2;        // most a well-liked place may gain
-const FEEDBACK_PENALTY = 4;       // negatives bite twice as hard as praise rewards
-
-function feedbackScoreFor(likes = 0, dislikes = 0) {
-    const votes = (likes || 0) + (dislikes || 0);
-    if (!votes) return 0;
-    const share = ((likes || 0) - (dislikes || 0)) / votes;          // -1 .. +1
-    const confidence = Math.min(1, votes / FEEDBACK_TRUST_VOTES);    //  0 .. 1
-    return share * confidence * (share >= 0 ? FEEDBACK_REWARD : FEEDBACK_PENALTY);
-}
-
-/** v1's backfill prior (aiRoutes ~2179–2195), with feedback bounded — see above. */
+/** v1's backfill prior, same weights (aiRoutes ~2179–2195). */
 function scoreCachedDoc(d, distanceKm, radiusKm, category, preferences = {}) {
+    const net = (d.likes || 0) - (d.dislikes || 0);
     const rating = d.rating || 0;
     const pref = _prefFitScore(d.types, d.primaryType, preferences);
     const hits = Math.min(d.useCount || 0, HIT_CAP) / HIT_CAP;
     const closeness = 1 - (distanceKm / radiusKm);
-    const feedbackScore = feedbackScoreFor(d.likes, d.dislikes);
+    // Negative feedback bites HARDER than positive rewards (asymmetric).
+    const feedbackScore = net >= 0 ? (3 * net) : (8 * net);
     const dTier = category && isPriceAction(category) ? priceTier(d.types, d.primaryType, d.priceLevel).tier : null;
     const tierScore = category && isPriceAction(category) ? tierFit(dTier, preferences.travelStyle) : 0;
     return feedbackScore + (1 * rating) + (2 * pref) + (2 * tierScore) + (1 * hits) + (1 * closeness);
@@ -269,10 +227,6 @@ async function loadCandidates(params = {}, deps = {}) {
     const {
         category = null, subType = null, center = null,
         radiusKm = 50, preferences = {}, excludes = {}, requestId = null,
-        // Discovery shows every tier; Nearby is paid-tier ground. Flows
-        // straight through from the route, since findPlaces hands this whole
-        // params object down unchanged.
-        nearbyMode = false,
     } = params;
     if (!center || center.lat == null || center.lng == null) return [];
     // Events are never served from the place cache (a cached venue is not a
@@ -300,7 +254,6 @@ async function loadCandidates(params = {}, deps = {}) {
             // The longest wait in the whole engine (8–24s of reading listing
             // pages). Say so, or the app looks frozen.
             params.onStage?.('listings', 'Reading the city\'s event listings…');
-            params.onSpend?.('hunt', 1);
             try {
                 // First candidate whose city LOOKS like a city — dirty rows
                 // carry address fragments ("10/9") in the city field.
@@ -375,8 +328,7 @@ async function loadCandidates(params = {}, deps = {}) {
     let destinations = [], businesses = [];
     try {
         const proximity = deps.proximity || require('../../services/proximityService').findSmartProximityPlaces;
-        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType,
-            null, { nearbyMode });
+        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType);
         destinations = (res?.destinations || []).map(d => dbDocToCandidate(d, 'destination', center)).filter(Boolean);
         businesses = (res?.businesses || []).map(b => dbDocToCandidate(b, 'business', center)).filter(Boolean);
     } catch (err) {
@@ -410,9 +362,6 @@ async function loadCandidates(params = {}, deps = {}) {
                 needed: Math.max(wanted - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (extra.length) {
-                // Report the spend to whoever is measuring this turn. Same
-                // shape as onStage: optional, ignored when nobody listens.
-                params.onSpend?.('google', extra.length);
                 console.log(`[canonicalStore] google fallback: +${extra.length} (owned had ${merged.length}${missing.length ? `, uncovered: ${missing.join(',')}` : ''})`);
                 merged = mergeAndDedupe(merged, extra);
                 // Demand-fetched marking (the Uzbechka lesson, 2026-08-22
@@ -541,5 +490,4 @@ module.exports = {
     scoreCachedDoc,
     mergeAndDedupe,
     isCommunityRejected,
-    feedbackScoreFor,
 };

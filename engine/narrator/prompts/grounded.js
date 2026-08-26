@@ -5,14 +5,6 @@
 
 /** One evidence line per place — the ONLY facts the model may assert. */
 const { CATEGORY_VOCABULARY, normalizeCategory } = require('../cards');
-// The vocabulary the Preferences screen offers, taken from the module that
-// VALIDATES it rather than retyped here. Asked "what interest I can select",
-// Jinni answered "family, adventure, food, culture, nature, shopping, or
-// relaxation" — inventing shopping, missing romantic/history/art/nightlife, and
-// naming two of them wrongly (live 2026-08-25). A second hardcoded copy of a
-// category list is the repo's oldest recurring bug; there is one list, and this
-// reads it.
-const { PREF_VOCAB, settableSentence, readOnlySentence } = require('../../preferences/proposal');
 
 function placeFactLine(p) {
     const bits = [
@@ -91,43 +83,6 @@ const IDENTITY_ROWS = [
     // misleading as inventing one you lack.
     'You DO see the traveler\'s saved settings.',
     'You CAN change a saved setting when they ask you to — say it is done, in the past tense. Never say you have no access to their settings or location.',
-    // Saying "I can change a setting" without saying WHICH is the same empty
-    // capability that produced the invented current position above: the model
-    // knows it may act but not on what, so it either refuses or promises
-    // something the app cannot do.
-    //
-    // BOTH lists are GENERATED from proposal.js's registry, never typed here.
-    // The typed version said "exactly these five" and went on saying it after
-    // the set changed twice — a hand-written list is a promise that stops being
-    // checked the moment it is written. Now removing a setting from the registry
-    // rewrites this sentence on the next request, and the model cannot be told
-    // about a field the validator would refuse.
-    `The settings you can change are exactly these: ${settableSentence()} — and nothing else.`,
-    // Each setting carries the screen it actually lives on — the radius is in
-    // Settings, the saved location in Preferences. Naming the wrong one sends
-    // the traveler hunting through a screen that has no such control.
-    `NOT yours to change (the screen each one lives on is in brackets): ${readOnlySentence()}. `
-    + 'If they ask you to set or update one, say plainly that they can do it themselves on that screen, '
-    + 'naming it, and that you will not do it for them. '
-    + 'This does NOT limit searching: a city named in their message is somewhere you look for places '
-    + 'right now, and asking for "hotels in Dubai" needs no setting changed at all.',
-    'Language, theme, password and account you also cannot change; for those, point to Settings.',
-    // Naming the settings without naming their VALUES left the model to invent
-    // the list when asked what it could pick from. These are the same ten the
-    // Preferences screen shows, and the only ten a proposal will validate
-    // against — anything else is silently dropped, so offering it is a promise
-    // the app will not keep.
-    'The interests they can choose are exactly these ten, and no others: '
-    + PREF_VOCAB.interests.map(i => i.replace(/_/g, ' & ')).join(', ')
-    + '. If asked which interests are available, list these — never improvise a category '
-    + '(there is no "shopping" interest) and never rename one.',
-    // "can you change my preferences?" names no value, so nothing is written and
-    // "it is done" would be a lie — but a flat "I can't" is false too, and that
-    // is what shipped (live 2026-08-24). A question about the CAPABILITY is
-    // answered yes, then asks which one.
-    'If they ask WHETHER you can change their preferences without naming what to change, the answer is '
-    + 'YES — say so and ask which setting and which value they want. Only describe a change as done when '
-    + 'this turn actually reports one.',
 ];
 
 const SELF_KNOWLEDGE_RULE =
@@ -161,29 +116,9 @@ function travelerRows(preferences) {
     }
     // The search radii, so it can answer "how far do you look?" and notice when
     // one is the reason a deck came back thin (Arsen 2026-08-24).
-    // 5 km and 50 km are what every account starts with, so they are present on
-    // EVERY traveler and were recited in every "what are my preferences?" answer
-    // as though the traveler had chosen them (Arsen 2026-08-25: "it is by
-    // default when user joins jinni … not tell all time"). The rows stay — they
-    // are how "how far do you look?" gets answered — but an untouched default is
-    // labelled as one, so it is background rather than news.
-    // Which of the two radii is actually in force. It arrives in the request
-    // body on EVERY turn, so this costs nothing to know — yet it never reached
-    // a prompt, and Jinni behaved differently per mode without being able to
-    // say which one it was in. Asked outright, it guessed.
-    if (p._searchMode) {
-        rows.push(p._searchMode === 'nearby'
-            ? 'search mode: NEARBY — you are searching tight around where they physically are right now'
-            : 'search mode: DISCOVERY — you are searching wide around the place they are exploring, '
-              + 'which is not necessarily where they are standing');
-    }
     const r = p._searchRadius || {};
-    const dflt = (isDefault) => isDefault
-        ? ' — the DEFAULT every account starts with, not a choice they made: never volunteer it, '
-          + 'state it only if this message asks about search distance'
-        : '';
-    if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)${dflt(r.nearby === 5)}`);
-    if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)${dflt(r.discovery === 50)}`);
+    if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)`);
+    if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)`);
     // Budget style with no budget is a gap worth closing, and only the traveler
     // can close it. Arsen 2026-08-24: "if user he wants budget places then
     // should give budget also min and max".
@@ -201,35 +136,8 @@ function travelerRows(preferences) {
  *   location" — so this is not a constant. Claiming to see a location that was
  *   switched off is the same failure as denying one that was on.
  */
-function selfBlock(preferences, { knowsLocation = false, identity = true } = {}) {
+function selfBlock(preferences, { knowsLocation = false } = {}) {
     const rows = travelerRows(preferences);
-    // ── identity:false — the CARD path (2026-08-26). ──
-    //
-    // A places turn needs the traveler's rows: they quietly shape what is
-    // suggested, and prefUpdate cannot notice "their style is luxury and they
-    // say they always travel cheap" without seeing the saved style. Those stay.
-    // What a places turn does NOT need is the block about JINNI — who it is,
-    // which settings it can change, where the traveler is standing.
-    //
-    // Carrying that block anyway is how a deck turn opened with "My true name
-    // is Jinni — that's all I go by" and only then answered the question asked
-    // (live 2026-08-26). The previous turn had asked its name, the identity rows
-    // were sitting in the prompt, and the model reached for them.
-    // ANSWER_ONLY_CURRENT was present and lost — a rule competes badly against
-    // material. Removing the material wins outright.
-    //
-    // The rule is narrowed to match, so the model is not left pointed at rows
-    // about itself that are no longer there.
-    if (!identity) {
-        return rows.length
-            ? 'ABOUT THIS TRAVELER you may state ONLY what the rows below say — never describe a taste, '
-              + 'style or budget that is not listed.\n'
-              + 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
-              + rows.map(r => `- ${r}`).join('\n')
-              + '\nThese are BACKGROUND. Let them quietly shape WHAT you suggest — never announce them.\n'
-            : 'ROWS ABOUT THIS TRAVELER: none — they have saved no preferences. Do NOT describe any '
-              + 'taste, style or budget for them.\n';
-    }
     // NAME the place. Saying only "you can see where they are" told it that it
     // knew something without telling it what, so it filled the gap with the
     // saved destination and answered "Yes, your location is Dubai right now —
@@ -485,33 +393,13 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
         {
             role: 'system',
             content:
-                // NO SELF-DESCRIPTION ON THIS PATH (2026-08-26). The line here
-                // used to read "You are Jinni, a warm, concise travel
-                // companion." — and three consecutive live deck turns opened by
-                // reciting it: "My true name is Jinni — a warm, concise travel
-                // companion." Word for word, straight out of the prompt.
-                //
-                // With an identity question sitting in the history, a sentence
-                // DESCRIBING Jinni is the nearest thing to an answer, and the
-                // model reaches for it however firmly ANSWER_ONLY_CURRENT says
-                // not to. Removing the identity block from selfBlock did not
-                // help, because this line lives above it. Same lesson as the
-                // budget example: material beats rules, so take the material
-                // away. A deck turn writes about PLACES; it never needs to name
-                // or characterise itself.
-                'Write the traveler\'s answer directly. Warm and concise.\n'
+                'You are Jinni, a warm, concise travel companion.\n'
               // The card path had no such rule, and it is where "I apologize for
               // the confusion in my earlier message. You're right — I DO have
               // verified events…" came from (live 2026-08-24). A deck turn can
               // re-litigate an earlier turn just as easily as a prose one.
               + ANSWER_ONLY_CURRENT
-              + 'Never introduce yourself, never state or explain your name, and never describe what you are — '
-              + 'even if an earlier turn asked. That question already had its answer.\n'
-              // identity:false — the traveler's rows only. A deck turn has no
-              // business discussing what Jinni is, and holding those rows here
-              // is what made one open by re-answering "what is your true name"
-              // (2026-08-26). See selfBlock.
-              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation, identity: false })
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
@@ -536,20 +424,12 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'LASTING change to one (e.g. their style is luxury and they say they always travel cheap). One of '
               + '{"field":"travelStyle","value":"luxury|budget"}, {"field":"interests","value":["family","romantic"]}, '
               + '{"field":"budget","value":{"min":50,"max":200,"currency":"USD"}}, '
-              // The two location options that used to sit here were removed on
-              // 2026-08-26. They had already stopped working — proposal.js holds
-              // no `location` path, so every one was silently dropped — and they
-              // contradicted the identity row above, which tells the model the
-              // saved location is not its to change. Offering a field code
-              // refuses to write is how "I've set that for you" gets said about
-              // nothing at all.
-              + 'or {"field":"searchMode","value":"nearby|discovery"}. '
-              // The two radius options were removed on 2026-08-26 along with the
-              // location pair above. Same reason each time: the prompt was
-              // offering a field the validator refuses. The rows above already
-              // say the radius is theirs to set in Preferences, and those rows
-              // are generated from the registry — so this list and that sentence
-              // cannot drift apart again.
+              + '{"field":"location","value":"current"} (where they are NOW) or '
+              + '{"field":"location","value":"named"} (the city THEY NAMED in this message — say which of the '
+              + 'two, never a place name or coordinates of your own; code fills in the city), '
+              + '{"field":"nearbyRadius","value":5} (km, 1-20), {"field":"discoveryRadius","value":50} (km, 10-100). '
+              + 'Those two are how far you search in nearby and discovery modes; propose one when a thin result or '
+              + 'their own words call for it, and stay inside the range — a value outside it is dropped. '
               + 'A one-off ask is NOT a change: wanting a cheap lunch on a luxury trip changes nothing.\n'
               // A style with no numbers behind it cannot be used for anything.
               + '- If you set their style to budget and no budget range is saved, ASK for a min and max in the '
@@ -674,62 +554,23 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
  * anything — "set style to budget" once produced "that's done" when nothing had
  * been written at all (live 2026-08-24).
  */
-// `awaiting` is a change that has NOT been made yet and is waiting on one more
-// answer. Onboarding will not let anyone finish on budget style without figures
-// (isBudgetValid: min > 0, max > 0, min <= max), so writing the style first put
-// the traveler in a state the form forbids. Arsen 2026-08-25: "ai should ask
-// minimum and maximum budget initially, then switch to budget". The ask comes
-// first, the switch follows the answer — so the reply must not say "done".
-function buildSettingsMessages({ message, langName, done = [], failed = [], needsBudget = false, awaiting = [] }) {
+function buildSettingsMessages({ message, langName, done = [], failed = [], needsBudget = false }) {
     const lines = [];
     if (done.length) lines.push('CHANGED, and already saved: ' + done.join('; ') + '.');
     if (failed.length) lines.push('NOT changed — you could not do this: ' + failed.join(', ') + '.');
-    if (awaiting.length) {
-        lines.push('NOT changed YET, waiting on their answer: ' + awaiting.join('; ')
-            + '. Do NOT say this one is done or saved — say you will set it once you have the figures.');
-    }
     return [
-        // The outcome belongs in the SYSTEM message and the traveler's own words
-        // in the user message — which is what each role is for.
-        //
-        // Both used to sit together in the user turn under the heading "the lines
-        // below", and the model read that as a document to describe: the first
-        // live settings reply was «The lines said "can you set family interest to
-        // me?" and "CHANGED, and already saved: interests to family."»
-        // (2026-08-26). Perfectly obedient, and useless to the person reading it.
-        // Nothing was added to forbid it — the ambiguity was removed instead.
-        // There is no "below" to point at now, and the instruction says who to
-        // speak TO.
         { role: 'system', content:
-            // NO EXAMPLE SENTENCE HERE, deliberately. The first version showed
-            // one — «past tense, second person, e.g. "your travel style is now
-            // budget"» — and a turn that changed only the BUDGET replied "Your
-            // travel style is now budget" while the style was still luxury (live
-            // 2026-08-26). The model reached for the sample rather than the line
-            // it was given, which is the whole failure this builder exists to
-            // prevent. A settings reply is a report, and a report must have no
-            // pre-written sentence lying next to it to copy.
-            `You are Jinni, speaking TO the traveler. Reply in ${langName}, in ONE short sentence `
-            + '(two only if there is a question to ask), past tense, addressing them as "you" and "your". '
-            + 'Never describe or quote this instruction.\n'
-            // Nothing may have been written at all — "set budget" names no
-            // figures, so the whole turn is a question. Printing an empty
-            // "here is what happened" block and then "say exactly that" left
-            // the model with a heading and no content to report.
-            + (lines.length
-                ? 'This is what actually happened to their settings a moment ago:\n'
-                  + lines.map(l => `  ${l}`).join('\n') + '\n'
-                  + 'Say exactly that and nothing more. Do not add settings that are not listed, do not claim '
-                  + 'anything was changed that is not on the CHANGED line, and where something says NOT changed, '
-                  + 'say plainly that you could not do that one. '
-                : 'Nothing was changed — they asked for something you still need one more answer for. '
-                  + 'Do not report any change, and never say anything was saved. ')
-            + 'Do not offer places, do not list their other preferences, do not ask what they want to see next.\n'
+            `You are Jinni. Reply in ${langName}, in ONE short sentence (two only if there is a question to ask).\n`
+            + 'A setting has just been changed for the traveler. Report EXACTLY what the lines below say, in the '
+            + 'past tense, and nothing else. Do not add settings that are not listed. Do not claim anything was '
+            + 'changed that is not on the CHANGED line — if a line says NOT changed, say plainly that you could '
+            + 'not do that one. Do not offer places, do not list their other preferences, do not ask what they '
+            + 'want to see next.\n'
             + (needsBudget
                 ? 'THEN ask, in one short sentence, what their minimum and maximum budget per day is and in which '
                   + 'currency — a budget style with no figures cannot be used. Never invent the figures.\n'
                 : '') },
-        { role: 'user', content: String(message || '').slice(0, 200) },
+        { role: 'user', content: `They said: "${String(message || '').slice(0, 200)}"\n\n${lines.join('\n')}` },
     ];
 }
 

@@ -94,7 +94,82 @@ describe('applyProposal', () => {
     });
 });
 
+// Arsen 2026-08-24: "can you set to current location, gps one?" → "I can't set
 // that for you", which was false. Then: "it should simply set and save, same
+// things user can do from onboarding page."
+describe('setting the destination to where you are', () => {
+    const { validateProposal, isExplicit, applyProposal } = require('../engine/preferences/proposal');
+    const HERE = { city: 'Yerevan', country: 'Armenia', countryCode: 'AM', lat: 40.18, lng: 44.51 };
+
+    test('code fills in every field from the reported position', () => {
+        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
+        expect(p.value).toMatchObject({
+            country: 'AM', countryName: 'Armenia', city: 'Yerevan',
+            coordinates: { lat: 40.18, lng: 44.51 },
+        });
+        // settings.location carries a timestamp; preferences.destination does
+        // not, and applyProposal strips it for that path.
+        expect(p.value.lastUpdated).toBeInstanceOf(Date);
+        expect(p.label).toBe('location to Yerevan, Armenia');
+    });
+
+    test('a city NAME is refused — a guessed coordinate is not saveable', () => {
+        expect(validateProposal({ field: 'location', value: 'Paris' }, { currentPlace: HERE })).toBeNull();
+        expect(validateProposal({ field: 'location', value: { lat: 1, lng: 2 } }, { currentPlace: HERE })).toBeNull();
+    });
+
+    test('no position means no write, rather than 0,0', () => {
+        expect(validateProposal({ field: 'location', value: 'current' }, {})).toBeNull();
+        expect(validateProposal({ field: 'location', value: 'current' },
+            { currentPlace: { city: 'X', lat: 0, lng: 0 } })).toBeNull();
+    });
+
+    test('an ISO country code is only stored when the region gave one', () => {
+        // resolveRegion returns {city, country} with no code, so this field stays
+        // empty rather than being guessed from the country name.
+        const p = validateProposal({ field: 'location', value: 'current' },
+            { currentPlace: { city: 'Dubai', country: 'United Arab Emirates', lat: 25.2, lng: 55.27 } });
+        expect(p.value.country).toBe('');
+        expect(p.value.countryName).toBe('United Arab Emirates');
+    });
+
+    test('only a real boolean true skips the confirmation', () => {
+        expect(isExplicit({ explicit: true })).toBe(true);
+        expect(isExplicit({ explicit: 'maybe' })).toBe(false);
+        expect(isExplicit({})).toBe(false);
+        expect(isExplicit(null)).toBe(false);
+    });
+
+    // Arsen 2026-08-24: "onboarding page works with user modal … then ai should
+    // do the same." OnboardingPage.vue PATCHes /api/auth/onboarding with BOTH
+    // preferences.destination and settings.location, plus the GPS flag. Writing
+    // only one leaves chat and the Preferences screen disagreeing, which is what
+    // made the change look imaginary.
+    test('a location change writes exactly what onboarding writes', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(u); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
+        const p = validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE });
+        expect(await applyProposal('u1', p, { User })).toBe(true);
+        expect(Object.keys(sets[0].$set).sort()).toEqual([
+            'preferences.destination', 'settings.location', 'settings.privacy.autoDetectLocation',
+        ]);
+        expect(sets[0].$set['settings.location'].city).toBe('Yerevan');
+        expect(sets[0].$set['preferences.destination'].city).toBe('Yerevan');
+        // The schema has no lastUpdated under preferences.destination.
+        expect(sets[0].$set['preferences.destination'].lastUpdated).toBeUndefined();
+        expect(sets[0].$set['settings.location'].lastUpdated).toBeInstanceOf(Date);
+    });
+
+    test('choosing a named city switches GPS autodetect off, as onboarding does', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(u); return { matchedCount: 1 }; } };
+        const named = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
+        await applyProposal('u1', validateProposal({ field: 'location', value: 'named' }, { namedPlace: named }), { User });
+        expect(sets[0].$set['settings.privacy.autoDetectLocation']).toBe(false);
+        await applyProposal('u1', validateProposal({ field: 'location', value: 'current' }, { currentPlace: HERE }), { User });
+        expect(sets[1].$set['settings.privacy.autoDetectLocation']).toBe(true);
+    });
+});
 
 // Arsen 2026-08-24: "the jinni can have access to discovery and nearby modes
 // also their radiuses, in clever situations can ask or get command to change,
@@ -105,46 +180,26 @@ describe('search radii and what Jinni admits to seeing', () => {
     const { validateProposal, applyProposal, PREF_PATHS } = require('../engine/preferences/proposal');
     const { selfBlock } = require('../engine/narrator/prompts/grounded');
 
-    // Arsen 2026-08-26: "we can remove the radius touch by ai ... for radius it
-    // can say user to do from settings manually". The radius stopped being
-    // WRITABLE; it did not stop being READ — v2's search now honours whatever
-    // the Preferences slider holds, which it never did while chat could set it.
-    test('no radius proposal is ever accepted, whatever the value', () => {
-        for (const value of [8, 75, 40, 5, 'wide', 200, null]) {
-            expect(validateProposal({ field: 'nearbyRadius', value })).toBeNull();
-            expect(validateProposal({ field: 'discoveryRadius', value })).toBeNull();
-        }
+    test('a radius is accepted only inside the slider\'s own range', () => {
+        expect(validateProposal({ field: 'nearbyRadius', value: 8 }).value).toBe(8);
+        expect(validateProposal({ field: 'discoveryRadius', value: 75 }).value).toBe(75);
+        expect(validateProposal({ field: 'nearbyRadius', value: 40 })).toBeNull();       // max 20
+        expect(validateProposal({ field: 'discoveryRadius', value: 5 })).toBeNull();     // min 10
+        expect(validateProposal({ field: 'nearbyRadius', value: 'wide' })).toBeNull();
     });
 
-    test('no radius path is writable', () => {
-        expect(PREF_PATHS.nearbyRadius).toBeUndefined();
-        expect(PREF_PATHS.discoveryRadius).toBeUndefined();
-        expect(Object.values(PREF_PATHS).some(x => x.startsWith('settings.searchRadius'))).toBe(false);
+    test('out of range is dropped, never quietly clamped', () => {
+        // Storing 20 after someone asked for 200 would make Jinni's "done" a lie.
+        expect(validateProposal({ field: 'nearbyRadius', value: 200 })).toBeNull();
     });
 
-    // The refusal has to be USEFUL. A bare field name told the traveler nothing;
-    // this names the setting and the screen, and it is generated where the
-    // decision is made rather than explained to the model in the prompt.
-    test('a refused radius tells the traveler where to change it', () => {
-        const { refusalReason } = require('../engine/preferences/proposal');
-        for (const f of ['nearbyRadius', 'discoveryRadius']) {
-            const why = refusalReason(f);
-            expect(why).toMatch(/radius/i);
-            expect(why).toMatch(/Settings/);   // radius sliders live in the Settings modal
-            expect(why).toMatch(/you cannot do it for them/i);
-        }
-    });
-
-    // The READ side — the half that was broken and is now the whole point.
-    test('a saved radius reaches the search, clamped to the slider bounds', () => {
-        const { radiusKmFor } = require('../engine/preferences/proposal');
-        expect(radiusKmFor('nearby', { nearby: 12 })).toBe(12);
-        expect(radiusKmFor('discovery', { discovery: 100 })).toBe(100);
-        expect(radiusKmFor('nearby', { nearby: 999 })).toBe(20);      // schema max
-        expect(radiusKmFor('discovery', { discovery: 2 })).toBe(10);  // schema min
-        expect(radiusKmFor('nearby', { nearby: 'wide' })).toBe(5);    // junk -> default
-        expect(radiusKmFor('discovery', {})).toBe(50);                // unset -> default
-        expect(radiusKmFor('discovery', null)).toBe(50);
+    test('radii write under settings, not preferences', async () => {
+        const sets = [];
+        const User = { updateOne: async (q, u) => { sets.push(Object.keys(u.$set)[0]); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } };
+        await applyProposal('u1', { field: 'nearbyRadius', value: 6 }, { User });
+        await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User });
+        expect(sets).toEqual(['settings.searchRadius.nearby', 'preferences.travelStyle']);
+        expect(PREF_PATHS.discoveryRadius).toBe('settings.searchRadius.discovery');
     });
 
     // The lie, live 2026-08-24: "are you sure that my location is Dubai?" →
@@ -201,6 +256,38 @@ describe('search radii and what Jinni admits to seeing', () => {
 // Dubai" → "Your location is now set to Dubai — done." while the log read
 // "[prefs] location to Yerevan, Armenia — set on request". The vocabulary
 // only had 'current', so a named city was silently turned into the GPS. The
+// prose and the database disagreed, which is worse than refusing outright.
+describe('a named destination is saved as the city that was named', () => {
+    const { validateProposal } = require('../engine/preferences/proposal');
+    const GPS = { city: 'Yerevan', country: 'Armenia', lat: 40.18, lng: 44.51 };
+    const NAMED = { city: 'Dubai', country: 'United Arab Emirates', lat: 25.205, lng: 55.271 };
+
+    test('"named" saves the named city, not where they are standing', () => {
+        const p = validateProposal({ field: 'location', value: 'named' },
+            { currentPlace: GPS, namedPlace: NAMED });
+        expect(p.value.city).toBe('Dubai');
+        expect(p.value.coordinates).toEqual({ lat: 25.205, lng: 55.271 });
+        expect(p.label).toBe('location to Dubai, United Arab Emirates');
+    });
+
+    test('"current" still saves where they are', () => {
+        const p = validateProposal({ field: 'location', value: 'current' },
+            { currentPlace: GPS, namedPlace: NAMED });
+        expect(p.value.city).toBe('Yerevan');
+    });
+
+    test('"named" with no city named writes NOTHING — it does not fall back to GPS', () => {
+        // Falling back is how Yerevan got saved when Dubai was asked for.
+        expect(validateProposal({ field: 'location', value: 'named' }, { currentPlace: GPS })).toBeNull();
+    });
+
+    test('a place name or coordinates from the model are still refused', () => {
+        expect(validateProposal({ field: 'location', value: 'Dubai' },
+            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
+        expect(validateProposal({ field: 'location', value: { lat: 25, lng: 55 } },
+            { currentPlace: GPS, namedPlace: NAMED })).toBeNull();
+    });
+});
 
 // "it reads, it says correctly but it is not editing in user settings, it is
 // editing in his mind only" (Arsen 2026-08-24). Two causes, one here:
@@ -231,180 +318,5 @@ describe('a write only counts when it matched a document', () => {
             res({ n: 1, nModified: 1 }))).toBe(true);
         expect(await applyProposal('u', { field: 'travelStyle', value: 'budget' },
             res({ n: 0, nModified: 0 }))).toBe(false);
-    });
-});
-
-// OnboardingPage.vue's save payload is the contract a chat-driven change has to
-// match, because both write the SAME user and the Preferences screen reads what
-// onboarding wrote:
-//
-//   preferences: { travelStyle, interests, budget, useGPS, destination }
-//   settings:    { location, privacy: { autoDetectLocation, locationPermissionGranted } }
-//
-// applyProposal wrote destination, settings.location and autoDetectLocation —
-// but not useGPS, which is the field the screen's GPS toggle actually renders
-// (handleGPSToggle + the locationMode computed both read preferences.useGPS).
-// So the toggle kept showing the previous choice after Jinni moved the
-// location: the same two-fields-one-fact drift that once had chat reading
-
-// A path that is not in the schema is not a place to store anything.
-//
-// The applyProposal tests above stub User.updateOne, so they assert the $set we
-// BUILD — not what Mongoose agrees to write. preferences.useGPS was added to
-// that $set on 2026-08-25 and silently discarded in production, because it was
-// missing from the schema and strict mode drops unknown paths without a word.
-// The stub can never see that; this reads the schema itself.
-describe('every path applyProposal writes actually exists in the User schema', () => {
-    const User = require('../models/User');
-    const { PREF_PATHS } = require('../engine/preferences/proposal');
-
-    const PATHS = [
-        ...Object.values(PREF_PATHS),
-        // No longer written by chat, so no longer in PREF_PATHS — but the schema
-        // paths must still exist, because the search READS them every turn.
-        'settings.searchRadius.nearby',
-        'settings.searchRadius.discovery',
-        'preferences.useGPS',
-        'settings.privacy.autoDetectLocation',
-        'settings.privacy.locationPermissionGranted',
-        'preferences.destination.city',
-        'settings.location.city',
-    ];
-
-    test.each(PATHS)('%s is declared', (path) => {
-        // Nested objects register as their leaves, so accept either a declared
-        // path or a declared child — what matters is that strict mode will
-        // not drop the write.
-        const declared = User.schema.path(path)
-            || Object.keys(User.schema.paths).some(p => p.startsWith(path + '.'));
-        expect(declared).toBeTruthy();
-    });
-});
-
-// Budget figures belong to the budget style — they are not a standalone setting.
-//
-// OnboardingPage.vue's selectStyle() clears min/max/currency for any style other
-// than 'budget', and the inputs only render while 'budget' is chosen (Arsen
-// 2026-08-25: "when user selects luxury and if he had budget in before, app
-// drops budget min max numbers"). Chat wrote travelStyle alone, so a traveler
-// who switched to luxury kept their old band — and that band GATES RETRIEVAL,
-// so they went on being filtered to budget places by a number the Preferences
-// screen no longer showed them.
-describe('switching travel style keeps budget in step with the screen', () => {
-    const { applyProposal } = require('../engine/preferences/proposal');
-    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
-
-    test('luxury clears the figures, exactly as selectStyle does', async () => {
-        const calls = [];
-        expect(await applyProposal('u1', { field: 'travelStyle', value: 'luxury' }, { User: User(calls) })).toBe(true);
-        expect(calls[0].u.$set).toEqual({
-            'preferences.travelStyle': 'luxury',
-            'preferences.budget': { min: 0, max: 0, currency: 'USD' },
-        });
-    });
-
-    test('budget style leaves the figures alone — they are about to be asked for', async () => {
-        const calls = [];
-        expect(await applyProposal('u1', { field: 'travelStyle', value: 'budget' }, { User: User(calls) })).toBe(true);
-        expect(calls[0].u.$set).toEqual({ 'preferences.travelStyle': 'budget' });
-    });
-
-    test('setting a budget on its own never touches the style', async () => {
-        const calls = [];
-        await applyProposal('u1', { field: 'budget', value: { min: 10, max: 200, currency: 'USD' } }, { User: User(calls) });
-        expect(Object.keys(calls[0].u.$set)).toEqual(['preferences.budget']);
-    });
-});
-
-// Onboarding will not let the traveler finish on budget style without figures
-// (isBudgetValid: min > 0, max > 0, min <= max). Chat cannot block a turn the
-// way a form blocks a save, so it asks instead — and must never invent them.
-describe('budget style without figures is asked about, never filled in', () => {
-    const { buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
-
-    test('the ask happens, and no numbers are supplied', () => {
-        const m = buildSettingsMessages({
-            message: 'change style to budget', langName: 'English',
-            done: ['travel style to budget'], needsBudget: true,
-        });
-        const s = m.map(x => x.content).join('\n');
-        expect(s).toMatch(/budget/i);
-        expect(s).not.toMatch(/\$\s?\d/);
-    });
-});
-
-// The Discovery/Nearby toggle, reachable by Jinni at last.
-//
-// It sits in the chat input container beside the preference chips, but it was
-// the only control there that lived in localStorage instead of the database —
-// so Jinni could change every setting around it and not that one, and it did
-// not survive a change of device. Arsen 2026-08-25: "user will see how it
-// sets" — the visible button flipping is the confirmation.
-describe('switching search mode', () => {
-    const { validateProposal, applyProposal, PREF_VOCAB } = require('../engine/preferences/proposal');
-    const User = (calls) => ({ updateOne: async (q, u) => { calls.push({ q, u }); return { acknowledged: true, matchedCount: 1, modifiedCount: 1 }; } });
-
-    test('the vocabulary is the two words on the toggle', () => {
-        expect(PREF_VOCAB.searchMode).toEqual(['nearby', 'discovery']);
-    });
-
-    test('the WORD survives validation — a boolean would not round-trip', () => {
-        // applyProposal re-validates whatever comes back out of the database, so
-        // a proposal has to validate twice. 'true' is not in any vocabulary.
-        const p = validateProposal({ field: 'searchMode', value: 'Nearby' });
-        expect(p).toEqual({ field: 'searchMode', value: 'nearby', label: 'search mode to nearby' });
-        expect(validateProposal(p)).toEqual(p);
-    });
-
-    test('anything that is not one of the two words is dropped', () => {
-        for (const v of ['near', 'explore', true, 1, '', null]) {
-            expect(validateProposal({ field: 'searchMode', value: v })).toBeNull();
-        }
-    });
-
-    test('the word becomes the boolean exactly once, at the write', async () => {
-        const near = []; const disc = [];
-        await applyProposal('u1', { field: 'searchMode', value: 'nearby' }, { User: User(near) });
-        await applyProposal('u1', { field: 'searchMode', value: 'discovery' }, { User: User(disc) });
-        expect(near[0].u.$set).toEqual({ 'settings.nearbyMode': true });
-        expect(disc[0].u.$set).toEqual({ 'settings.nearbyMode': false });
-    });
-
-    test('the path it writes exists in the schema', () => {
-        expect(require('../models/User').schema.path('settings.nearbyMode')).toBeTruthy();
-    });
-});
-
-// "from 10 to 10" is not a range, and storing it looked like agreement while
-// quietly gating retrieval to a single price point (Arsen 2026-08-25: "it will
-// set like that instead of notifing you are giving incorrect, minimum should be
-// little than maximum").
-describe('a flat budget range is refused, with a reason', () => {
-    const { validateProposal, budgetRefusalReason } = require('../engine/preferences/proposal');
-    const b = (min, max, currency = 'USD') => ({ field: 'budget', value: { min, max, currency } });
-
-    test('min === max is refused', () => {
-        expect(validateProposal(b(10, 10))).toBeNull();
-        expect(validateProposal(b(200, 200))).toBeNull();
-    });
-
-    test('a genuine range still passes', () => {
-        expect(validateProposal(b(10, 11)).value).toEqual({ min: 10, max: 11, currency: 'USD' });
-        expect(validateProposal(b(10, 200)).value).toEqual({ min: 10, max: 200, currency: 'USD' });
-    });
-
-    test('the reason names what to change, rather than just refusing', () => {
-        expect(budgetRefusalReason({ min: 10, max: 10, currency: 'USD' }))
-            .toMatch(/minimum has to be LOWER than the maximum/);
-        expect(budgetRefusalReason({ min: 200, max: 50, currency: 'USD' }))
-            .toMatch(/minimum was higher than the maximum/);
-        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'AMD' }))
-            .toMatch(/currency must be one of/);
-        expect(budgetRefusalReason({ min: 'a', max: 'b' }))
-            .toMatch(/both a minimum and a maximum/);
-    });
-
-    test('a valid budget has no reason to give', () => {
-        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'USD' })).toBeNull();
     });
 });

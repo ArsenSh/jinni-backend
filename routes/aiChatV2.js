@@ -34,7 +34,7 @@ const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sy
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
-const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor, parseBudgetReply } = require('../engine/preferences/proposal');
+const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
 const { messageNamesPlace } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
@@ -135,8 +135,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     let namedPlace = null;
     let settingsApplied = [];
     let settingsRefused = [];
-    // They asked for a budget without naming one. Not a refusal — a question.
-    let budgetFiguresWanted = false;
+    let pendingLocationChange = null;      // needs the geocoded city, resolved below
     // `center` is the raw GPS reading and nothing else. The chosen destination
     // used to be folded in here as a fallback, which is what made it LOSE to
     // GPS; resolveDestination now settles the precedence once, below, after
@@ -148,21 +147,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    reply or silence all leave the settings alone. Either way the question
     //    is closed — Jinni asks once (Arsen 2026-08-24). ──
     let prefApplied = null;
-    // A budget-style switch parked last turn while Jinni asked for the figures.
-    // It is NOT a yes/no question — the answer is a pair of numbers — so it must
-    // not be consumed by the consent logic below, and it must survive this block
-    // to be completed once the budget lands. Cleared where it is resolved.
-    let deferredStyle = null;
-    // The Discovery/Nearby toggle as it applies to THIS turn. The body carries
-    // what the client had on screen when the message was sent, which is by
-    // definition before any switch asked for IN that message. Without this a
-    // "switch to nearby" turn would save the new mode and then answer in the
-    // old one, and the visible toggle — sitting right beside the input — would
-    // be the thing that showed the contradiction.
-    let effectiveNearbyMode = nearbyMode;
     const pending = sessionPeek?.pendingPrefChange?.field ? sessionPeek.pendingPrefChange : null;
-    const awaitingStyle = (pending?.field === 'travelStyle' && pending.value === 'budget') ? pending : null;
-    if (pending && !awaitingStyle) {
+    if (pending) {
         const said = isAffirmative(message);
         if (said) prefApplied = (await applyProposal(req.user.id, pending)) ? pending : null;
         else if (!isNegative(message)) console.log('[prefs] no clear answer — leaving the setting as it is');
@@ -180,21 +166,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // What the engine did this turn. Reported ONCE, at the bottom of the reply
     // (it used to be pasted into the prose, where it read as something Jinni
     // was saying). Filled by whichever branch answers.
-    // What the engine did this turn. Reported at the bottom of the reply AND
-    // written to ChatTurn — the same facts the [v2] log line prints, but as
-    // fields something can aggregate. `path` finally has a reader.
-    const stats = {
-        candidates: null, cacheHit: false, path: null,
-        evidence: 'none', lexical: 0, lexicalTop: 0, lexicalShare: 0,
-        vector: false, taste: false, category: null, subType: null,
-        mode: null, radiusKm: null, googleCalls: 0, huntFired: false,
-    };
-    // Spend reported by the store (same optional shape as onStage). Counted
-    // here because the route is the only place that knows the whole turn.
-    const onSpend = (kind, n = 1) => {
-        if (kind === 'google') stats.googleCalls += Number(n) || 0;
-        if (kind === 'hunt') stats.huntFired = true;
-    };
+    const stats = { candidates: null, cacheHit: false, path: null };
     // Genie-voiced progress. The traveler waits 8–24s on an event hunt with no
     // sign of life; these say what is happening in Jinni's own voice, not the
     // engine's. Unknown SSE types are ignored by older clients, so this is safe
@@ -245,174 +217,35 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // retrieval, no cards, nothing to disagree with.
             settingsApplied = [];
             settingsRefused = [];
-            budgetFiguresWanted = false;
             for (const c of (intent.settingsChange || [])) {
                 const proposed = validateProposal(c, {
                     currentPlace: null,          // filled below when it is needed
                     namedPlace: null,
                 });
-                // "set budget" with no numbers in it is a REQUEST, not a bad
-                // value. Validation is right to refuse it, but the reply then
-                // read "I could not set your budget because the maximum has to
-                // be above zero" (live 2026-08-26) — an error message for
-                // someone who simply hasn't been asked yet. Only the traveler
-                // knows the figures, so ask; never invent them.
-                if (c.field === 'budget' && !(Number(c.value?.min) > 0) && !(Number(c.value?.max) > 0)) {
-                    budgetFiguresWanted = true;
-                    continue;
-                }
-                if (!proposed) {
-                    // A refusal the traveler can act on, written where the
-                    // decision is made. "nearbyRadius" alone told them nothing;
-                    // refusalReason names the setting and the screen to change it
-                    // on — so the reply explains itself with no prompt sentence
-                    // about what Jinni cannot do.
-                    settingsRefused.push(refusalReason(c.field, c.value));
-                    continue;
-                }
-                // Budget style with no figures is a state the Preferences form
-                // will not let anyone save (OnboardingPage isBudgetValid: min >
-                // 0, max > 0, min <= max). So the ASK comes first and the switch
-                // waits for the answer (Arsen 2026-08-25: "ai should ask minimum
-                // and maximum budget initially, then switch to budget").
-                // Writing it now would leave the traveler on budget style with a
-                // 0–0 band that gates nothing, while the reply said it was done.
-                if (proposed.field === 'travelStyle' && proposed.value === 'budget') {
-                    const have = intent._preferences?.budget;
-                    if (!(have && (have.min > 0 || have.max > 0))) { deferredStyle = proposed; continue; }
-                }
-                // Whether there WAS a band to drop, read before the write.
-                // applyProposal clears preferences.budget whenever the style
-                // moves off 'budget' (the Preferences screen does the same), but
-                // only this side knows if that cleared anything real — and a
-                // reply must never announce a change that did not happen.
-                const _hadBudget = !!(intent._preferences?.budget
-                    && (intent._preferences.budget.min > 0 || intent._preferences.budget.max > 0));
+                if (!proposed && c.field !== 'location') { settingsRefused.push(c.field); continue; }
+                if (c.field === 'location') { pendingLocationChange = c; continue; }
                 if (req.user?.id && await applyProposal(req.user.id, proposed)) {
-                    // Switching off budget style DROPS the figures, and the
-                    // traveler has to be told: the band gates retrieval, so
-                    // losing it silently changes what they are shown with no
-                    // visible cause (Arsen 2026-08-26 — "it is not just setting
-                    // luxury, it has to also delete minimum and maximum budget").
-                    //
-                    // The label is amended by CODE, from what the write actually
-                    // did. buildSettingsMessages forbids the model from adding
-                    // anything not on its lines, which is why no prompt sentence
-                    // could have produced this — and why none was added.
-                    if (proposed.field === 'travelStyle' && proposed.value !== 'budget' && _hadBudget) {
-                        proposed.label += ' (your saved budget range was cleared with it)';
-                        // The rest of THIS turn must not keep reading the band we
-                        // just deleted — travelerRows would print it back as a
-                        // current fact while the reply says it is gone.
-                        intent._preferences.budget = { min: 0, max: 0, currency: 'USD' };
-                    }
                     settingsApplied.push(proposed);
                     // The reply is written from these rows, so they must show
                     // the NEW value — reporting the old one while having saved
-                    // the new one is exactly what went wrong before. The radius
-                    // branch that used to sit here went with the radius write
-                    // (2026-08-26): only the four registry fields reach this line.
-                    intent._preferences[proposed.field] = proposed.value;
-                    // Applies immediately: the traveler asked for this mode, so
-                    // this answer is already in it.
-                    if (proposed.field === 'searchMode') effectiveNearbyMode = proposed.value === 'nearby';
+                    // the new one is exactly what went wrong before.
+                    if (proposed.field === 'nearbyRadius' || proposed.field === 'discoveryRadius') {
+                        const key = proposed.field === 'nearbyRadius' ? 'nearby' : 'discovery';
+                        intent._preferences._searchRadius = { ...(intent._preferences._searchRadius || {}), [key]: proposed.value };
+                    } else {
+                        intent._preferences[proposed.field] = proposed.value;
+                    }
                 } else settingsRefused.push(c.field);
-            }
-            // The figures arrived, so the switch that was waiting on them can
-            // happen now — and both are reported in the same breath, which is
-            // the order the form uses: fill the budget in, then the style is
-            // complete. Jinni asks once, so the slot is released either way.
-            if (awaitingStyle && req.user?.id) {
-                // Jinni ASKED for the figures, so the answer arrives as a
-                // fragment — "10-200", "50 to 300" — with no verb for the intent
-                // model to recognise as a command. It abstained, nothing was
-                // written, and the traveler believed they had answered (Arsen
-                // 2026-08-26). The brain still decides first; this is the
-                // fallback, and it runs ONLY while the question is open, so a
-                // stray pair of numbers can never be read as a budget.
-                if (!settingsApplied.some(p2 => p2.field === 'budget')) {
-                    // Their existing currency is inherited when they name none —
-                    // answering "10-200" is not a change of mind about currency.
-                    const guessed = parseBudgetReply(message, intent._preferences?.budget?.currency);
-                    const asBudget = guessed ? validateProposal({ field: 'budget', value: guessed }) : null;
-                    if (asBudget && await applyProposal(req.user.id, asBudget)) {
-                        settingsApplied.push(asBudget);
-                        intent._preferences.budget = asBudget.value;
-                        console.log(`[prefs] budget read from the answer to our own question: ${asBudget.label}`);
-                    } else if (guessed) {
-                        // Figures we could read but not store — an unsupported
-                        // currency. Say why rather than ignoring the answer.
-                        settingsRefused.push(refusalReason('budget', guessed));
-                    }
-                }
-                if (settingsApplied.some(p2 => p2.field === 'budget')) {
-                    const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
-                    if (await applyProposal(req.user.id, style)) {
-                        settingsApplied.unshift(style);
-                        intent._preferences.travelStyle = 'budget';
-                    }
-                } else console.log('[prefs] budget style still waiting on figures — not switched');
-                if (sessionId) {
-                    require('../models/ChatSession')
-                        .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { field: null, value: null, label: null, askedAt: null } } })
-                        .catch(() => {});
-                }
-            }
-            // ── Setting a budget IS choosing the budget style. ──
-            //
-            // "set budget 10 to 100" saved the figures and left the style on
-            // luxury (live 2026-08-26) — a state the Preferences screen cannot
-            // even produce: the min/max inputs only render while budget style is
-            // selected, and switching away clears them. A band stored under
-            // luxury is invisible to its owner while still gating retrieval,
-            // which is the orphaned-figures problem from the other side.
-            //
-            // The model is NOT asked to infer this. intentService still says an
-            // amount is a budget change and nothing else, because "find me
-            // something under 50" must never rewrite anyone's style. What makes
-            // the derivation safe is that settings_change is filled only for an
-            // explicit command, so by this line the traveler has genuinely asked
-            // for a budget. Code derives the consequence, exactly as it already
-            // derives the clear-on-luxury in applyProposal.
-            if (req.user?.id
-                && settingsApplied.some(p2 => p2.field === 'budget')
-                // A style named IN THIS TURN is their own word and outranks the
-                // derivation — "set luxury style" plus figures stays luxury.
-                && !settingsApplied.some(p2 => p2.field === 'travelStyle')
-                && intent._preferences?.travelStyle !== 'budget') {
-                const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
-                if (await applyProposal(req.user.id, style)) {
-                    settingsApplied.push(style);
-                    intent._preferences.travelStyle = 'budget';
-                    console.log('[prefs] budget figures imply the budget style — switched with them');
-                }
             }
             intent._preferences._savedLocation = intent._savedLocation;
             intent._preferences._knowsLocation = !!gpsCenter && user?.settings?.privacy?.autoDetectLocation !== false;
-            // GPS mode vs destination mode. `user` is scoped to this block, and
-            // the destination resolver runs in the next one, so the flag rides
-            // on intent. Absent/true = GPS mode, matching the schema default.
-            intent._autoDetectLocation = user?.settings?.privacy?.autoDetectLocation !== false;
-            // Already in the request body every turn — it just never reached a
-            // prompt. Set after the settings loop, so a mode switched THIS turn
-            // is the one described.
-            intent._preferences._searchMode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // An approval a moment ago is already true for this turn.
-            if (prefApplied) {
-                intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
-                // A style approved a moment ago took the budget band with it in
-                // the database (applyProposal), so this turn must not go on
-                // reading the old figures — same rule as the command path above.
-                if (prefApplied.field === 'travelStyle' && prefApplied.value !== 'budget') {
-                    intent._preferences.budget = { min: 0, max: 0, currency: 'USD' };
-                }
-            }
+            if (prefApplied) intent._preferences = { ...intent._preferences, [prefApplied.field]: prefApplied.value };
         } catch (err) {
             console.warn('[v2] intent failed, treating as place query:', err.message);
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
         }
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
-        meta.langUsed = intent.language || intent._userLanguage || null;
 
         // ── WHERE we are searching. Until now a chosen destination was only a
         //    fallback for missing GPS, and a city named in the message was
@@ -438,22 +271,37 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // and the one Jinni now writes; preferences.destination stays
                 // as the fallback so accounts set up before this still work.
                 savedDestination: intent._savedLocation || intent._preferences?.destination || null,
-                nearbyMode: effectiveNearbyMode,
-                // Which fact settings.location holds this turn: a snapshot of
-                // where they were (GPS mode) or the place they chose to explore
-                // (destination mode). Without it a GPS-mode traveler stays
-                // pinned to wherever they last saved.
-                autoDetectLocation: intent._autoDetectLocation !== false,
+                nearbyMode,
                 // Where we are now, so naming it is understood as "here" rather
                 // than as a move to its centroid. Same 1km grid cache the
                 // search region uses a moment later, so it costs nothing.
                 currentRegion: hereRegion,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
-            meta.centreSource = dest.source;
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
                 namedPlace = { city: dest.city, country: null, countryCode: '', lat: dest.center.lat, lng: dest.center.lng };
+            }
+            // The location command waited for this: the city geocoded through
+            // Google, never a name the model typed.
+            if (pendingLocationChange && req.user?.id) {
+                const nr = namedPlace
+                    ? await resolveRegion({ center: { lat: namedPlace.lat, lng: namedPlace.lng } })
+                    : null;
+                const proposed = validateProposal(pendingLocationChange, {
+                    currentPlace: hereRegion && gpsCenter
+                        ? { ...hereRegion, lat: gpsCenter.lat, lng: gpsCenter.lng } : null,
+                    namedPlace: namedPlace
+                        ? { ...namedPlace, city: nr?.city || namedPlace.city, country: nr?.country || null } : null,
+                });
+                if (proposed && await applyProposal(req.user.id, proposed)) {
+                    settingsApplied.push(proposed);
+                    // So THIS turn's reply reflects the change it just made.
+                    intent._preferences._savedLocation = proposed.value;
+                    intent._savedLocation = proposed.value;
+                } else {
+                    settingsRefused.push('location');
+                }
             }
             if (dest.source !== 'gps') {
                 console.log(`[v2] centre=${dest.source}${dest.city ? ` "${dest.city}"` : ''} (${center?.lat?.toFixed(3)},${center?.lng?.toFixed(3)})`);
@@ -483,7 +331,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
             || (appCfg.aiEventsUseClaude && intent.actionType === 'events'))
             ? 'claude' : 'deepseek';
-        meta.provider = providerName;
         const modelName = providerName === 'claude' ? (appCfg.claudeModel || null) : null;
         const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
             ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
@@ -593,9 +440,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             }
             meta.answerType = 'getting_around';
-            stats.path = 'transport';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
-        } else if (settingsApplied.length || settingsRefused.length || deferredStyle) {
+        } else if (settingsApplied.length || settingsRefused.length) {
             // A COMMAND WAS CARRIED OUT. Nothing was asked for, so nothing is
             // retrieved and no cards are produced (Arsen 2026-08-24: "this kind
             // of commands why it triggers to show locations???").
@@ -609,24 +455,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Budget style with no numbers behind it cannot be used for
             // anything, and only the traveler knows the figures.
             const b = intent._preferences?.budget;
-            // Two ways to need the figures: the switch is WAITING on them (this
-            // turn asked), or an older account is already on budget style with
-            // none. Either way, ask — and never fill them in.
-            const awaiting = deferredStyle ? [deferredStyle.label] : [];
-            const needsBudget = budgetFiguresWanted
-                || !!deferredStyle
-                || (settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
-                    && !(b && (b.min > 0 || b.max > 0)));
-            // Park the waiting switch so the next turn's figures can complete
-            // it. Without this the traveler answers "10 and 200 usd" and gets a
-            // budget saved against the style they were trying to leave.
-            if (deferredStyle && sessionId) {
-                require('../models/ChatSession')
-                    .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { ...deferredStyle, askedAt: new Date() } } })
-                    .catch(() => {});
-            }
+            const needsBudget = settingsApplied.some(p2 => p2.field === 'travelStyle' && p2.value === 'budget')
+                && !(b && (b.min > 0 || b.max > 0));
             const out = await narrator.stream({
-                messages: buildSettingsMessages({ message, langName, done, failed, needsBudget, awaiting }),
+                messages: buildSettingsMessages({ message, langName, done, failed, needsBudget }),
                 onToken: (c) => send(res, { type: 'token', content: c }),
                 maxTokens: 120,
                 realStream: true,
@@ -636,11 +468,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             streamedOk = !!reply;
             meta.answerType = 'settings';
-            stats.path = 'settings';
-            // `value` rides along so the client can move a CONTROL, not just a
-            // label — the Discovery/Nearby toggle sits beside the input and has
-            // to flip when Jinni switches it, or the screen contradicts the reply.
-            meta.settingsApplied = settingsApplied.map(p2 => ({ field: p2.field, label: p2.label, value: p2.value }));
+            meta.settingsApplied = settingsApplied.map(p2 => ({ field: p2.field, label: p2.label }));
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
@@ -656,7 +484,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                 send(res, { type: 'token', content: chunk });
             }
-            stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
         } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
@@ -686,11 +513,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 modelName,
             });
             reply = out.text;
-            stats.path = 'chitchat';
             actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
             console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
         } else if (!center) {
-            stats.path = 'no_centre';
             reply = 'I need a location to search — enable GPS or pick a destination, then ask again.';
             send(res, { type: 'token', content: reply });
         } else {
@@ -702,40 +527,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Right-now context, decided ONCE: the AI's intent.when is the
             // brain; nearby/late-night/now-words are the degradation path.
             const rightNow = intent.when === 'planned' ? false
-                : (intent.when === 'now' || effectiveNearbyMode || timeContext.isLateNight || isRightNowAsk(message));
+                : (intent.when === 'now' || nearbyMode || timeContext.isLateNight || isRightNowAsk(message));
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
-            const mode = effectiveNearbyMode ? 'nearby' : 'discovery';
+            const mode = nearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
             // distinctive words, and cap dining/shopping radius (local decisions).
             // Refill turns enrich from the PREVIOUS ask — "10 other results"
             // contributes nothing to relevance; "suggest historical places" does.
-            // …and drop from that query whatever has ALREADY been applied as a
-            // filter. The centre selects the city and `actions` selects the kind,
-            // so repeating either as a search word can only match what already
-            // survived the filter — noise wearing the shape of signal (see
-            // tuning.js for the 44-of-52 measurement). Everything else the
-            // traveler said still enriches exactly as it did before.
-            const retrievalQuery = buildRetrievalQuery(
-                intent.searchQuery,
-                refillActive ? (prevUserAsk || message) : message,
-                { filters: [...(intent.placeNames || []), meta.searchCity, category, intent.subType] },
-            );
-            // HOW FAR to look is the traveler's setting, not a constant. v2 hard-
-            // coded 5/50 km, so the Preferences slider — and every radius Jinni
-            // itself wrote — changed nothing at all: the reply said "I've widened
-            // your search to 100 km" and the very next search still ran at 50
-            // (found 2026-08-26). Same "saved it in his mind only" failure as the
-            // prefs write, one layer down.
-            //
-            // It matters most in the case the setting exists for: a thin deck.
-            // Jinni may notice and offer to widen — the Tinder distance slider —
-            // and the offer is worthless if the number never reaches the query.
-            // _searchRadius carries the value applied THIS turn, so a widening
-            // asked for in this very message is already in force below.
-            // Bounds and defaults come from proposal.js, which owns them — the
-            // same numbers the Preferences slider enforces, stated once.
-            const baseRadiusKm = radiusKmFor(mode, intent._preferences?._searchRadius);
-            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: baseRadiusKm });
+            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
+            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: nearbyMode ? 5 : 50 });
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).
@@ -759,15 +559,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const result = await findPlaces({
                 query: retrievalQuery,
                 eventWindow,
-                // Nearby is paid-tier ground: a free Verified listing steps
-                // aside there, which is the whole Spotlight pitch.
-                nearbyMode: effectiveNearbyMode,
                 regionCity: searchRegion.city || meta.searchCity || null,
                 regionCountry: searchRegion.country || null,
                 // Progress voice — the store calls this when it goes out to the
                 // city's listings or to Google, the two waits worth narrating.
                 onStage: stage,
-                onSpend,
                 // Hunt permission rides the SAME admin gate as narration web
                 // search: events category enabled + master switch on. The
                 // store decides WHEN (unseen shelf thin for the asked window)
@@ -802,7 +598,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 enforceOpenNow: rightNow,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
-                weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message }),
+                weights: rankingWeights({ rightNow, nearbyMode, message }),
                 preferences: intent._preferences || {},   // tier gates + pref scoring in the store
                 // Likes/saves climb, oft-seen-unacted sinks — a nudge on the
                 // fused order, never a filter (personalization/taste.js).
@@ -810,21 +606,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             }, { loadCandidates });
             meta.provenance = result.provenance;
-            // Every branch below this point shares these, including the two
-            // that ship no cards — a turn that found nothing is the one most
-            // worth counting.
-            stats.category = category;
-            stats.subType = intent.subType || null;
-            stats.mode = mode;
-            stats.radiusKm = radiusKm;
-            stats.lexical = result.provenance.lexical || 0;
-            stats.lexicalTop = result.provenance.lexicalTop || 0;
-            stats.lexicalShare = result.provenance.lexicalShare || 0;
-            stats.vector = !!result.provenance.vector;
-            stats.taste = !!result.provenance.taste;
-            stats.evidence = [category ? 'category' : null, result.provenance.lexical ? 'text' : null]
-                .filter(Boolean).join('+') || 'none';
-            if (result.degraded || !result.places.length) stats.path = 'empty';
             if (result.degraded || !result.places.length) {
                 // Honest empty (copy refreshed 2026-08-22 — the old text
                 // claimed the Google tier wasn't wired; it is, and events now
@@ -874,7 +655,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 reply = out.text;
                 actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
                 meta.answerType = 'no_match';
-                stats.path = 'no_match';
                 console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
             } else {
                 stage('writing', 'Almost there — putting it together…');
@@ -994,7 +774,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         send(res, { type: 'token', content: chunk });
                     }
                 }
-                stats.path = 'deck';
                 stats.candidates = result.provenance.candidateCount;
                 stats.cacheHit = !!result.provenance.cacheHit;
                 reply = intro;
@@ -1004,7 +783,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    Prose and deck AGREE: intro-named places lead the cards. ──
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode, description: hoisted.blurbs[i] || null }));
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode, description: hoisted.blurbs[i] || null }));
                 // What the listing printed stays exactly as printed; the
                 // traveler's own currency rides ALONGSIDE it, rounded and
                 // marked ≈ (Arsen 2026-08-24: "it will show what it found and
@@ -1039,12 +818,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms ev=${[category ? 'category' : null, result.provenance.lexical ? 'text' : null].filter(Boolean).join('+') || 'NONE'} lex=${result.provenance.lexical}/${result.provenance.candidateCount}(top=${result.provenance.lexicalTop ?? 0} share=${result.provenance.lexicalShare ?? 0}) vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
             }
         }
     } catch (err) {
         console.error('[v2] turn failed:', err.message);
-        stats.path = 'error';
         reply = 'this turn hit an error (logged server-side). Switch to V1 for real answers.';
         send(res, { type: 'token', content: reply });
     }
@@ -1075,45 +853,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         cacheHit: stats.cacheHit,
         ms: Date.now() - t0,
     };
-
-    // ── TURN LOG (2026-08-26) ──────────────────────────────────────────────
-    // Everything above already reached a console line; none of it could be
-    // counted. One row per turn makes "what happens in turns" answerable —
-    // what share of decks had no evidence, which asks buy a Google search,
-    // p95 per branch, whether the token estimate tracks the real cost.
-    // Fire-and-forget: never awaited, and a failure here can only cost a row.
-    // The message text is NOT stored, only its length.
-    try {
-        require('../models/ChatTurn').record({
-            userId: req.user?.id || null,
-            sessionId: sessionId || null,
-            branch: stats.path || 'deck',
-            askLen: String(message || '').length,
-            lang: meta.langUsed || null,
-            category: stats.category,
-            subType: stats.subType,
-            refill: !!meta.refill,
-            evidence: stats.evidence,
-            lexical: stats.lexical,
-            lexicalTop: stats.lexicalTop,
-            lexicalShare: stats.lexicalShare,
-            vector: stats.vector,
-            taste: stats.taste,
-            candidateCount: stats.candidates || 0,
-            shown: recommendations.length,
-            mode: stats.mode,
-            radiusKm: stats.radiusKm,
-            centreSource: meta.centreSource || null,
-            city: meta.searchCity || null,
-            googleCalls: stats.googleCalls,
-            huntFired: stats.huntFired,
-            cacheHit: stats.cacheHit,
-            provider: meta.provider || null,
-            tokensEst: estimatedTokens,
-            tokensActual: actualTokens,
-            ms: Date.now() - t0,
-        });
-    } catch (e) { console.warn('[v2][turnlog] skipped:', e.message); }
 
     send(res, {
         type: 'complete',

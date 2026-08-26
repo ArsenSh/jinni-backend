@@ -160,7 +160,7 @@ Return ONLY this JSON object:
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'), or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
-"settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
+"settings_change":[{"field":"<location|travelStyle|interests|budget|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
 Rules:
 - is_travel is true when the current message asks about places, food, dining, lodging, attractions, sights, events, activities, shopping, nightlife, directions, or trip planning — OR when it clearly continues such a topic from the conversation (e.g. "any cheaper ones?" right after hotels were shown, "what about near the old town").
@@ -170,20 +170,13 @@ Rules:
 - action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). This INCLUDES elliptical follow-ups whose whole point is the place — "in Dubai", "what about Paris?", "and for Tbilisi?" after a search all mean the CURRENT ask targets that destination, so include it. NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
 - info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi", "can I walk there", "which metro line", "do I need a visa" all want answers; "where can I eat", "suggest rooftop bars" want places). A message can be travel-related AND info_ask — that is normal. Judge by what a GOOD answer looks like: prose, or a list of places? You are not limited to the example labels — name the topic yourself when none fits.
-- settings_change: [] on almost every message. Fill it ONLY when the traveler ASKS FOR a saved setting to change ("change my style to budget", "make my interests family", "search 10 km around me"). A POLITE QUESTION IS STILL A COMMAND — "could you change my style to budget?", "can you make my interests family?", "would you make my interests family?", "можешь поставить бюджетный стиль?", "можешь установить текущее местоположение?" all fill settings_change. What decides it is whether the message NAMES A SETTING AND THE VALUE to give it, never the grammar. A question that names NO value is not a change ("can you change my preferences?", "what are my preferences?") — leave settings_change empty for those. Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
+- settings_change: [] on almost every message. Fill it ONLY when the traveler TELLS you to change a saved setting ("set my location to Dubai", "change my style to budget", "make my interests family", "search 10 km around me"). Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
+    location      -> "current" (where they are now) or "named" (the city in place_names) — never a place name or coordinates here.
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
     budget        -> {"min":50,"max":200,"currency":"USD"} (currency one of AED, USD, RUB, EUR, GBP).
-                     NAMING AN AMOUNT IS A BUDGET CHANGE AND NOTHING ELSE. "consider 500 usd",
-                     "my budget is 50-200", "make it 20 a day" set the figures and leave travelStyle
-                     exactly as it is — a luxury traveler stating a number stays luxury. Only add a
-                     travelStyle entry when they actually say the STYLE should change.
-    searchMode    -> "nearby" (search tight around where they physically are) or "discovery"
-                     (search wide around the place they are exploring). This is the Discovery/Nearby
-                     toggle beside the chat box: "switch to nearby", "search around me instead",
-                     "go back to discovery mode".
     nearbyRadius  -> a number of km, 1-20.  discoveryRadius -> a number of km, 10-100.
-  Several at once is fine: "set style to budget and interests to family" is two entries. There is NO location field: a city named in the message is a place to SEARCH (put it in place_names), never a setting to write. This is a COMMAND being carried out, not a question about places — when it is filled, the traveler is not asking to be shown anything.
+  Several at once is fine: "set location to Dubai and style to budget" is two entries. This is a COMMAND being carried out, not a question about places — when it is filled, the traveler is not asking to be shown anything.
 - needs_weather is true only if answering requires current weather or forecast data (weather, temperature, rain, what to pack, what to wear). It STAYS true for elliptical follow-ups that shift a weather exchange to another place ("what about Dubai?" right after a weather answer) — and put that place in place_names.`;
 }
 
@@ -445,10 +438,4 @@ async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg
 
 // validateIntent exported for tests only — it is the deterministic BRAKE on
 // the model's JSON (enum/format checks, open-vocabulary info_ask folding).
-// buildUserPrompt is exported for TESTS only. Whether a message is recognised
-// as a settings command is decided by an LLM reading this prompt, so it is the
-// one step in the chain no unit test can execute — and it is exactly where the
-// chain broke live (a polite "can you set…?" read as a question, so nothing was
-// ever written). Asserting the RULE still names its cases is the closest thing
-// to coverage available, and it stops the wording being trimmed away later.
-module.exports = { classify, validateIntent, buildUserPrompt };
+module.exports = { classify, validateIntent };
