@@ -98,6 +98,47 @@ describe('mergeAndDedupe', () => {
     });
 });
 
+// Live 2026-08-26: the deck for "where can I meet someone" came back a jewellery
+// shop, a diamond gallery, a dried-fruit shop and a mall — the asker's own four
+// votes, ranked above everything. feedbackScore was the ONLY unbounded term in
+// the prior: one like was worth 3 points, a perfect 5.0 rating 5, and the entire
+// 0-50km distance range 1. So a single vote outweighed proximity three times.
+describe('community feedback is bounded, like every other signal', () => {
+    const { feedbackScoreFor, scoreCachedDoc } = require('../engine/places/canonicalStore');
+
+    test('one vote is a hint, not a verdict', () => {
+        expect(feedbackScoreFor(1, 0)).toBeCloseTo(0.67, 1);
+        expect(feedbackScoreFor(3, 0)).toBeCloseTo(2.0, 1);
+    });
+
+    test('praise saturates — a hundred likes is not worth more than three', () => {
+        expect(feedbackScoreFor(100, 0)).toBeCloseTo(feedbackScoreFor(3, 0), 5);
+        expect(feedbackScoreFor(100, 0)).toBeLessThanOrEqual(2);
+    });
+
+    test('the asymmetry survives: dislikes still bite harder', () => {
+        expect(Math.abs(feedbackScoreFor(0, 3))).toBeGreaterThan(feedbackScoreFor(3, 0));
+        expect(feedbackScoreFor(0, 3)).toBeCloseTo(-4.0, 1);
+    });
+
+    test('it reads a SHARE, so a mixed record is not a rave', () => {
+        expect(feedbackScoreFor(8, 2)).toBeLessThan(feedbackScoreFor(10, 0));
+        expect(feedbackScoreFor(5, 5)).toBe(0);
+    });
+
+    test('no votes contributes nothing at all', () => {
+        expect(feedbackScoreFor(0, 0)).toBe(0);
+    });
+
+    // The property that actually failed live: a single like must not be able to
+    // beat a genuinely better, closer place on its own.
+    test('one like cannot outrank a higher-rated, nearer place', () => {
+        const liked  = scoreCachedDoc({ likes: 1, dislikes: 0, rating: 4.3, useCount: 1 }, 6.8, 50, null, {});
+        const better = scoreCachedDoc({ likes: 0, dislikes: 0, rating: 4.8, useCount: 8 }, 0.9, 50, null, {});
+        expect(better).toBeGreaterThan(liked);
+    });
+});
+
 describe('scoreCachedDoc (v1 backfill prior, same weights)', () => {
     test('community feedback dominates; negative bites harder', () => {
         const liked = scoreCachedDoc(cacheDoc({ likes: 2, dislikes: 0 }), 1, 50, null, {});
