@@ -2299,7 +2299,7 @@ async function loadKnownCachedPlaces({ center, radiusKm, action, limit = 12 }) {
  *   • Places with no placeId (date-cards, unresolved names, DB-only rows) are
  *     never matched, so they are never affected.
  */
-const CURATED_GATE_ACTIONS = new Set(['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping']);
+const CURATED_GATE_ACTIONS = new Set(['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities']);
 
 /**
  * Batch verdict: which of these placeIds has a validator curated OUT of `action`.
@@ -3827,7 +3827,7 @@ async function processStreamCompletion(aiResponse, businesses, destinations, mes
         // 'events' is deliberately absent — see the note at the quick-action tagger:
         // an event's card carries its VENUE, so tagging turns venues into permanent
         // "events" that later backfill as undated Event cards.
-        const CHAT_TAGGABLE_ACTIONS = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'photo_spots', 'shopping']);
+        const CHAT_TAGGABLE_ACTIONS = new Set(['hotels', 'restaurants', 'historical', 'hidden_gems', 'photo_spots', 'shopping', 'activities']);
         const chatShownPlaceIds = [...new Set(recommendations.map(r => r.placeId).filter(Boolean))];
         if (chatShownPlaceIds.length > 0) {
             // Popularity/freshness bump for every shown place…
@@ -5715,7 +5715,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 } catch (curErr) { console.warn('[quick-action] cache curation fetch failed:', curErr.message); knownCachedNames = []; }
             }
             let aiPrompt = '';
-            if (!skipModel && (action === 'hidden_gems' || action === 'restaurants' || action === 'historical' || action === 'hotels' || action === 'events' || action === 'photo_spots' || action === 'shopping')) { 
+            if (!skipModel && (action === 'hidden_gems' || action === 'restaurants' || action === 'historical' || action === 'hotels' || action === 'events' || action === 'photo_spots' || action === 'shopping' || action === 'activities')) { 
                 aiPrompt = generateTargetedPrompt(action, searchContext, preferences, requestedCount, excludeNames, subType, googleCandidates, knownCachedNames);
                 // console.log('\n🤖 AI PROMPT BEING SENT:\n', aiPrompt, '\n');
             } 
@@ -7327,8 +7327,11 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 historical: 'Here are some historical spots near you:',
                 hidden_gems: 'Here are a few hidden gems near you:',
                 photo_spots: 'Here are some photo-worthy spots near you:',
-                events: 'Here are a few things happening near you:',
-                shopping: 'Here are some places to shop near you:'
+                // 'things happening' reads as an event; activities own
+                // 'things to do', so the two lead-ins stay distinguishable.
+                events: 'Here are a few events coming up near you:',
+                shopping: 'Here are some places to shop near you:',
+                activities: 'Here are some things to do near you:'
             };
             const visibleText = recommendations.length > 0
                 ? (_leadInByAction[action] || 'Here are some places I found for you:')
@@ -7685,8 +7688,12 @@ function getCategoryFromActionType(actionType, userLanguage = 'en', subType = nu
         'secret': 'hidden_gem',
         'local': 'hidden_gem',
         'gems': 'hidden_gem',
-        'activity': 'event',
-        'activities': 'event',
+        // 'activity'/'activities' used to alias to 'event' here, so every
+        // activity card would have rendered as "Event"/"Событие"/"Միջոցառում".
+        // An activity is a place that is open; an event is something with a date.
+        'activity': 'activity',
+        'activities': 'activity',
+        'things_to_do': 'activity',
         'festival': 'event',
         'celebration': 'event'
     };
@@ -7699,13 +7706,16 @@ function getCategoryFromActionType(actionType, userLanguage = 'en', subType = nu
         'event': {'en': 'Event','ru': 'Событие','zh': '活动','hy': 'Միջոցառում','fr': 'Événement','ar': 'حدث'},
         'photo_spot': {'en': 'Photo Spot','ru': 'Фотолокация','zh': '拍照地点','hy': 'Լուսանկարման վայր','fr': 'Spot photo','ar': 'موقع تصوير'},
         'shop': {'en': 'Shop','ru': 'Магазин','zh': '商店','hy': 'Խանութ','fr': 'Boutique','ar': 'متجر'},
+        // Distinct from 'event' above: hy uses Զբաղմունք (occupation/pastime)
+        // because Միջոցառում is already the word for a dated event.
+        'activity': {'en': 'Activity','ru': 'Развлечение','zh': '娱乐活动','hy': 'Զբաղմունք','fr': 'Activité','ar': 'نشاط'},
         'attraction': {'en': 'Attraction','ru': 'Достопримечательность','zh': '景点','hy': 'Տեսարժան վայր','fr': 'Attraction','ar': 'معلم سياحي'}
     };
     return translations[categoryKey]?.[userLanguage] || translations[categoryKey]?.['en'] || 'Attraction';
 }
 
 function getMaxCount(action) {
-    const limits = { 'restaurants': 30, 'hotels': 30, 'historical': 25, 'hidden_gems': 25, 'events': 25, 'photo_spots': 25, 'shopping': 25 };
+    const limits = { 'restaurants': 30, 'hotels': 30, 'historical': 25, 'hidden_gems': 25, 'events': 25, 'photo_spots': 25, 'shopping': 25, 'activities': 25 };
     return limits[action] || 12;
 }
 
@@ -9316,7 +9326,7 @@ module.exports = router;
  * Categories map to the cache's `actions[]` array (the same category ids used
  * across chat/quick-actions), so no new taxonomy is introduced.
  */
-const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping'];
+const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities'];
 // Map a user's free-text interests (from onboarding) onto explore categories,
 // so someone who chose "food" and "history" sees those sections first. Keyword
 // match — an interest can boost more than one category.
@@ -9329,16 +9339,20 @@ const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'ph
 // Exact-key mapping first (primary category weight 2, secondary 1); the
 // regexes remain as a fallback for legacy free-text interest values.
 const INTEREST_KEY_TO_CATEGORIES = {
-    family:     { events: 2, photo_spots: 1 },
+    family:     { activities: 2, events: 1, photo_spots: 1 },
     romantic:   { restaurants: 2, photo_spots: 1, hidden_gems: 1 },
     nature:     { photo_spots: 2, hidden_gems: 1 },
-    adventure:  { hidden_gems: 2, photo_spots: 1 },
+    adventure:  { activities: 2, hidden_gems: 2, photo_spots: 1 },
     cultural:   { historical: 2, events: 1 },
     history:    { historical: 2 },
     art:        { historical: 2, events: 1 },
     food_drink: { restaurants: 2 },
-    nightlife:  { events: 2, restaurants: 1 },
-    relaxation: { hidden_gems: 2, hotels: 1 },
+    // nightlife and relaxation are the two interests V3 §10.2 names as having
+    // "nowhere to land": they described activities and were pointed at events
+    // and hidden_gems instead. That mis-mapping IS why a nightlife ask was
+    // answered with restaurants. They point at activities now.
+    nightlife:  { activities: 2, events: 1, restaurants: 1 },
+    relaxation: { activities: 2, hidden_gems: 1, hotels: 1 },
 };
 const INTEREST_TO_CATEGORY = [
     [/food|restaurant|dining|cuisine|culinary|gastro|eat/i, 'restaurants'],
@@ -9347,7 +9361,11 @@ const INTEREST_TO_CATEGORY = [
     [/hidden|local|offbeat|authentic|secret|unique/i, 'hidden_gems'],
     [/nature|outdoor|hike|hiking|landscape|scenic|view|mountain|lake/i, 'photo_spots'],
     [/photo|instagram|scenic|viewpoint/i, 'photo_spots'],
-    [/event|festival|concert|nightlife|music|party|show/i, 'events'],
+    [/event|festival|concert|music|show/i, 'events'],
+    // This list is ADDITIVE (every match scores +1), not an else-if chain, so
+    // 'nightlife' can legitimately count toward both. It sits with activities
+    // because a night out is a place you go, not a dated happening.
+    [/nightlife|party|activit|things to do|spa|wellness|nightclub|bowling|cinema|entertainment/i, 'activities'],
     [/shop|shopping|market|bazaar|boutique|souvenir/i, 'shopping'],
     [/hotel|stay|accommodation|lodging|luxury/i, 'hotels'],
 ];
@@ -9603,7 +9621,9 @@ router.get('/explore', auth, usageTracker, async (req, res) => {
 
         // Section order: interest-matching categories first, then the default
         // order — only for categories that actually have places.
-        const DEFAULT_ORDER = ['restaurants', 'historical', 'hidden_gems', 'photo_spots', 'events', 'shopping', 'hotels'];
+        // A category absent from this array is DROPPED by the .filter below —
+        // it would be populated above and then never rendered as a section.
+        const DEFAULT_ORDER = ['restaurants', 'historical', 'hidden_gems', 'activities', 'photo_spots', 'events', 'shopping', 'hotels'];
         const order = DEFAULT_ORDER
             .filter(c => categories[c] && categories[c].length)
             .sort((a, b) => (interestScore[b] || 0) - (interestScore[a] || 0)
