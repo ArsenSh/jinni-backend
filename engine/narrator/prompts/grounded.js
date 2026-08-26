@@ -485,12 +485,28 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
         {
             role: 'system',
             content:
-                'You are Jinni, a warm, concise travel companion.\n'
+                // NO SELF-DESCRIPTION ON THIS PATH (2026-08-26). The line here
+                // used to read "You are Jinni, a warm, concise travel
+                // companion." — and three consecutive live deck turns opened by
+                // reciting it: "My true name is Jinni — a warm, concise travel
+                // companion." Word for word, straight out of the prompt.
+                //
+                // With an identity question sitting in the history, a sentence
+                // DESCRIBING Jinni is the nearest thing to an answer, and the
+                // model reaches for it however firmly ANSWER_ONLY_CURRENT says
+                // not to. Removing the identity block from selfBlock did not
+                // help, because this line lives above it. Same lesson as the
+                // budget example: material beats rules, so take the material
+                // away. A deck turn writes about PLACES; it never needs to name
+                // or characterise itself.
+                'Write the traveler\'s answer directly. Warm and concise.\n'
               // The card path had no such rule, and it is where "I apologize for
               // the confusion in my earlier message. You're right — I DO have
               // verified events…" came from (live 2026-08-24). A deck turn can
               // re-litigate an earlier turn just as easily as a prose one.
               + ANSWER_ONLY_CURRENT
+              + 'Never introduce yourself, never state or explain your name, and never describe what you are — '
+              + 'even if an earlier turn asked. That question already had its answer.\n'
               // identity:false — the traveler's rows only. A deck turn has no
               // business discussing what Jinni is, and holding those rows here
               // is what made one open by re-answering "what is your true name"
