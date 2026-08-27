@@ -299,6 +299,10 @@ async function discoverEventSources(country, city, deps = {}) {
 
     const run = (async () => {
         let domains = [], feeds = [];
+        // Per-candidate evidence, for the staff/admin "find sources" button.
+        // The verification already happens; this only makes it VISIBLE, so a
+        // human can see what was rejected and why rather than trusting a list.
+        let report = [];
         try {
             const AppConfig = require('../../models/AppConfig');
             const claudeService = require('../../services/claudeService');
@@ -439,6 +443,16 @@ async function discoverEventSources(country, city, deps = {}) {
             domains = checks.filter(c => c.relevant === true).map(c => c.host);
             feeds = checks.filter(c => c.feed).map(c => c.feed);
             const invented = checks.filter(c => !c.real).map(c => c.host);
+            report = checks.map(c => ({
+                host: c.host,
+                url: c.feed?.url || c.url || null,
+                // Why it was accepted or rejected, in the order the gates run.
+                verdict: !c.real ? 'not_a_real_domain'
+                    : c.relevant !== true ? (c.fetchable === false ? 'unreachable_and_unconfirmed' : 'no_events_for_this_city')
+                    : c.feed ? 'accepted' : 'accepted_search_only',
+                datedEvents: c.dated ?? null,
+                searchConfirmed: !!c.viaSearch,
+            }));
             console.log(`[discovery] ${country}: model proposed ${proposed.length} → ${domains.length} real [${domains.join(', ') || '—'}]`
                 + `${bySearch.length ? ` | search-confirmed: ${bySearch.join(', ')}` : ''}`
                 + `${invented.length ? ` | not a real domain: ${invented.join(', ')}` : ''}`
@@ -448,7 +462,7 @@ async function discoverEventSources(country, city, deps = {}) {
             console.warn(`[discovery] ${country} failed: ${err.message} — falling back to unrestricted search`);
             domains = []; feeds = [];
         }
-        const out = { at: Date.now(), domains, feeds };
+        const out = { at: Date.now(), domains, feeds, report };
         _discoveredByCountry.set(key, out);
         _discoveryInFlight.delete(key);
         return out;
@@ -480,7 +494,19 @@ async function resolveSearchDomains(cfg, userRegion) {
     return [...new Set([...known, ...discovered])];
 }
 
+/** Drop the cached answer for one country+city so a deliberate re-run can
+ *  actually re-run. Without this a second click on the staff/admin discover
+ *  button returns the same 7-day-old answer and looks like a dead button. */
+function _clearDiscoveryCache(country, city = null) {
+    // Must match the key built in discoverEventSources EXACTLY (trim included)
+    // or this silently clears nothing and the re-run returns the cached answer.
+    const key = `${String(country || '').toLowerCase().trim()}|${String(city || '').toLowerCase().trim()}`;
+    _discoveredByCountry.delete(key);
+    _discoveryInFlight.delete(key);
+}
+
 module.exports = {
+    _clearDiscoveryCache,
     discoverEventSources,
     resolveSearchDomains,
     _domainResolves,

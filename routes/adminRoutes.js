@@ -2907,4 +2907,38 @@ router.delete('/event-sources/:id', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── DISCOVER: propose sources, register NOTHING ──────────────────────────────
+// The model only ever proposes hostnames. Every one is then VERIFIED by code
+// before it reaches this response: DNS + SSRF resolution (an invented domain
+// dies here), an actual fetch of the city listing, a check that the page
+// mentions the city, and a count of genuinely dated events on it — three or
+// more, or it is not offered. Nothing is written to the registry: the caller
+// adds the ones they want through POST /event-sources. So a hallucinated or
+// wrong link cannot enter the database by way of this button.
+router.post('/event-sources/discover', async (req, res) => {
+    try {
+        const { country, city, force } = req.body || {};
+        if (!country?.trim()) return res.status(400).json({ error: 'country is required' });
+        const { discoverEventSources, _clearDiscoveryCache } = require('../engine/events/discovery');
+        // Results are cached 7 days per country+city. Without a way to bypass
+        // it a second click looks like a dead button, so say so or re-run.
+        if (force) { try { _clearDiscoveryCache(country.trim(), city?.trim() || null); } catch { /* best effort */ } }
+        const out = await discoverEventSources(country.trim(), city?.trim() || null);
+        const known = new Set((await EventSource.find({}).select('url').lean()).map(r => String(r.url).replace(/\/+$/, '')));
+        const accepted = (out.report || []).filter(r => r.verdict.startsWith('accepted'));
+        res.json({
+            success: true,
+            cachedAt: out.at || null,
+            // Only pages that survived every gate, minus ones already registered.
+            candidates: accepted
+                .filter(r => r.url && !known.has(String(r.url).replace(/\/+$/, '')))
+                .map(r => ({ name: r.host, url: r.url, datedEvents: r.datedEvents, searchConfirmed: r.searchConfirmed })),
+            alreadyRegistered: accepted.filter(r => r.url && known.has(String(r.url).replace(/\/+$/, ''))).map(r => r.host),
+            // Shown so the verification is visible rather than implied.
+            rejected: (out.report || []).filter(r => !r.verdict.startsWith('accepted'))
+                .map(r => ({ host: r.host, why: r.verdict })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

@@ -832,6 +832,39 @@ router.patch('/event-sources/:id', aiEventGate, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── DISCOVER: propose sources, register NOTHING ──────────────────────────────
+// The model proposes hostnames; CODE decides. Each one is resolved (DNS +
+// SSRF, so an invented domain dies here), fetched, checked for the city's own
+// name, and required to show three or more genuinely dated events before it is
+// offered. Nothing is written — the validator adds what they want through
+// POST /event-sources, which re-checks their scope. A hallucinated link
+// therefore cannot enter the registry through this button.
+router.post('/event-sources/discover', aiEventGate, async (req, res) => {
+    try {
+        const { country, city, force } = req.body || {};
+        if (!country?.trim()) return res.status(400).json({ error: 'country is required' });
+        // A validator may only discover for territory they own.
+        if (!isWithinScope(req.user, { country: country.trim(), city: city?.trim() || null })) {
+            return res.status(403).json({ error: 'Outside your assigned scope' });
+        }
+        const { discoverEventSources, _clearDiscoveryCache } = require('../engine/events/discovery');
+        if (force) { try { _clearDiscoveryCache(country.trim(), city?.trim() || null); } catch { /* best effort */ } }
+        const out = await discoverEventSources(country.trim(), city?.trim() || null);
+        const known = new Set((await EventSource.find({}).select('url').lean()).map(r => String(r.url).replace(/\/+$/, '')));
+        const accepted = (out.report || []).filter(r => r.verdict.startsWith('accepted'));
+        res.json({
+            success: true,
+            cachedAt: out.at || null,
+            candidates: accepted
+                .filter(r => r.url && !known.has(String(r.url).replace(/\/+$/, '')))
+                .map(r => ({ name: r.host, url: r.url, datedEvents: r.datedEvents, searchConfirmed: r.searchConfirmed })),
+            alreadyRegistered: accepted.filter(r => r.url && known.has(String(r.url).replace(/\/+$/, ''))).map(r => r.host),
+            rejected: (out.report || []).filter(r => !r.verdict.startsWith('accepted'))
+                .map(r => ({ host: r.host, why: r.verdict })),
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.delete('/event-sources/:id', aiEventGate, async (req, res) => {
     try {
         const row = await EventSource.findById(req.params.id);
