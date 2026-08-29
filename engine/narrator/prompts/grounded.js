@@ -298,6 +298,14 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
+              // This branch cannot write settings — reaching it means no
+              // settings command was recognised this turn. Live 2026-08-29:
+              // "now set to AMD" landed here and the reply claimed the
+              // currency was set while nothing was written anywhere.
+              + 'Nothing in this reply changes any saved setting or preference — NEVER say one was set, '
+              + 'changed or saved. If they asked for a settings change, say you could not apply it from '
+              + 'that message and invite them to rephrase (e.g. "set my currency to USD") or use the '
+              + 'Preferences screen.\n'
               + (localFacts.length
                   ? 'The traveler asked a practical question and you HAVE verified notes for it below — '
                   + 'answer from them, attribute the source, and never contradict them from memory. '

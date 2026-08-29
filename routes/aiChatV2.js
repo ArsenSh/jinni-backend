@@ -252,7 +252,26 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             settingsApplied = [];
             settingsRefused = [];
             budgetFiguresWanted = false;
-            for (const c of (intent.settingsChange || [])) {
+            for (let c of (intent.settingsChange || [])) {
+                // ── A CURRENCY-ONLY change re-denominates the saved band. ──
+                // "now set to usd" after 10–300 RUB carries no figures, so it
+                // fell into the ask-for-figures hole — and the "10 to 200"
+                // answer then inherited RUB, the currency they were trying to
+                // leave (live 2026-08-29). The Preferences form's behavior is
+                // the model: switching the currency dropdown keeps the
+                // figures. Figures are NEVER converted — "set to usd" means
+                // re-label, and inventing an exchange would be a number from
+                // nowhere. An UNSUPPORTED currency (AMD, GEL…) keeps its
+                // named code here so validateProposal refuses it LOUDLY with
+                // the supported list, instead of the old silent abstain that
+                // let chit-chat claim it was set.
+                if (c.field === 'budget' && c.value?.currency
+                    && !(Number(c.value?.min) > 0) && !(Number(c.value?.max) > 0)) {
+                    const have = intent._preferences?.budget;
+                    if (have && (have.min > 0 || have.max > 0)) {
+                        c = { ...c, value: { min: have.min, max: have.max, currency: c.value.currency } };
+                    }
+                }
                 const proposed = validateProposal(c, {
                     currentPlace: null,          // filled below when it is needed
                     namedPlace: null,

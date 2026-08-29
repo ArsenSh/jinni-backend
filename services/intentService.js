@@ -173,7 +173,11 @@ Rules:
 - settings_change: [] on almost every message. Fill it ONLY when the traveler ASKS FOR a saved setting to change ("change my style to budget", "make my interests family", "search 10 km around me"). A POLITE QUESTION IS STILL A COMMAND — "could you change my style to budget?", "can you make my interests family?", "would you make my interests family?", "можешь поставить бюджетный стиль?", "можешь установить текущее местоположение?" all fill settings_change. What decides it is whether the message NAMES A SETTING AND THE VALUE to give it, never the grammar. A question that names NO value is not a change ("can you change my preferences?", "what are my preferences?") — leave settings_change empty for those. Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
-    budget        -> {"min":50,"max":200,"currency":"USD"} (currency one of AED, USD, RUB, EUR, GBP).
+    budget        -> {"min":50,"max":200,"currency":"USD"} (currency = the 3-letter code for whatever
+                     currency they NAMED, even one you think unsupported — AMD, GEL, TRY all pass through;
+                     code validates support and refuses honestly. A currency-only change ("set to usd",
+                     "make it drams") is STILL a budget settings_change: send it with min 0 max 0 and the
+                     named currency).
                      NAMING AN AMOUNT IS A BUDGET CHANGE AND NOTHING ELSE. "consider 500 usd",
                      "my budget is 50-200", "make it 20 a day" set the figures and leave travelStyle
                      exactly as it is — a luxury traveler stating a number stays luxury. Only add a

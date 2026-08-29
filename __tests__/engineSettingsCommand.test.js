@@ -381,3 +381,16 @@ describe('the saved location is not Jinni\'s to change', () => {
         expect(settableSentence()).not.toMatch(/radius|location/i);
     });
 });
+
+
+// Chit-chat can never claim a settings change (live 2026-08-29: "now set to
+// AMD" was abstained by intent, landed in chit-chat, and the reply said the
+// currency was set while nothing was written).
+describe('chit-chat never claims settings changes', () => {
+    const { buildChitchatMessages } = require('../engine/narrator/prompts/grounded');
+    test('the system prompt forbids claiming a setting was set/changed/saved', () => {
+        const m = buildChitchatMessages({ message: 'now set to AMD', langName: 'English' });
+        expect(m[0].content).toMatch(/NEVER say one was set/);
+        expect(m[0].content).toMatch(/could not apply it/);
+    });
+});
