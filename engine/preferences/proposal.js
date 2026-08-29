@@ -63,7 +63,15 @@ function radiusKmFor(mode, searchRadius = {}) {
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt;
 }
 
-const MAX_BUDGET = 100000;
+// The budget cap is a SANITY bound — "is this number insane for a daily
+// budget" — not a conversion, so a static order-of-magnitude scale per
+// currency is correct and keeps this module pure (no live-rate dependency).
+// Flat 100000 refused 200,000 AMD (≈$550/day, entirely sane) while the
+// Preferences form accepted it (live 2026-08-30); RUB had the same latent
+// trap. Roughly ≈$100k/day equivalent everywhere.
+const MAX_BUDGET_USD = 100000;
+const _BUDGET_CAP_SCALE = { USD: 1, EUR: 1, GBP: 1, AED: 4, RUB: 100, AMD: 500 };
+const maxBudgetFor = (currency) => MAX_BUDGET_USD * (_BUDGET_CAP_SCALE[currency] || 1);
 
 // ── ONE REGISTRY ─────────────────────────────────────────────────────────────
 //
@@ -120,7 +128,7 @@ const SETTINGS = {
             // may still be flat; chat refuses and says why.
             if (!PREF_VOCAB.currency.includes(currency)) return null;
             if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
-            if (min < 0 || max <= 0 || max <= min || max > MAX_BUDGET) return null;
+            if (min < 0 || max <= 0 || max <= min || max > maxBudgetFor(currency)) return null;
             return { value: { min, max, currency }, label: `budget to ${min}–${max} ${currency}` };
         },
     },
@@ -312,7 +320,7 @@ function budgetRefusalReason(raw) {
     if (max <= 0) return 'the maximum has to be above zero';
     if (max === min) return 'the minimum has to be LOWER than the maximum — the two given were the same';
     if (max < min) return 'the minimum was higher than the maximum';
-    if (max > MAX_BUDGET) return 'that maximum is far too large to be a daily budget';
+    if (max > maxBudgetFor(currency)) return 'that maximum is far too large to be a daily budget';
     if (!PREF_VOCAB.currency.includes(currency)) return `the currency must be one of ${PREF_VOCAB.currency.join(', ')}`;
     return null;
 }

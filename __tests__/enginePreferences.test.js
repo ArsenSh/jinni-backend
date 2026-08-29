@@ -21,6 +21,10 @@ describe('validateProposal', () => {
         expect(validateProposal({ field: 'interests', value: ['skydiving'] })).toBeNull();
         expect(validateProposal({ field: 'budget', value: { min: 1000, max: 20000, currency: 'AMD' } }))
             .toEqual({ field: 'budget', value: { min: 1000, max: 20000, currency: 'AMD' }, label: 'budget to 1000–20000 AMD' });
+        // The sanity cap scales per currency (live 2026-08-30: a flat 100000
+        // refused 200,000 AMD ≈ $550/day while the Preferences form took it).
+        expect(validateProposal({ field: 'budget', value: { min: 10000, max: 200000, currency: 'AMD' } })).not.toBeNull();
+        expect(validateProposal({ field: 'budget', value: { min: 10, max: 200000, currency: 'USD' } })).toBeNull();
         expect(validateProposal({ field: 'budget', value: { min: 10, max: 20, currency: 'GEL' } })).toBeNull();
     });
 
