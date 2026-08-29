@@ -410,12 +410,60 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
         meta.langUsed = intent.language || intent._userLanguage || null;
 
+        // ── Branch signals, decided BEFORE the destination machinery runs. A
+        //    QUESTION about a place is not a decision to GO there: "do I need
+        //    a visa for UAE" recentred the whole session to the UAE, paid a
+        //    Text Search for the geocode, and saved activeDestination=UAE —
+        //    so the traveler's NEXT ask would have searched the Emirates from
+        //    a Yerevan sofa (live 2026-08-29, Group B battery). Settings
+        //    commands and transport/how-to questions never move the centre. ──
+        const sessionCards = shownPlaces(sessionPeek?.messages);
+        const msgLower = String(message).toLowerCase();
+        const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
+        const transportAsk = intent.infoAsk === 'transport'
+            || (intent.infoAsk === undefined && isTransportAsk(msgLower));
+        const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
+        const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
+        // Mirrors the branch chain below: turns that end at transport,
+        // settings, or info/chit-chat never search places, so the session's
+        // centre and activeDestination are not theirs to touch.
+        const questionTurn = transportAsk || settingsTurn || (infoTurn && !namedCard);
+
+        // ── The region the QUESTION is about — for owned-fact lookup ONLY.
+        //    Geocodes a named place through the same type-gated resolver, but
+        //    the result stays LOCAL to the answer: centre, meta.centreSource
+        //    and the session document are never touched by a question. Needed
+        //    because lookupFacts matches names verbatim — "UAE" never equals
+        //    the stored "United Arab Emirates"; only a geocode bridges the
+        //    alias (which is why the old recentring accidentally worked). ──
+        const resolveAskedRegion = async () => {
+            const ambient = await resolveRegion({ center, placeNames: intent.placeNames });
+            if (!(intent.placeNames || []).length) return ambient;
+            try {
+                const asked = await resolveDestination({
+                    placeNames: intent.placeNames, gps: null, sessionDestination: null,
+                    savedDestination: null, nearbyMode: false, currentRegion: null,
+                }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
+                if (asked?.center) {
+                    const named = await resolveRegion({ center: asked.center });
+                    if (named.city || named.country) {
+                        return { city: named.city || asked.city || null, country: named.country, place: ambient.place };
+                    }
+                }
+            } catch (err) {
+                console.warn('[v2] asked-region resolve failed, using ambient:', err.message);
+            }
+            return ambient;
+        };
+
         // ── WHERE we are searching. Until now a chosen destination was only a
         //    fallback for missing GPS, and a city named in the message was
         //    never geocoded at all — so "events in dubai" searched Yerevan and
         //    returned Armenian theatre (live 2026-08-24). v1's precedence,
         //    restored, plus the saved one: nearby → named city → session
-        //    destination → Settings destination → GPS. ──
+        //    destination → Settings destination → GPS. Question/settings
+        //    turns skip ALL of it (see questionTurn above) — their branches
+        //    take resolveAskedRegion instead. ──
         try {
             // Resolved once and reused: the destination rules need it, and the
             // prompt needs to NAME it. Telling the model it can see a position
@@ -424,6 +472,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
             const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
             if (intent._preferences) intent._preferences._here = hereLabel || null;
+            if (!questionTurn) {
             const dest = await resolveDestination({
                 placeNames: intent.placeNames || [],
                 gps: center,
@@ -456,6 +505,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     .updateOne({ _id: sessionId }, { $set: { activeDestination: dest.remember } })
                     .catch(err => console.warn('[v2] activeDestination save failed:', err.message));
             }
+            }
         } catch (err) {
             console.warn('[v2] destination resolve failed, keeping GPS centre:', err.message);
         }
@@ -486,22 +536,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             } : null;
         if (webSearch) meta.webSearch = true;
 
-        // ── Detail-question branch (THE TOOL LOOP): the message names a place
-        //    the traveler already saw in this session → the model drives, with
-        //    get_place_details as its tool. Session-first identity means the
-        //    answer is about the exact card they saw. ──
-        const sessionCards = shownPlaces(sessionPeek?.messages);
-        const msgLower = String(message).toLowerCase();
-        const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
-
-        // ── "How do I get there / get around" (Arsen 2026-08-23, after his
-        //    brother asked "I want to book a taxi. How can I do it" and got six
-        //    sightseeing cards). Transport is a QUESTION, not a deck: answer it
-        //    in prose and skip retrieval entirely — no Google spend, no cards.
-        //    The BRAIN decides (intent.infoAsk); the regex is the LLM-timeout
-        //    fallback, in all six app languages. ──
-        const transportAsk = intent.infoAsk === 'transport'
-            || (intent.infoAsk === undefined && isTransportAsk(msgLower));
+        // (sessionCards / namedCard / transportAsk are decided ABOVE the
+        // destination block now — a question must not move the centre.)
 
         // ── Refill follow-up ("can you give 10 other results?", "ещё") —
         //    caught live 2026-08-22: the intent LLM timed out, the keyword
@@ -538,7 +574,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Owned knowledge first (Wikivoyage "Get around" etc.). For a city
             // like Yerevan no transit feed exists anywhere, so these notes are
             // the only real source there is — they outrank model memory.
-            const region = await resolveRegion({ center, placeNames: intent.placeNames });
+            const region = await resolveAskedRegion();
             // The RAW topic decides which notes answer this ("which metro" →
             // get_around); this branch falls back to get_around because that
             // is exactly what the branch is for.
@@ -586,7 +622,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             meta.answerType = 'getting_around';
             stats.path = 'transport';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
-        } else if (settingsApplied.length || settingsRefused.length || deferredStyle) {
+        } else if (settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted) {
+            // budgetFiguresWanted joined the condition 2026-08-29: a bare "set
+            // my budget" (no figures) set the flag but took no branch here —
+            // the ask-for-figures reply below could never fire on its own.
             // A COMMAND WAS CARRIED OUT. Nothing was asked for, so nothing is
             // retrieved and no cards are produced (Arsen 2026-08-24: "this kind
             // of commands why it triggers to show locations???").
@@ -663,7 +702,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const infoTopicWanted = topicFor(intent.infoTopic);
             const infoFacts = infoTopicWanted
                 ? await lookupFacts({
-                    ...(await resolveRegion({ center, placeNames: intent.placeNames })),
+                    ...(await resolveAskedRegion()),
                     topic: infoTopicWanted,
                 })
                 : [];
