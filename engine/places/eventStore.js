@@ -239,6 +239,13 @@ async function loadEventCandidates(params = {}, deps = {}) {
     const inRadiusCities = new Set(out
         .filter(c => c.distanceKm != null && c.distanceKm <= radiusKm)
         .map(cityOf).filter(Boolean));
+    // The search centre's own city is in-radius BY DEFINITION. Without this
+    // seed, a city whose shelf events are ALL coordless (every hunted row
+    // starts venue-unpinned) could never enter the set, so the entire shelf
+    // dropped, the shelf always read "thin", and the hunt re-read every
+    // source on EVERY ask — live 2026-08-29: Dubai held 24 fresh events from
+    // a 15-minute-old sweep and the turn still spent 32s re-reading 9 sources.
+    if (params.regionCity) inRadiusCities.add(String(params.regionCity).trim().toLowerCase());
     const within = out.filter(c => c.distanceKm != null
         ? c.distanceKm <= radiusKm
         : (!!cityOf(c) && inRadiusCities.has(cityOf(c))));

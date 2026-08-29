@@ -445,3 +445,73 @@ describe('event cards + facts', () => {
         expect(placeFactLine({ name: 'Garni' })).not.toContain('event on');
     });
 });
+
+// ── The 32s Dubai re-hunt bug (live 2026-08-29) — two guards, tested apart ──
+
+describe('regionCity seeds the in-radius city set', () => {
+    test('an all-coordless shelf serves for its own city instead of reading "thin"', async () => {
+        const DUBAI = { lat: 25.2, lng: 55.27 };
+        const rows = [
+            aiEvent({ name: 'Candlelight', lat: null, lng: null, city: 'Dubai' }),
+            aiEvent({ name: 'Afro Connect', lat: null, lng: null, city: 'Dubai' }),
+        ];
+        // Without the seed nothing coord-bearing exists to vouch for the city,
+        // the whole shelf drops, and the hunt re-fires on every ask.
+        expect(await loadEventCandidates({ center: DUBAI, radiusKm: 50 }, deps([], rows))).toEqual([]);
+        const out = await loadEventCandidates({ center: DUBAI, radiusKm: 50, regionCity: 'Dubai' }, deps([], rows));
+        expect(out.map(c => c.name)).toEqual(['Candlelight', 'Afro Connect']);
+    });
+
+    test('the seed is the CENTRE\'s city — it never rescues another city\'s rows', async () => {
+        const out = await loadEventCandidates({ center: CENTER, radiusKm: 10, regionCity: 'Yerevan' }, deps([], [
+            aiEvent({ name: 'Dubai Comedy', lat: null, lng: null, city: 'Dubai' }),
+        ]));
+        expect(out).toEqual([]);
+    });
+});
+
+describe('hunt source freshness (lastReadAt guard)', () => {
+    const { huntEvents } = require('../engine/events/hunt');
+    const WIN = { start: new Date(NOW), end: new Date(NOW + 14 * DAY), label: 'default' };
+    const MIN = 60 * 1000;
+    const srcRows = (rows) => ({
+        find: () => ({ limit: () => ({ lean: () => Promise.resolve(rows) }) }),
+        bulkWrite: jest.fn(async () => ({})),
+        updateMany: jest.fn(async () => ({})),
+    });
+    const baseDeps = (ES, fetchHtml) => ({
+        EventSource: ES, fetchHtml, nowFn: () => NOW,
+        AiFoundEvent: { bulkWrite: async () => ({}) },
+        renderAvailable: () => false,
+        allowExtracted: false,
+    });
+
+    test('all sources read minutes ago → zero fetches, the shelf serves', async () => {
+        const fetchHtml = jest.fn(async () => null);
+        const ES = srcRows([
+            { _id: 's1', url: 'https://a.example', lastReadAt: new Date(NOW - 10 * MIN) },
+            { _id: 's2', url: 'https://b.example', lastReadAt: new Date(NOW - 20 * MIN) },
+        ]);
+        const out = await huntEvents({ city: 'Dubai', window: WIN }, baseDeps(ES, fetchHtml));
+        expect(out).toEqual([]);
+        expect(fetchHtml).not.toHaveBeenCalled();
+    });
+
+    test('only stale sources are read; a row with no lastReadAt counts as stale', async () => {
+        const fetchHtml = jest.fn(async () => null);
+        const ES = srcRows([
+            { _id: 'fresh', url: 'https://fresh.example', lastReadAt: new Date(NOW - 5 * MIN) },
+            { _id: 'old', url: 'https://old.example', lastReadAt: new Date(NOW - 180 * MIN) },
+            { _id: 'never', url: 'https://never.example' },
+        ]);
+        await huntEvents({ city: 'Dubai', window: WIN }, baseDeps(ES, fetchHtml));
+        expect(fetchHtml.mock.calls.map(c => c[0])).toEqual(['https://old.example', 'https://never.example']);
+    });
+
+    test('an explicit search order (force) outranks the clock', async () => {
+        const fetchHtml = jest.fn(async () => null);
+        const ES = srcRows([{ _id: 's1', url: 'https://a.example', lastReadAt: new Date(NOW - 5 * MIN) }]);
+        await huntEvents({ city: 'Dubai', window: WIN, force: true }, baseDeps(ES, fetchHtml));
+        expect(fetchHtml).toHaveBeenCalledTimes(1);
+    });
+});

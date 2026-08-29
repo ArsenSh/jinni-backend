@@ -316,6 +316,10 @@ async function loadCandidates(params = {}, deps = {}) {
                     country: params.regionCountry || params.center?.country || null,
                     center: params.center,
                     window: params.eventWindow,
+                    // The user's explicit search order also overrides the
+                    // hunt's own source-freshness skip, not just this
+                    // threshold — "see in internet" means READ, now.
+                    force: !!params.eventsHunt.force,
                 }, { webSearchCfg: params.eventsHunt.webSearch || null });
                 if (extra.length) evs = mergeAndDedupe(evs, extra);
             } catch (err) {

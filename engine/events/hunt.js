@@ -52,6 +52,14 @@ const MAX_STORE = 60;
 const MAX_PER_SOURCE = 12;
 const DEAD_READS = 3;    // empty reads before a DISCOVERED source switches itself off
 const MAX_RENDERS = 2;   // browser renders per hunt — seconds each, so escalate, never start here
+// A source read this recently cannot hold new events worth a person's wait.
+// lastReadAt is stamped on every read (hunts AND the daily source sweep) but
+// was never consulted, so a hunt re-read all 9 Dubai sources 15 minutes after
+// the sweep left them fresh — 32 seconds of turn time for pages that could
+// not have changed (live 2026-08-29). 45 min: long enough never to block a
+// genuinely stale read, short enough that repeat asks in one evening stop
+// paying the re-read.
+const FRESH_READ_MS = 45 * 60 * 1000;
 
 function _fmtWindow(win) {
     const f = (d) => new Date(d).toUTCString().slice(5, 16);   // "22 Aug 2026"
@@ -284,7 +292,7 @@ async function _registerDiscovered(sources, city, country, deps) {
     }
 }
 
-async function huntEvents({ city, country = null, center = null, window: win } = {}, deps = {}) {
+async function huntEvents({ city, country = null, center = null, window: win, force = false } = {}, deps = {}) {
     if (!city || !win) return [];
     if (!_CITY_RE.test(String(city).trim())) {
         console.log(`[hunt] refusing garbage city "${String(city).slice(0, 30)}" — no search`);
@@ -316,6 +324,22 @@ async function huntEvents({ city, country = null, center = null, window: win } =
         curated = await EventSource.find({ enabled: true, $or: or }).limit(MAX_CURATED).lean();
     } catch (err) {
         if (!err._quiet) console.warn(`[hunt] source registry unavailable: ${err.message}`);
+    }
+    // Freshness guard: skip sources read within FRESH_READ_MS — their yield is
+    // already ON the shelf. An explicit user order to search (force) reads
+    // everything regardless: their word outranks the clock. A row with no
+    // lastReadAt counts as stale, so nothing new is ever silently unread.
+    if (curated.length && !force) {
+        const _now = deps.nowFn ? deps.nowFn() : Date.now();
+        const stale = curated.filter(s => !s.lastReadAt || (_now - new Date(s.lastReadAt).getTime()) > FRESH_READ_MS);
+        if (!stale.length) {
+            console.log(`[hunt] all ${curated.length} source(s) for ${city} read within ${FRESH_READ_MS / 60000} min — serving the shelf, no re-read`);
+            return [];
+        }
+        if (stale.length < curated.length) {
+            console.log(`[hunt] ${curated.length - stale.length} source(s) for ${city} still fresh — reading only ${stale.length} stale`);
+        }
+        curated = stale;
     }
     // Nobody has curated this city yet (Dubai, live 2026-08-24). Before paying
     // for a search, DISCOVER its sources: the model proposes the sites that
