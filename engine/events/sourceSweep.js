@@ -42,7 +42,11 @@ async function sweepEventSources(deps = {}) {
             console.warn(`[source-sweep] ${city}: ${err.message}`);
         }
     }
-    console.log(`[source-sweep] ${groups.length} location(s) swept → ${events} event(s) on the shelf`);
+    // "newly read", not "on the shelf": since the hunt's freshness guard
+    // (2026-08-29) skips recently-read sources, their events stay stored but
+    // are not re-counted here — the old wording made a healthy shelf read as
+    // empty ("→ 0 event(s) on the shelf" while 42 sat stored).
+    console.log(`[source-sweep] ${groups.length} location(s) swept → ${events} event(s) newly read (fresh sources skipped keep their stored events)`);
     return { locations: groups.length, events };
 }
 

@@ -11,7 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { usageTracker, estimateTokens } = require('../middleware/usageTracker');
+const { usageTracker } = require('../middleware/usageTracker');
 const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
@@ -92,9 +92,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    already put req.userLimit here — it was just never charged. ──
     let estimatedTokens = 0;
     let actualTokens = 0;
+    let actualSearches = 0;
+    // Billable = ALL FOUR usage buckets. Anthropic bills cache read/write
+    // tokens too — in+out alone undercounted Claude turns, the same 66×
+    // admin-undercount lesson v1 already learned (round 42b).
+    const addUsage = (r) => {
+        const u = r?.usage;
+        if (u) actualTokens += (u.in || 0) + (u.out || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+        actualSearches += r?.searchCount || 0;
+    };
     try {
         if (req.userLimit) {
-            estimatedTokens = estimateTokens(message) + 500;
+            // Self-calibrating pre-charge: the user's OWN observed average
+            // per turn (the model keeps statistics.avgTokensPerQuery), not a
+            // constant. message+500 under-estimated every real turn ~5×
+            // (ChatTurn data, 2026-08-29: est ~505 vs actual ~2,500), so a
+            // user crossing their cap got green-lit one expensive turn late.
+            // The reservation settles to the turn's REAL cost in the
+            // bidirectional true-up below, so this number only decides how
+            // conservatively the gate blocks at the boundary.
+            const avg = Math.round(req.userLimit.statistics?.avgTokensPerQuery || 0);
+            estimatedTokens = avg > 0 ? Math.min(4000, Math.max(800, avg)) : 1200;
             const usageStatus = await req.userLimit.checkAndUpdateUsage(estimatedTokens, 0, 1);
             res.set('X-Usage-Tokens-Used', usageStatus.dailyTokensUsed.toString());
             res.set('X-Usage-Tokens-Remaining', usageStatus.dailyTokensRemaining.toString());
@@ -630,7 +648,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 }, { provider: deepseekProvider });
                 reply = loop.text || '';
                 toolCalls = loop.toolCalls.length;
-                actualTokens += (loop.usage?.in || 0) + (loop.usage?.out || 0);
+                addUsage(loop);
                 for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                     send(res, { type: 'token', content: chunk });
                 }
@@ -646,7 +664,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     modelName,
                 });
                 reply = out.text;
-                actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+                addUsage(out);
             }
             meta.answerType = 'getting_around';
             stats.path = 'transport';
@@ -701,7 +719,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 model: providerName,
             }, { provider: deepseekProvider });
             reply = out.text || '';
-            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            addUsage(out);
             streamedOk = !!reply;
             meta.answerType = 'settings';
             stats.path = 'settings';
@@ -719,7 +737,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                 maxTokens: 400,
             }, { provider: deepseekProvider });
-            actualTokens += (loop.usage?.in || 0) + (loop.usage?.out || 0);
+            addUsage(loop);
             reply = loop.text || 'I couldn\'t verify that just now — the place\'s card has the details under More.';
             for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                 send(res, { type: 'token', content: chunk });
@@ -755,7 +773,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             });
             reply = out.text;
             stats.path = 'chitchat';
-            actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+            addUsage(out);
             console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
         } else if (!center) {
             stats.path = 'no_centre';
@@ -927,7 +945,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     modelName,
                 });
                 reply = out.text;
-                actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+                addUsage(out);
                 meta.answerType = 'no_match';
                 stats.path = 'no_match';
                 console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
@@ -976,7 +994,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // nothing. The narrator narrates evidence; it does not
                         // discover.
                     });
-                    actualTokens += (streamOut.usage?.in || 0) + (streamOut.usage?.out || 0);
+                    addUsage(streamOut);
                     const tail = splitter.finalize();
                     intro = splitter.prose.trim();
                     const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
@@ -1034,7 +1052,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 }
                 if (!streamedOk) {
                     const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, modelName });
-                    actualTokens += (out.usage?.in || 0) + (out.usage?.out || 0);
+                    addUsage(out);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
                         intro = parsed.intro;
@@ -1042,7 +1060,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         meta.followUpQuestion = parsed.question;
                     } else {
                         const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400, model: providerName, modelName });
-                        actualTokens += (fb.usage?.in || 0) + (fb.usage?.out || 0);
+                        addUsage(fb);
                         intro = fb.text;
                     }
                     for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
@@ -1111,15 +1129,36 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     //    the places actually carded. Pure bookkeeping — never user-facing. ──
     try {
         if (req.userLimit) {
-            const correction = Math.max(0, actualTokens - estimatedTokens);
             const uniquePlaces = new Set(recommendations.map(r => r.name).filter(Boolean));
-            if (correction > 0 || uniquePlaces.size > 0) {
-                await req.userLimit.checkAndUpdateUsage(correction, uniquePlaces.size, 0);
+            // BIDIRECTIONAL settle (2026-08-30): the pre-charge was a
+            // reservation; the turn ends billed at its REAL cost. The old
+            // positive-only correction never refunded, so every settings
+            // turn quietly overcharged (~300 tok each, live logs). A turn
+            // that ERRORED with no narrator usage refunds the whole
+            // reservation; refunds clamp so the day counter never goes
+            // below zero (the model's math is a plain +=).
+            const settled = actualTokens > 0 ? actualTokens
+                : (stats.path === 'error' ? 0 : estimatedTokens);
+            let delta = settled - estimatedTokens;
+            if (delta < 0) delta = Math.max(delta, -(req.userLimit.dailyUsage?.tokensUsed || 0));
+            if (delta !== 0 || uniquePlaces.size > 0) {
+                await req.userLimit.checkAndUpdateUsage(delta, uniquePlaces.size, 0);
             }
-            console.log(`[v2][limits] tok est=${estimatedTokens} actual=${actualTokens || 'n/a'} charged=${estimatedTokens + correction} places+${uniquePlaces.size}`);
+            console.log(`[v2][limits] tok est=${estimatedTokens} actual=${actualTokens || 'n/a'} charged=${estimatedTokens + delta} places+${uniquePlaces.size}`);
         }
     } catch (e) {
         console.warn(`[v2][limits] post-stream usage true-up skipped: ${e.message}`);
+    }
+
+    // ── Admin provider split (2026-08-30): AiProviderDailyStats heard
+    //    NOTHING from v2 — the DEFAULT engine since 08-22 was invisible on
+    //    the admin AI-usage page while v1 chat and quick-actions reported.
+    //    Same endpoint value as v1's chat: the admin's question is what CHAT
+    //    costs per provider, not which engine served it. Fire-and-forget. ──
+    if (actualTokens > 0) {
+        require('../models/AiProviderDailyStats')
+            .track(meta.provider || 'deepseek', { tokens: actualTokens, queries: 1, searches: actualSearches, endpoint: 'chat' })
+            .catch(err => console.error('AiProviderDailyStats error:', err));
     }
 
     if (prefApplied) meta.prefApplied = { field: prefApplied.field, label: prefApplied.label };
