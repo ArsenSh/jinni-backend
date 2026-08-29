@@ -42,7 +42,7 @@ describe('reporting a settings change', () => {
             done: ['travel style to budget'], needsBudget: true,
         });
         expect(m[0].content).toMatch(/minimum and maximum budget/);
-        expect(m[0].content).toMatch(/Never invent the figures/);
+        expect(m[0].content).toMatch(/Never invent their figures/);
     });
 
     test('budget style WITH figures does not nag', () => {
