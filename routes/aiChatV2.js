@@ -162,7 +162,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     let effectiveNearbyMode = nearbyMode;
     const pending = sessionPeek?.pendingPrefChange?.field ? sessionPeek.pendingPrefChange : null;
     const awaitingStyle = (pending?.field === 'travelStyle' && pending.value === 'budget') ? pending : null;
-    if (pending && !awaitingStyle) {
+    // A bare "set my budget" parked last turn while Jinni asked for the
+    // figures (live 2026-08-29: the question wasn't parked, so "what answer?"
+    // hit chit-chat blind and a figures reply would have gone nowhere). Like
+    // awaitingStyle it is answered with NUMBERS, never yes/no — the consent
+    // logic below must not consume it.
+    const awaitingBudget = (pending?.field === 'budget' && !pending.value) ? pending : null;
+    if (pending && !awaitingStyle && !awaitingBudget) {
         const said = isAffirmative(message);
         if (said) prefApplied = (await applyProposal(req.user.id, pending)) ? pending : null;
         else if (!isNegative(message)) console.log('[prefs] no clear answer — leaving the setting as it is');
@@ -322,7 +328,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // happen now — and both are reported in the same breath, which is
             // the order the form uses: fill the budget in, then the style is
             // complete. Jinni asks once, so the slot is released either way.
-            if (awaitingStyle && req.user?.id) {
+            if ((awaitingStyle || awaitingBudget) && req.user?.id) {
                 // Jinni ASKED for the figures, so the answer arrives as a
                 // fragment — "10-200", "50 to 300" — with no verb for the intent
                 // model to recognise as a command. It abstained, nothing was
@@ -330,6 +336,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // 2026-08-26). The brain still decides first; this is the
                 // fallback, and it runs ONLY while the question is open, so a
                 // stray pair of numbers can never be read as a budget.
+                // awaitingBudget (a bare "set my budget" parked last turn)
+                // shares the whole path; only the style unshift below is
+                // style-switch-specific — the budget-implies-style derivation
+                // after this block covers the bare-budget case on its own.
                 if (!settingsApplied.some(p2 => p2.field === 'budget')) {
                     // Their existing currency is inherited when they name none —
                     // answering "10-200" is not a change of mind about currency.
@@ -345,13 +355,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         settingsRefused.push(refusalReason('budget', guessed));
                     }
                 }
-                if (settingsApplied.some(p2 => p2.field === 'budget')) {
+                if (awaitingStyle && settingsApplied.some(p2 => p2.field === 'budget')) {
                     const style = { field: 'travelStyle', value: 'budget', label: 'travel style to budget' };
                     if (await applyProposal(req.user.id, style)) {
                         settingsApplied.unshift(style);
                         intent._preferences.travelStyle = 'budget';
                     }
-                } else console.log('[prefs] budget style still waiting on figures — not switched');
+                } else if (awaitingStyle) console.log('[prefs] budget style still waiting on figures — not switched');
                 if (sessionId) {
                     require('../models/ChatSession')
                         .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { field: null, value: null, label: null, askedAt: null } } })
@@ -653,6 +663,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (deferredStyle && sessionId) {
                 require('../models/ChatSession')
                     .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { ...deferredStyle, askedAt: new Date() } } })
+                    .catch(() => {});
+            } else if (budgetFiguresWanted && !settingsApplied.some(p2 => p2.field === 'budget') && sessionId) {
+                // A bare "set my budget" is also a question waiting on figures
+                // (live 2026-08-29: it wasn't parked, so the next turn's
+                // numbers — or "what answer?" — landed with no memory of it).
+                // field 'budget' with a null value = the awaitingBudget marker
+                // the next turn's fragment-parser completes.
+                require('../models/ChatSession')
+                    .updateOne({ _id: sessionId }, { $set: { pendingPrefChange: { field: 'budget', value: null, label: 'your budget range', askedAt: new Date() } } })
                     .catch(() => {});
             }
             const out = await narrator.stream({

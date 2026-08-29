@@ -690,12 +690,18 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
                   + 'Say exactly that and nothing more. Do not add settings that are not listed, do not claim '
                   + 'anything was changed that is not on the CHANGED line, and where something says NOT changed, '
                   + 'say plainly that you could not do that one. '
-                : 'Nothing was changed — they asked for something you still need one more answer for. '
-                  + 'Do not report any change, and never say anything was saved. ')
+                // Live 2026-08-29: this case produced "Your budget is noted,
+                // and I still need one more answer from you" — a vague report
+                // where the reply should simply BE the question. So when
+                // nothing happened, the question is the whole reply.
+                : 'Nothing was changed and nothing was saved — never say "noted", "done" or "set". '
+                  + 'Your ENTIRE reply is the question below, nothing before it. ')
             + 'Do not offer places, do not list their other preferences, do not ask what they want to see next.\n'
             + (needsBudget
-                ? 'THEN ask, in one short sentence, what their minimum and maximum budget per day is and in which '
-                  + 'currency — a budget style with no figures cannot be used. Never invent the figures.\n'
+                ? (lines.length ? 'THEN ask' : 'Ask')
+                  + ', in one short sentence, what minimum and maximum budget they want, per day, and in which '
+                  + 'currency — for example a range like 20–150 USD (that is the SHAPE of the answer, never a '
+                  + 'suggestion of figures). Never invent their figures.\n'
                 : '') },
         { role: 'user', content: String(message || '').slice(0, 200) },
     ];

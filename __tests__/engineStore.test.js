@@ -315,6 +315,28 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(searched).toBe(false);
     });
 
+    // Junk-query guard (live 2026-08-29): "what do I do tonight?" reduced to
+    // q="tonight" and bought a Text Search that returned one arbitrary bar.
+    test('a query of only vibe/time words yields the paid search to the CATEGORY noun', async () => {
+        const asked = [];
+        await googleFallback({
+            coreQuery: 'tonight', query: 'tonight', category: 'activities',
+            center: CENTER, radiusKm: 15, needed: 3,
+        }, {
+            coverage: async () => true,
+            findPlaces: async (q) => { asked.push(q); return []; },
+        });
+        expect(asked).toEqual(['activities']);
+    });
+
+    test('a concrete query still wins the pick; non-Latin scripts pass through untouched', async () => {
+        const asked = [];
+        const deps = { coverage: async () => true, findPlaces: async (q) => { asked.push(q); return []; } };
+        await googleFallback({ coreQuery: 'uzbek restaurant', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 3 }, deps);
+        await googleFallback({ coreQuery: 'مطعم سوشي', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 3 }, deps);
+        expect(asked).toEqual(['uzbek restaurant', 'مطعم سوشي']);
+    });
+
     test('googleFallback: out-of-radius dropped; failed details still serve the place (no image)', async () => {
         const out = await googleFallback({ query: 'q', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
             coverage: async () => true,

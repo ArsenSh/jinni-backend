@@ -498,7 +498,20 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));
     // The CLEAN intent query makes the best paid search — the enriched one
     // drags raw chat tokens into Google ("...место можно спокоино", live find).
-    const q = [coreQuery, query, subType, category].filter(Boolean)[0] || 'places to visit';
+    //
+    // But a query made ONLY of vibe/time/function words carries no retrieval
+    // information, and Google answers it with noise: "what do I do tonight?"
+    // reduced to q="tonight" and bought a Text Search that returned one
+    // arbitrary bar (live 2026-08-29). Such a query yields the pick to the
+    // subType/category noun — the same stoplist the demand path already
+    // trusts, no second word list. Scripts the tokenizer can't split
+    // (Arabic, Chinese) produce no tokens and pass through untouched.
+    const _junkOnly = (s) => {
+        const toks = String(s || '').toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/).filter(Boolean);
+        if (!toks.length) return false;
+        return toks.every(t => t.length < 4 || VIBE_TOKENS.has(t));
+    };
+    const q = [coreQuery, query].filter(v => v && !_junkOnly(v))[0] || subType || category || 'places to visit';
     const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(needed * 2, 10) }) || [];
 
     // Resolve at most `needed` through v1's shared resolver — it caches details
