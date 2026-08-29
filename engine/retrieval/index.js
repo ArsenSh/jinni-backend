@@ -211,6 +211,13 @@ async function findPlaces(params = {}, deps = {}) {
     if (params.coreQuery) {
         const { uncoveredQueryTokens } = require('../places/canonicalStore');
         const rare = uncoveredQueryTokens(params.coreQuery, ordered, 0.25);
+        // The DEMAND is what the ask wants beyond the category's own noun.
+        // "ethiopian restaurant" demands ethiopian; the token "restaurant"
+        // being rare in a thin pool is a fact about the pool's wording, not
+        // about the ask — a broad "restaurants" ask must never shrink just
+        // because candidate texts spell it differently.
+        const catNorm = String(category || '').toLowerCase().replace(/_/g, ' ');
+        const demand = rare.filter(t => !catNorm.includes(t));
         if (rare.length) {
             const seats = ordered.filter(c => {
                 // _demandMatch: the store FETCHED this place for the demanded
@@ -220,17 +227,34 @@ async function findPlaces(params = {}, deps = {}) {
                 const t = String(c.text || c.name || '').toLowerCase();
                 return rare.some(d => t.includes(d));
             }).slice(0, 3);
-            // NOTHING matched what the ask demands. The deck is then merely
-            // "places near you", which is not an answer — live 2026-08-23:
-            // "I want to book a taxi. How can I do it" returned six sightseeing
-            // cards. The route reads this and answers honestly instead.
-            if (!seats.length) provenance.unmatched = rare;
-            // NOTHING in the pool matches what the ask demands. The deck is
-            // then merely "places near you", which is not an answer — live
-            // 2026-08-23: "I want to book a taxi. How can I do it" returned six
-            // sightseeing cards. The route reads this and answers honestly.
-            if (!seats.length) provenance.unmatched = rare;
+            if (!seats.length) {
+                // NOTHING matched what the ask demands. The deck is then merely
+                // "places near you", which is not an answer — live 2026-08-23:
+                // "I want to book a taxi. How can I do it" returned six
+                // sightseeing cards. The route reads `unmatched` and answers
+                // honestly for non-place asks; for a PLACE ask with a real
+                // category ("Ethiopian restaurant", live 2026-08-29: six padded
+                // cards) the deck itself now SHRINKS — a couple of honest
+                // alternatives plus the narrator's widen-the-search question,
+                // never a full padded six. Refills stay exempt: an asked count
+                // is honored.
+                provenance.unmatched = rare;
+                // Shrink only on a REAL demand (beyond the category noun) —
+                // a broad categorical ask with an oddly-worded pool keeps its
+                // full deck.
+                if (params.adaptiveDeck && demand.length) {
+                    effectiveWanted = Math.min(wanted, 3);
+                    provenance.adaptive = 'no_match';
+                }
+            }
             if (seats.length) {
+                // Tell the narrator WHY these lead the deck. Without this it
+                // hedged against its own evidence — "I can't confirm any of
+                // these are Uzbek" over a deck holding Uzbechka (live
+                // 2026-08-29) — because nothing said the places were fetched
+                // for that exact term. Per-request annotation on the cloned
+                // candidates; never written back into the shared cached pool.
+                for (const s of seats) s._demandTerm = (demand.length ? demand : rare).join(' ');
                 ordered = [...seats, ...ordered.filter(c => !seats.includes(c))];
                 // ── Adaptive deck (battery fix #2): a SPECIFIC ask — the
                 //    query demands something rare in the pool (sushi, uzbek,

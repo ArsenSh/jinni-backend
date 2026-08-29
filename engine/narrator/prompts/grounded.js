@@ -41,6 +41,11 @@ function placeFactLine(p) {
         // One line max: an explicit like outranks the bookmark mention.
         p._tasteLiked ? 'the traveler liked this place before'
             : (p._tasteSaved ? 'the traveler has saved this place' : null),
+        // WHY this place leads the deck (retrieval's demand seats): it was
+        // fetched by a live search for the ask's own rare term. Without this
+        // the narrator hedged against its own deck — "I can't confirm any of
+        // these are Uzbek" over a deck holding Uzbechka (live 2026-08-29).
+        p._demandTerm ? `found by a live search for "${p._demandTerm}"` : null,
         // Deliberately NOT told to the model (decision 2026-08-22): the partner
         // relationship is disclosed by the card BADGE, never by narration —
         // "a Jinni partner" in prose reads as advertising and burns blurb words
@@ -468,6 +473,16 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
+              // The demand-seat annotation's other half: the fact line says WHY
+              // a place is in the deck; this says what to DO with that. Judge
+              // from each name and its types which genuinely answer the ask,
+              // LEAD with those, and call the rest what they are.
+              + (places.some(p => p._demandTerm)
+                  ? 'Places marked \'found by a live search for "…"\' were fetched specifically for that term. '
+                  + 'Judge from each NAME and its types which genuinely match the ask — lead with those, and present '
+                  + 'the others honestly as nearby alternatives. Never claim you cannot confirm a match that a '
+                  + 'place\'s own name or types make plain.\n'
+                  : '')
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
               + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `

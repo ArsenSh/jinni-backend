@@ -394,9 +394,39 @@ describe('adaptive deck size (battery fix #2 — the padding lesson)', () => {
         expect(r.places).toHaveLength(3);                 // match + 2 honest alternatives
         expect(r.provenance.adaptive).toBe('specific');
     });
+    // Zero-match shrink (live 2026-08-29: "Ethiopian restaurant" shipped SIX
+    // padded cards — the demanded term had no match anywhere, yet the deck
+    // stayed full because the shrink only fired when seats existed).
+    test('zero-match demand → deck shrinks to honest 3, adaptive=no_match, unmatched set', async () => {
+        const r = await findPlaces(
+            { count: 6, category: 'restaurants', coreQuery: 'ethiopian restaurant', query: 'ethiopian restaurant', adaptiveDeck: true },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(r.places).toHaveLength(3);
+        expect(r.provenance.adaptive).toBe('no_match');
+        expect(r.provenance.unmatched).toContain('ethiopian');
+    });
+    test('zero-match on a REFILL keeps the asked count (adaptiveDeck:false)', async () => {
+        const r = await findPlaces(
+            { count: 6, category: 'restaurants', coreQuery: 'ethiopian restaurant', query: 'ethiopian restaurant', adaptiveDeck: false },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(r.places).toHaveLength(6);
+        expect(r.provenance.adaptive).toBeUndefined();
+    });
+    // The narrator's WHY (live 2026-08-29: "I can't confirm any of these are
+    // Uzbek" over a deck holding Uzbechka): seats carry the demanded term so
+    // the fact line can say how they got there. Non-seats never carry it, and
+    // the annotation must not leak into the shared cached pool.
+    test('demand seats carry _demandTerm; others do not; the cached pool stays clean', async () => {
+        const shared = pool();
+        const args = { count: 6, category: 'restaurants', coreQuery: 'sushi restaurant', query: 'sushi restaurant', adaptiveDeck: true };
+        const r = await findPlaces(args, { loadCandidates: async () => shared, embedder: null });
+        expect(r.places[0]._demandTerm).toBe('sushi');
+        expect(r.places[1]._demandTerm).toBeUndefined();
+        expect(shared.find(c => c.placeId === 'sushi1')._demandTerm).toBeUndefined();
+    });
     test('broad ask → full deck; refill (adaptiveDeck:false) honors the asked count', async () => {
         const broad = await findPlaces(
-            { count: 6, coreQuery: 'restaurants', query: 'restaurants', adaptiveDeck: true },
+            { count: 6, category: 'restaurants', coreQuery: 'restaurants', query: 'restaurants', adaptiveDeck: true },
             { loadCandidates: async () => pool(), embedder: null });
         expect(broad.places).toHaveLength(6);
         const refill = await findPlaces(
