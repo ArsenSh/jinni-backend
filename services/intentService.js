@@ -174,7 +174,7 @@ Rules:
     travelStyle   -> "luxury" or "budget".
     interests     -> an array from: family, romantic, nature, adventure, cultural, history, art, food_drink, nightlife, relaxation.
     budget        -> {"min":50,"max":200,"currency":"USD"} (currency = the 3-letter code for whatever
-                     currency they NAMED, even one you think unsupported — AMD, GEL, TRY all pass through;
+                     currency they NAMED, even one you think unsupported — GEL, TRY, KZT all pass through;
                      code validates support and refuses honestly. A currency-only change ("set to usd",
                      "make it drams") is STILL a budget settings_change: send it with min 0 max 0 and the
                      named currency).

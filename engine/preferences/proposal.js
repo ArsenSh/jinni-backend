@@ -36,7 +36,7 @@ const PREF_VOCAB = {
     travelStyle: ['luxury', 'budget'],
     interests: ['family', 'romantic', 'nature', 'adventure', 'cultural',
         'history', 'art', 'food_drink', 'nightlife', 'relaxation'],
-    currency: ['AED', 'USD', 'RUB', 'EUR', 'GBP'],
+    currency: ['AED', 'USD', 'RUB', 'EUR', 'GBP', 'AMD'],
     // The Discovery/Nearby toggle. Stored as a boolean, but the model proposes
     // the WORD — a boolean has no meaning to read back to the traveler, and
     // "searchMode: true" is exactly the kind of value that gets inverted by
@@ -325,11 +325,15 @@ const _CURRENCY_WORDS = [
     ['GBP', /\b(gbp|pounds?|sterling)\b|£/i],
     ['AED', /\b(aed|dirhams?|dhs)\b/i],
     ['RUB', /\b(rub|roubles?|rubles?)\b|₽|\bруб/i],
+    // AMD joined 2026-08-29 (Arsen: the core Yerevan user thinks in drams;
+    // the budget gate already normalizes every currency via convertToUSD,
+    // and the rates table has carried AMD since the currencyService fix).
+    ['AMD', /\b(amd|drams?)\b|֏|драм|դրամ/i],
 ];
 
 // Currencies a traveler in these markets might reasonably name that Jinni cannot
 // store. Listed so they are REFUSED loudly rather than silently replaced.
-const _OTHER_CURRENCY_RE = /\b(amd|gel|try|kzt|inr|jpy|cny|chf|sek|pln|uah|azn|dram|lari|lira|tenge|rupees?|yen|yuan|francs?)\b|֏/i;
+const _OTHER_CURRENCY_RE = /\b(gel|try|kzt|inr|jpy|cny|chf|sek|pln|uah|azn|lari|lira|tenge|rupees?|yen|yuan|francs?)\b/i;
 
 /**
  * The traveler's ANSWER to "what is your min and max budget?" → a budget value.

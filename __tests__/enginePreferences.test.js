@@ -19,7 +19,9 @@ describe('validateProposal', () => {
     test('a value outside the app\'s own vocabulary is dropped, never repaired', () => {
         expect(validateProposal({ field: 'travelStyle', value: 'mid-range' })).toBeNull();
         expect(validateProposal({ field: 'interests', value: ['skydiving'] })).toBeNull();
-        expect(validateProposal({ field: 'budget', value: { min: 10, max: 20, currency: 'AMD' } })).toBeNull();
+        expect(validateProposal({ field: 'budget', value: { min: 1000, max: 20000, currency: 'AMD' } }))
+            .toEqual({ field: 'budget', value: { min: 1000, max: 20000, currency: 'AMD' }, label: 'budget to 1000–20000 AMD' });
+        expect(validateProposal({ field: 'budget', value: { min: 10, max: 20, currency: 'GEL' } })).toBeNull();
     });
 
     test('a field chat has no business touching is refused', () => {
@@ -90,7 +92,7 @@ describe('applyProposal', () => {
     test('the vocabulary matches the app\'s own Preferences screen', () => {
         expect(PREF_VOCAB.travelStyle).toEqual(['luxury', 'budget']);
         expect(PREF_VOCAB.interests).toContain('food_drink');
-        expect(PREF_VOCAB.currency).toEqual(['AED', 'USD', 'RUB', 'EUR', 'GBP']);
+        expect(PREF_VOCAB.currency).toEqual(['AED', 'USD', 'RUB', 'EUR', 'GBP', 'AMD']);
     });
 });
 
@@ -398,7 +400,7 @@ describe('a flat budget range is refused, with a reason', () => {
             .toMatch(/minimum has to be LOWER than the maximum/);
         expect(budgetRefusalReason({ min: 200, max: 50, currency: 'USD' }))
             .toMatch(/minimum was higher than the maximum/);
-        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'AMD' }))
+        expect(budgetRefusalReason({ min: 10, max: 200, currency: 'GEL' }))
             .toMatch(/currency must be one of/);
         expect(budgetRefusalReason({ min: 'a', max: 'b' }))
             .toMatch(/both a minimum and a maximum/);
