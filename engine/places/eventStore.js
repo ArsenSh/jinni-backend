@@ -187,6 +187,61 @@ function destEventToCandidate(d, center) {
     };
 }
 
+// ── One event, many listings (live 2026-08-29): a Dubai refill served FOUR
+//    cards of the same expo — "Middle East Energy 2026", "2026 Middle East
+//    Energy", "…(Booth: Z2.L09)!", "…exhibition" — four allevents listings of
+//    one event. The hunt's store key and mergeAndDedupe both use EXACT
+//    normalized names, so listings that differ by a word all survive.
+//    eventNamesMatch (the two-shared-distinctive-tokens matcher, rounds
+//    44/46) collapses them; the same-start-day + non-conflicting-city
+//    requirements keep it from merging genuinely different events
+//    ("Candlelight: Vivaldi" vs "Candlelight: Edith Piaf" share one token —
+//    verified apart). ──
+
+const _eventDayKey = (c) => {
+    const sd = c?.eventSchedule?.startDate;
+    if (!sd) return null;                        // recurring/undated → never fuzzy-merged
+    const d = new Date(sd);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+};
+
+/** Which duplicate listing deserves the card: a validator row always, then the
+ *  one with a real start time (midnight = the honest "All day" unknown), a
+ *  poster, a map pin, a price, a description. */
+function _listingRichness(c) {
+    let s = 0;
+    if (c.source === 'destination') s += 100;    // validator rows never lose to a listing
+    const sd = c.eventSchedule?.startDate ? new Date(c.eventSchedule.startDate) : null;
+    if (sd && (sd.getUTCHours() !== 0 || sd.getUTCMinutes() !== 0)) s += 4;
+    if (c.image) s += 2;
+    if (c.placeId || c.geometry) s += 2;
+    if (c.price) s += 1;
+    if (c.description) s += 1;
+    return s;
+}
+
+function dedupeEventListings(list) {
+    const { eventNamesMatch } = require('../events/matching');
+    const _city = (c) => String(c.city || '').trim().toLowerCase();
+    const kept = [];
+    let dropped = 0;
+    for (const c of list) {
+        const day = _eventDayKey(c);
+        const dup = day ? kept.find(k => _eventDayKey(k) === day
+            // Cities must not CONFLICT — same-day near-namesakes in two
+            // different cities are two instances, not one event.
+            && (!_city(k) || !_city(c) || _city(k) === _city(c))
+            && eventNamesMatch(k.name, c.name)) : null;
+        if (!dup) { kept.push(c); continue; }
+        dropped++;
+        // Keep the SLOT (order encodes trust: validator rows come first),
+        // upgrade its occupant when the newcomer carries more facts.
+        if (_listingRichness(c) > _listingRichness(dup)) kept[kept.indexOf(dup)] = c;
+    }
+    if (dropped) console.log(`[events] collapsed ${dropped} duplicate listing(s) of the same event(s)`);
+    return kept;
+}
+
 /**
  * The events branch of loadCandidates. Fail-open per tier; never throws.
  * Returns upcoming (or recurring) events within radius, soonest first.
@@ -229,6 +284,9 @@ async function loadEventCandidates(params = {}, deps = {}) {
     }
     for (const e of aiRows) out.push(aiEventToCandidate(e, center));
 
+    // One event, many listings → one card (see dedupeEventListings above).
+    const uniq = dedupeEventListings(out);
+
     // Radius is soft-edged for events: rows without coords (city-only finds)
     // survive — a city-wide festival with no venue pin is still an answer.
     // BUT only when their city matches somewhere actually in radius (caught
@@ -246,7 +304,10 @@ async function loadEventCandidates(params = {}, deps = {}) {
     // source on EVERY ask — live 2026-08-29: Dubai held 24 fresh events from
     // a 15-minute-old sweep and the turn still spent 32s re-reading 9 sources.
     if (params.regionCity) inRadiusCities.add(String(params.regionCity).trim().toLowerCase());
-    const within = out.filter(c => c.distanceKm != null
+    // Radius filters the DEDUPED list; the city-evidence set above still reads
+    // the full list — a dropped duplicate's venue pin may be the only thing
+    // vouching that its city is in radius.
+    const within = uniq.filter(c => c.distanceKm != null
         ? c.distanceKm <= radiusKm
         : (!!cityOf(c) && inRadiusCities.has(cityOf(c))));
     within.sort((a, b) => {
@@ -257,4 +318,4 @@ async function loadEventCandidates(params = {}, deps = {}) {
     return within;
 }
 
-module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, parseEventWindow, windowFromPeriod, EVENT_HORIZON_DAYS };
+module.exports = { loadEventCandidates, aiEventToCandidate, destEventToCandidate, parseEventWindow, windowFromPeriod, EVENT_HORIZON_DAYS, dedupeEventListings };

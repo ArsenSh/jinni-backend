@@ -515,3 +515,86 @@ describe('hunt source freshness (lastReadAt guard)', () => {
         expect(fetchHtml).toHaveBeenCalledTimes(1);
     });
 });
+
+// ── One event, many listings (live 2026-08-29: FOUR cards of the same expo) ──
+
+describe('dedupeEventListings', () => {
+    const { dedupeEventListings } = require('../engine/places/eventStore');
+    const SEP1 = new Date('2026-09-01T08:00:00Z');
+    const listing = (name, over = {}) => ({
+        name, source: 'event', city: 'Dubai',
+        eventSchedule: { startDate: SEP1, endDate: null, isRecurring: false },
+        image: null, placeId: null, geometry: null, price: null, description: null,
+        ...over,
+    });
+
+    test('the four real MEE listings collapse to ONE card — the richest', async () => {
+        const out = dedupeEventListings([
+            listing('Middle East Energy 2026', { eventSchedule: { startDate: new Date('2026-09-01T00:00:00Z') } }),  // "All day", no poster
+            listing('2026 Middle East Energy', { image: 'https://cdn/mee.jpg' }),                                     // real time + poster ← richest
+            listing('MIddle East Energy 2026(Booth: Z2.L09)!'),
+            listing('Middle East Energy 2026 exhibition', { eventSchedule: { startDate: new Date('2026-09-01T14:00:00Z') } }),
+        ]);
+        expect(out).toHaveLength(1);
+        expect(out[0].name).toBe('2026 Middle East Energy');
+    });
+
+    test('one shared token is NOT identity — both Candlelight concerts survive', async () => {
+        const out = dedupeEventListings([
+            listing("Candlelight: Vivaldi's Four Seasons", { eventSchedule: { startDate: new Date('2026-09-05T21:00:00Z') } }),
+            listing('Candlelight: A Tribute to Edith Piaf', { eventSchedule: { startDate: new Date('2026-09-05T19:00:00Z') } }),
+        ]);
+        expect(out).toHaveLength(2);
+    });
+
+    test('same name on different DAYS = two instances, both kept', async () => {
+        const out = dedupeEventListings([
+            listing('Middle East Energy 2026'),
+            listing('Middle East Energy 2026', { eventSchedule: { startDate: new Date('2026-09-02T08:00:00Z') } }),
+        ]);
+        expect(out).toHaveLength(2);
+    });
+
+    test('same day, same name, DIFFERENT cities = two instances, both kept', async () => {
+        const out = dedupeEventListings([
+            listing('Candlelight: Vivaldi', { city: 'Dubai' }),
+            listing('Candlelight: Vivaldi', { city: 'Abu Dhabi' }),
+        ]);
+        expect(out).toHaveLength(2);
+    });
+
+    test('a validator row keeps its card even against a richer listing', async () => {
+        const out = dedupeEventListings([
+            listing('Wine Days Festival', { source: 'destination', verifiedId: 'd1' }),
+            listing('Wine Days Festival Yerevan Edition', { image: 'https://cdn/x.jpg', price: '5000 AMD', geometry: { lat: 40.18, lng: 44.51 } }),
+        ]);
+        expect(out).toHaveLength(1);
+        expect(out[0].source).toBe('destination');
+    });
+
+    test('recurring/undated rows are never fuzzy-merged', async () => {
+        const out = dedupeEventListings([
+            listing('Opera House Programming', { eventSchedule: { isRecurring: true, startDate: null } }),
+            listing('Opera House Programming Nights', { eventSchedule: { isRecurring: true, startDate: null } }),
+        ]);
+        expect(out).toHaveLength(2);
+    });
+
+    test('end to end: loadEventCandidates serves ONE MEE card from four stored rows', async () => {
+        const mk = (name, over = {}) => ({
+            name, city: 'Dubai', country: 'UAE', placeId: null, lat: null, lng: null,
+            startDate: SEP1, endDate: null, isRecurring: false, status: 'new', ...over,
+        });
+        const out = await loadEventCandidates(
+            { center: { lat: 25.2, lng: 55.27 }, radiusKm: 50, regionCity: 'Dubai',
+              eventWindow: { start: new Date('2026-08-31T00:00:00Z'), end: new Date('2026-09-07T00:00:00Z'), label: 'next-week' } },
+            { Destination: { find: () => ({ lean: () => Promise.resolve([]) }) },
+              AiFoundEvent: { find: () => ({ limit: () => ({ lean: () => Promise.resolve([
+                  mk('Middle East Energy 2026'), mk('2026 Middle East Energy'),
+                  mk('MIddle East Energy 2026(Booth: Z2.L09)!'), mk('Middle East Energy 2026 exhibition'),
+              ]) }) }) },
+              nowFn: () => Date.UTC(2026, 7, 29, 12, 0, 0) },
+        );
+        expect(out).toHaveLength(1);
+    });
+});
