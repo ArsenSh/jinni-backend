@@ -392,9 +392,23 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         const destinationsWithDistance = destinationDistances.filter(result => result.distance.km <= radiusKm).map(result => ({...result.destination, distance: result.distance.km, distanceText: result.distance.text, duration: result.duration.text}));
         //console.log(`Distance filtered: ${businessesWithDistance.length} businesses, ${destinationsWithDistance.length} destinations`);
 
+        // Canonicalise interest tokens before comparing: user profiles save
+        // 'food_drink' (the i18n key the onboarding iterates) while every
+        // place is tagged 'food&drink' (Destination enum, BusinessOnboarding,
+        // StaffValidation) — an exact `includes` never matched, so the
+        // Food & Drink interest silently scored nothing (found 2026-08-30).
+        // Same collapse rules as the v1 prompt canonicaliser (aiRoutes):
+        // 'food & drink' / 'food&drink' / 'food_drink' → one key. The other
+        // nine interests are spelled identically on both sides and pass
+        // through unchanged.
+        const canonInterest = (i) => String(i || '').toLowerCase().trim()
+            .replace(/\s*&\s*/g, '_')   // "food & drink" -> "food_drink"
+            .replace(/\s+/g, '_')       // stray spaces -> underscore
+            .replace(/_and_/g, '_');    // "food_and_drink" -> "food_drink"
         function calculatePreferenceScore(placeTypes, userInterests, averagePrice = null, normalizedBudget = null) {
-            let score = 5;    
-            userInterests.forEach(interest => { if (placeTypes.includes(interest)) { score += 2 } });    
+            let score = 5;
+            const canonTypes = placeTypes.map(canonInterest);
+            userInterests.forEach(interest => { if (canonTypes.includes(canonInterest(interest))) { score += 2 } });
             // Photo-spot bias: most photogenic destinations aren't tagged
             // 'photo_spots' explicitly, so beyond the strong boost for an
             // explicit tag (above) we softly boost destinations whose tags tend
