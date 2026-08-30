@@ -133,8 +133,25 @@ function effectivePrice(pricing) {
  * filtered out too, on the assumption that a stated budget expresses a
  * preferred bracket rather than a ceiling alone.
  */
-function budgetMatchClause(budget) {
+function budgetMatchClause(budget, rates = null) {
     const nn = (field) => ({ $gt: [field, null] });   // non-null AND present
+    // Stored pricing is in whatever currency the owner/validator entered
+    // (AMD is a picker option now) while `budget` arrives USD-normalized —
+    // comparing raw numbers treated 5000 AMD as $5,000 and filtered Armenian
+    // listings as ultra-luxury (found 2026-08-30). The divisor converts the
+    // derived price to USD inside the pipeline using the same units-per-USD
+    // table the currency service refreshes; unknown/missing currency ⇒ 1
+    // (USD, the historical default). v1's Explore feed already did this
+    // conversion in JS (aiRoutes ~9483) — this brings the Mongo clause in
+    // line. Passing no rates keeps the old raw comparison (all-USD data).
+    const usdDivisor = {
+        $switch: {
+            branches: Object.entries(rates || {})
+                .filter(([c, r]) => c !== 'USD' && Number.isFinite(r) && r > 0)
+                .map(([c, r]) => ({ case: { $eq: ['$pricing.currency', c] }, then: r })),
+            default: 1,
+        },
+    };
     return {
         $expr: {
             $let: {
@@ -162,10 +179,13 @@ function budgetMatchClause(budget) {
                         // for being "too cheap", which is never what a traveler
                         // means when they name a price range.
                         { $eq: ['$$eff', 0] },
-                        { $and: [
-                            { $gte: ['$$eff', budget.min] },
-                            { $lte: ['$$eff', budget.max] }
-                        ]}
+                        { $let: {
+                            vars: { effUsd: { $divide: ['$$eff', usdDivisor] } },
+                            in: { $and: [
+                                { $gte: ['$$effUsd', budget.min] },
+                                { $lte: ['$$effUsd', budget.max] }
+                            ]}
+                        }}
                     ]
                 }
             }
@@ -241,6 +261,9 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             normalizedBudget = currencyService.normalizeBudgetToUSD(userBudget);
             // console.log(`Budget conversion: ${userBudget.min}-${userBudget.max} ${userBudget.currency} → ${normalizedBudget.min}-${normalizedBudget.max} USD`);
         }
+        // Units-per-USD table for converting OWNER-entered prices inside the
+        // budget clause (see budgetMatchClause) and the JS scoring below.
+        const fxRates = shouldFilterBudget ? currencyService.getCurrentRates().rates : null;
         
         //console.log(`Proximity search: action = ${actionType}, radius = ${radiusKm}km, interests = [${userInterests.join(',')}], style = ${userStyle}`);
 
@@ -269,7 +292,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
             // Derives one representative price from whatever pricing fields are
             // filled in, so a listing carrying only a minimum ("from $12") is
             // budget-matched instead of ignored. See effectivePrice().
-            baseQuery.$and.push(budgetMatchClause(normalizedBudget));
+            baseQuery.$and.push(budgetMatchClause(normalizedBudget, fxRates));
         }
         if (userRegion?.country) {
             const countryVariations = [userRegion.country, userRegion.region, userRegion.city].filter(Boolean);
@@ -361,7 +384,7 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // businesses: KNOWN price must fit the band; unknown/free stays (never
         // punish missing data — parks and viewpoints carry no price).
         if (shouldFilterBudget && normalizedBudget) {
-            destinationQuery.$and.push(budgetMatchClause(normalizedBudget));
+            destinationQuery.$and.push(budgetMatchClause(normalizedBudget, fxRates));
         }
         // Same region/coordinate filter as businesses, so we don't pull
         // destinations from across the world when the user is in a specific city.
@@ -434,8 +457,14 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         const finalBusinesses = businessesWithDistance
             .map(business => {
                 // Same derived price the Mongo filter used, so scoring and
-                // filtering can never disagree about what a listing costs.
-                const price = effectivePrice(business.pricing);
+                // filtering can never disagree about what a listing costs —
+                // converted to USD exactly like the clause does (the budget
+                // band and budgetScore are USD; the owner may have priced in
+                // AMD or any picker currency).
+                const rawPrice = effectivePrice(business.pricing);
+                const price = (rawPrice != null && rawPrice > 0)
+                    ? currencyService.convertToUSD(rawPrice, business.pricing?.currency || 'USD')
+                    : rawPrice;
                 const prefScore = calculatePreferenceScore(business.type || [], userInterests, price, normalizedBudget);
                 return {
                     ...business,
