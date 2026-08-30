@@ -417,7 +417,9 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
  */
 function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty', isEvents = false, cityLabel = null, history = [], preferences = null }) {
     const where = cityLabel ? ` in ${cityLabel}` : ' in this area';
-    const meaning = cause === 'all_closed'
+    const meaning = cause === 'no_web'
+        ? 'They explicitly asked you to search the internet. You CANNOT browse the web here — say that plainly and warmly in one sentence, then offer what you CAN do: recommend from your own verified places and events. No apology spiral.'
+        : cause === 'all_closed'
         ? `Every matching place you have${where} is CLOSED at this hour (it is late). Say that plainly and warmly, then offer: if they want, they can ask for the list "for tomorrow" and you will show it for planning ahead.`
         : cause === 'all_filtered'
             ? (isEvents

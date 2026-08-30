@@ -257,3 +257,14 @@ describe('buildEmptyDeckMessages (localized empty decks — the Dilijan lesson, 
         expect(sys({ cause: 'empty', isEvents: true })).toContain('no verified event listings');
     });
 });
+
+describe('buildEmptyDeckMessages no_web cause (honest no-internet reply, 2026-08-30)', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    test('no_web meaning: cannot browse, offers verified data, localized', () => {
+        const s = g.buildEmptyDeckMessages({ message: 'search the web', langName: 'Russian', cause: 'no_web' })[0].content;
+        expect(s).toContain('Reply in Russian');
+        expect(s).toContain('CANNOT browse the web');
+        expect(s).toContain('verified places');
+        expect(s).toMatch(/Never name a specific venue/);
+    });
+});

@@ -148,3 +148,22 @@ describe('_decodeEntities / _extractOgImage', () => {
         expect(_extractOgImage('<html></html>')).toBe(null);
     });
 });
+
+describe('messageNamesPlace geo-token exclusion (the "Cafe #2 Dilijan" hijack, 2026-08-30)', () => {
+    const { messageNamesPlace } = require('../engine/places/matching');
+    const geo = new Set(['dilijan']);
+    test('a card whose only distinctive token is the city never matches a city mention', () => {
+        expect(messageNamesPlace('can you suggest 6 hotels, all in dilijan?', 'Cafe #2 Dilijan', geo)).toBe(false);
+        expect(messageNamesPlace('best restaurants in dilijan', 'Hotel Dilijan', geo)).toBe(false);
+    });
+    test('genuinely distinctive names still match with geo exclusion active', () => {
+        expect(messageNamesPlace('is dilijazz open tonight?', 'Dilijazz Restaurant', geo)).toBe(true);
+        expect(messageNamesPlace('tell me about toon armeni', 'Toon Armeni Restaurant', geo)).toBe(true);
+    });
+    test('typing the full card name verbatim always counts as a reference', () => {
+        expect(messageNamesPlace('what are the hours of cafe #2 dilijan?', 'Cafe #2 Dilijan', geo)).toBe(true);
+    });
+    test('without excludeTokens the old behavior is unchanged', () => {
+        expect(messageNamesPlace('what about dilijan?', 'Cafe #2 Dilijan')).toBe(true);
+    });
+});

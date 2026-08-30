@@ -457,6 +457,25 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
         meta.langUsed = intent.language || intent._userLanguage || null;
 
+        // ── Provider/web-search config, decided up here because the branch
+        //    signals below (webAsk) need to know whether web search exists
+        //    on this turn. Depends only on appCfg + the intent category. ──
+        const providerName = (appCfg.aiProviderChat === 'claude'
+            || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
+            || (appCfg.aiEventsUseClaude && intent.actionType === 'events'))
+            ? 'claude' : 'deepseek';
+        meta.provider = providerName;
+        const modelName = providerName === 'claude' ? (appCfg.claudeModel || null) : null;
+        const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
+            ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
+        const webSearch = (providerName === 'claude' && appCfg.claudeWebSearch && wsActions.includes(intent.actionType))
+            ? {
+                maxUses: appCfg.claudeWebSearchMaxUses || 3,
+                allowedDomains: appCfg.claudeWebSearchAllowedDomains,
+                blockedDomains: appCfg.claudeWebSearchBlockedDomains,
+            } : null;
+        if (webSearch) meta.webSearch = true;
+
         // ── Branch signals, decided BEFORE the destination machinery runs. A
         //    QUESTION about a place is not a decision to GO there: "do I need
         //    a visa for UAE" recentred the whole session to the UAE, paid a
@@ -466,15 +485,34 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    commands and transport/how-to questions never move the centre. ──
         const sessionCards = shownPlaces(sessionPeek?.messages);
         const msgLower = String(message).toLowerCase();
-        const namedCard = intent.isTravel && sessionCards.find(p => messageNamesPlace(msgLower, p.name));
+        // A geographic name in the message is never card-name evidence: the
+        // intent's placeNames tokens are excluded from the matcher so "Cafe
+        // #2 Dilijan" (whose only distinctive token IS the city) can't claim
+        // "suggest 6 hotels, all in Dilijan". Category-agnostic by nature.
+        const geoTokens = new Set((intent.placeNames || [])
+            .flatMap(n => String(n).toLowerCase().split(/\s+/)).filter(Boolean));
+        // A fresh DECK ask always beats the shown-card question path: the
+        // brain named a category + a place, or an explicit result count —
+        // that is a request for new cards, whatever card names are on screen
+        // (live 2026-08-30: a count+place hotels ask fell into the tool loop
+        // and answered with one hostel's phone number).
+        const deckAsk = intent.isTravel && !intent.infoAsk
+            && (!!intent.count
+                || (intent.actionType && intent.actionType !== 'general' && (intent.placeNames || []).length > 0));
+        const namedCard = intent.isTravel && !deckAsk
+            && sessionCards.find(p => messageNamesPlace(msgLower, p.name, geoTokens));
         const transportAsk = intent.infoAsk === 'transport'
             || (intent.infoAsk === undefined && isTransportAsk(msgLower));
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
+        // An explicit "search the internet" ask on a provider without web
+        // search gets an honest reply, never retrieval padding (live
+        // 2026-08-30: q="just internet pleas" padded 6 nature cards).
+        const webAsk = !!intent.wantsSearch && !webSearch;
         // Mirrors the branch chain below: turns that end at transport,
-        // settings, or info/chit-chat never search places, so the session's
-        // centre and activeDestination are not theirs to touch.
-        const questionTurn = transportAsk || settingsTurn || (infoTurn && !namedCard);
+        // settings, info/chit-chat, or the no-web reply never search places,
+        // so the session's centre and activeDestination are not theirs to touch.
+        const questionTurn = transportAsk || settingsTurn || webAsk || (infoTurn && !namedCard);
 
         // ── The region the QUESTION is about — for owned-fact lookup ONLY.
         //    Geocodes a named place through the same type-gated resolver, but
@@ -567,24 +605,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    switch: per-category Claude routing + the events override (events
         //    need web search, which DeepSeek lacks). claudeModel honors the
         //    admin's model name.
-        const providerName = (appCfg.aiProviderChat === 'claude'
-            || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
-            || (appCfg.aiEventsUseClaude && intent.actionType === 'events'))
-            ? 'claude' : 'deepseek';
-        meta.provider = providerName;
-        const modelName = providerName === 'claude' ? (appCfg.claudeModel || null) : null;
-        const wsActions = Array.isArray(appCfg.claudeWebSearchActionsChat)
-            ? appCfg.claudeWebSearchActionsChat : (appCfg.claudeWebSearchActions || []);
-        const webSearch = (providerName === 'claude' && appCfg.claudeWebSearch && wsActions.includes(intent.actionType))
-            ? {
-                maxUses: appCfg.claudeWebSearchMaxUses || 3,
-                allowedDomains: appCfg.claudeWebSearchAllowedDomains,
-                blockedDomains: appCfg.claudeWebSearchBlockedDomains,
-            } : null;
-        if (webSearch) meta.webSearch = true;
-
-        // (sessionCards / namedCard / transportAsk are decided ABOVE the
-        // destination block now — a question must not move the centre.)
+        // (provider/webSearch + sessionCards / namedCard / transportAsk are
+        // decided ABOVE the destination block now — a question must not move
+        // the centre, and webAsk needs the web-search config.)
 
         // ── Refill follow-up ("can you give 10 other results?", "ещё") —
         //    caught live 2026-08-22: the intent LLM timed out, the keyword
@@ -752,6 +775,37 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
+        } else if (webAsk) {
+            // ── Honest no-web reply (Group C follow-up, 2026-08-30): the
+            //    traveler explicitly asked us to search the internet and this
+            //    turn's provider can't. Say so in their language and point at
+            //    the verified data instead — never run retrieval on the
+            //    ask's junk tokens and pad cards. ──
+            let streamedAny = false;
+            try {
+                const out = await narrator.stream({
+                    messages: buildEmptyDeckMessages({
+                        message, langName, cause: 'no_web',
+                        cityLabel: [center?.city, center?.country].filter(Boolean).join(', ') || null,
+                        history: recentTurns, preferences: intent._preferences,
+                    }),
+                    onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
+                    maxTokens: 120,
+                    realStream: true,
+                    model: providerName,
+                    modelName,
+                });
+                reply = out.text;
+                addUsage(out);
+            } catch (err) {
+                console.warn(`[v2] no-web narrator failed (${err.message}) — English fallback`);
+                if (!streamedAny) {
+                    reply = 'I can\'t browse the web here — everything I recommend comes from verified data. Ask me for places or events and I\'ll show you what I truly know.';
+                    send(res, { type: 'token', content: reply });
+                }
+            }
+            stats.path = 'no_web';
+            console.log(`[v2] no-web ask answered honestly, no retrieval (${Date.now() - t0}ms)`);
         } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same

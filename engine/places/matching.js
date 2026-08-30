@@ -78,12 +78,21 @@ const _tokensSimilar = (x, y) => x === y
 // DISTINCTIVE word of the place name (generic hotel-words excluded) must
 // appear in the message; the old substring check is kept as a fallback.
 const GENERIC_PLACE_WORDS = new Set(['hotel', 'hotels', 'resort', 'resorts', 'holiday', 'suites', 'apartments', 'apartment', 'inn', 'guesthouse', 'hostel', 'restaurant', 'cafe', 'bar', 'spa', 'beach', 'luxury', 'collection', 'grand', 'royal', 'the', 'by', 'and', 'of', 'a', 'an']);
-function messageNamesPlace(msgLower, placeName) {
+// `excludeTokens` (optional Set of lowercase words): tokens that must NOT
+// count as evidence the message names this place — the caller passes the
+// GEOGRAPHIC names the intent extracted. Without it, a card like "Cafe #2
+// Dilijan" reduces to the single token "dilijan" (cafe = generic, #2 = short)
+// and swallows ANY message that mentions the city: "suggest 6 hotels, all in
+// Dilijan" was answered by the shown-card question path instead of a deck
+// (live 2026-08-30). Typing the full card name verbatim still matches —
+// that is a genuine reference regardless of what it contains.
+function messageNamesPlace(msgLower, placeName, excludeTokens = null) {
     if (!msgLower || !placeName) return false;
     const nameLower = String(placeName).toLowerCase();
     if (msgLower.includes(nameLower)) return true;                    // old behavior still counts
     const sig = nameLower.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)
-        .filter(w => w.length > 2 && !GENERIC_PLACE_WORDS.has(w));
+        .filter(w => w.length > 2 && !GENERIC_PLACE_WORDS.has(w)
+            && !(excludeTokens && excludeTokens.has(w)));
     return sig.length > 0 && sig.every(w => msgLower.includes(w));
 }
 
