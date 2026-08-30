@@ -26,7 +26,7 @@ const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk } = require('../engine/context/session');
+const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
@@ -651,6 +651,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (!intent.isTravel) intent.isTravel = true;
             if (!intent.searchQuery || (intent.actionType || 'general') === 'general') {
                 intent.searchQuery = intent.searchQuery || prevUserAsk;
+            }
+            // A refill continues the DECK, category included ("give me 10
+            // examples" after a hotels deck ran cat=free and served
+            // horseriding, live 2026-08-30). The cards on screen say what the
+            // deck was — their majority label, mapped back through the ONE
+            // category list, restores the action when this turn's own intent
+            // is generic.
+            if ((intent.actionType || 'general') === 'general') {
+                const labels = lastDeckLabels(sessionPeek?.messages);
+                if (labels.length) {
+                    const { CATEGORY_LABELS } = require('../engine/narrator/cards');
+                    const byLabel = Object.fromEntries(Object.entries(CATEGORY_LABELS).map(([act, lab]) => [lab, act]));
+                    const tally = {};
+                    for (const l of labels) { const act = byLabel[l]; if (act) tally[act] = (tally[act] || 0) + 1; }
+                    const top = Object.entries(tally).sort((x, y) => y[1] - x[1])[0];
+                    if (top && top[1] >= labels.length / 2) intent.actionType = top[0];
+                }
             }
             meta.refill = true;
             console.log(`[v2] refill → continuing the ask that made the deck: "${String(prevUserAsk).slice(0, 60)}"`);

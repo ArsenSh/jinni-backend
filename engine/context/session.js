@@ -68,4 +68,19 @@ function lastCardAsk(messages) {
     return null;
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk };
+/** Display labels ('Hotel', 'Restaurant'…) of the deck on screen — the
+ *  refill's category memory. "Give me 10 examples" continued the ASK's words
+ *  but ran cat=free and served horseriding for a hotels deck (live
+ *  2026-08-30); the cards themselves say what the deck was. */
+function lastDeckLabels(messages) {
+    const list = messages || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        if (m && m.sender === 'ai' && (m.recommendations || []).length) {
+            return m.recommendations.map(r => r?.category).filter(Boolean);
+        }
+    }
+    return [];
+}
+
+module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels };

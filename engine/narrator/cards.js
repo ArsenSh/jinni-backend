@@ -250,4 +250,4 @@ function buildContentParts(prose, recCount, trailingText = null) {
     return parts;
 }
 
-module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription, CATEGORY_VOCABULARY, normalizeCategory };
+module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription, CATEGORY_VOCABULARY, CATEGORY_LABELS, normalizeCategory };

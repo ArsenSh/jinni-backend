@@ -114,3 +114,19 @@ describe('lastCardAsk', () => {
         expect(lastCardAsk([null, ask('events next week'), undefined, deck('X'), {}])).toBe('events next week');
     });
 });
+
+describe('lastDeckLabels (refill category memory, 2026-08-30)', () => {
+    const { lastDeckLabels } = require('../engine/context/session');
+    test('returns the labels of the LAST deck only', () => {
+        const msgs = [
+            { sender: 'user', text: 'restaurants' },
+            { sender: 'ai', recommendations: [{ category: 'Restaurant' }] },
+            { sender: 'user', text: 'hotels in Dilijan' },
+            { sender: 'ai', recommendations: [{ category: 'Hotel' }, { category: 'Hotel' }, { category: 'Guesthouse' }] },
+            { sender: 'user', text: 'give me 10 examples' },
+        ];
+        expect(lastDeckLabels(msgs)).toEqual(['Hotel', 'Hotel', 'Guesthouse']);
+        expect(lastDeckLabels([])).toEqual([]);
+        expect(lastDeckLabels(null)).toEqual([]);
+    });
+});
