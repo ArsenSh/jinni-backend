@@ -712,6 +712,16 @@ const runEmbedSweep = async () => {
 setTimeout(runEmbedSweep, 2 * 60 * 1000);   // post-boot top-up (give Mongo time)
 setInterval(runEmbedSweep, EMBED_SWEEP_MS);
 
+// Embedder warm-up at boot: load the vector model NOW and log LOUDLY whether
+// vectors are live. A fresh container has an empty model cache, and the old
+// silent fail-open hid vec=false for a whole session after a redeploy
+// (2026-08-31). warmEmbedder never throws; failures keep retrying inside the
+// embedder's own backoff.
+setTimeout(() => {
+    try { require('./engine/retrieval/embedder').warmEmbedder(); }
+    catch (err) { logger.warn(`[embedder] warm-up unavailable: ${err.message}`); }
+}, 15 * 1000);
+
 // ── Curated event-source sweep ───────────────────────────────────────────────
 // Reads every validator-registered EventSource with patient timeouts and
 // fills the AiFoundEvent shelf daily, so events are warm before anyone asks.

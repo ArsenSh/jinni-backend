@@ -9,8 +9,16 @@
 // it only reduces ranking quality — same degradation philosophy as v1.
 
 let _override = null;          // injected embedder (tests / future providers)
-let _localPromise = null;      // lazy one-time init of the local model
-let _localFailed = false;
+let _localPromise = null;      // lazy init of the local model (null = not loading)
+// A load failure is TRANSIENT, never permanent. The old `_localFailed = true`
+// forever meant one network blip during the container's first model download
+// turned vectors off for the LIFE of the process — vec=false for a whole
+// session after a redeploy, silently (live 2026-08-31). Now a failure sets a
+// retry-after timestamp with growing backoff (1min → cap 10min); the next
+// retrieval past that time simply tries again. Fail-open stays: while the
+// model is absent, retrieval runs lexical-only, no request ever fails.
+let _nextRetryAt = 0;
+let _failCount = 0;
 
 const LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';   // 384-dim, ~23 MB quantized, CPU-fine
 
@@ -40,8 +48,11 @@ async function _loadLocal() {
             },
         };
     } catch (err) {
-        _localFailed = true;
-        console.log(`[embedder] no local embedding model available (${err.code || err.message}) — retrieval runs lexical-only. Enable with: npm i @xenova/transformers`);
+        _failCount += 1;
+        const backoffMs = Math.min(_failCount * 60 * 1000, 10 * 60 * 1000);
+        _nextRetryAt = Date.now() + backoffMs;
+        _localPromise = null;   // allow the retry after the backoff window
+        console.warn(`[embedder] model load failed (${err.code || err.message}) — retrying in ${Math.round(backoffMs / 1000)}s; retrieval runs lexical-only meanwhile`);
         return null;
     }
 }
@@ -52,9 +63,30 @@ async function _loadLocal() {
  */
 async function getEmbedder() {
     if (_override) return _override;
-    if (_localFailed) return null;
-    if (!_localPromise) _localPromise = _loadLocal();
+    if (!_localPromise) {
+        if (Date.now() < _nextRetryAt) return null;   // inside the backoff window
+        _localPromise = _loadLocal();
+    }
     return _localPromise;
 }
 
-module.exports = { getEmbedder, setEmbedder, LOCAL_MODEL };
+/** Boot-time warm-up: load the model NOW and say LOUDLY whether vectors are
+ *  live — a silent fail-open hid vec=false for a whole session (2026-08-31).
+ *  Returns true when vectors are live. Never throws. */
+async function warmEmbedder() {
+    const t0 = Date.now();
+    try {
+        const e = await getEmbedder();
+        if (e) {
+            console.log(`[embedder] ✅ vectors LIVE — ${e.model} ready in ${Date.now() - t0}ms`);
+            return true;
+        }
+        console.warn('[embedder] ⚠️ vectors OFF — retrieval is LEXICAL-ONLY (load failed or package missing; retries continue in the background)');
+        return false;
+    } catch (err) {
+        console.warn(`[embedder] ⚠️ warm-up error (${err.message}) — retrieval is LEXICAL-ONLY for now`);
+        return false;
+    }
+}
+
+module.exports = { getEmbedder, setEmbedder, warmEmbedder, LOCAL_MODEL };
