@@ -118,10 +118,11 @@ class ImageStorageService {
             // gallery download the early requests would pin the first photo into
             // the browser cache for every index (max-age is 30 days).
             let fallback = false;
+            let full = null;
             if (!imageBuffer) {
                 // Rare self-heal path: requested slot missing / null / JSON-
                 // poisoned — only now read the full array to find a valid photo.
-                const full = await PlaceCache.findOne({ placeId }).lean();
+                full = await PlaceCache.findOne({ placeId }).lean();
                 const valid = (full?.photos || []).find(p => !isJson(p) && this._toBuffer(p.imageData));
                 if (valid) {
                     if (photoIndex !== full.photos.indexOf(valid)) {
@@ -130,6 +131,36 @@ class ImageStorageService {
                     }
                     photo = valid;
                     imageBuffer = this._toBuffer(valid.imageData);
+                }
+            }
+
+            // LAST resort — NO row has bytes but a Google reference survives
+            // (live 2026-08-30: Heritage of Alluria's rows all carried null
+            // imageData, so every card render logged "no photo has bytes" and
+            // 404'd forever). Re-fetch ONCE from the stored reference and put
+            // the bytes back, so the place heals instead of erroring on every
+            // request. Hidden places keep the purge rule (hide = images gone,
+            // never re-stored) and fall through to the throw below.
+            if (!imageBuffer && full && full?.explore?.status !== 'hidden') {
+                const refRow = (full.photos || []).find(p => p && p.photoReference);
+                if (refRow) {
+                    try {
+                        const { buffer, contentType } = await this.downloadPhoto(refRow.photoReference);
+                        // Same per-user Place Photos SKU attribution as the
+                        // store path — this is a real Google fetch.
+                        try {
+                            const { userId } = require('./requestContext').get();
+                            if (userId) require('../models/UserGoogleUsage').track(userId, 'imageDownload');
+                        } catch (e) { /* attribution only */ }
+                        await PlaceCache.updateOne(
+                            { placeId, 'photos.photoReference': refRow.photoReference },
+                            { $set: { 'photos.$.imageData': buffer, 'photos.$.contentType': contentType, 'photos.$.storedAt': new Date(), imagesStored: true } }
+                        ).catch(() => { /* serve anyway — heal again next time */ });
+                        console.log(`🔧 ${placeId} self-healed: re-fetched photo bytes from the stored reference`);
+                        return { data: buffer, contentType, fallback: photoIndex !== full.photos.indexOf(refRow) };
+                    } catch (refetchErr) {
+                        console.warn(`⚠️ ${placeId} byte-less photos and the re-fetch failed too (${refetchErr.message})`);
+                    }
                 }
             }
 
