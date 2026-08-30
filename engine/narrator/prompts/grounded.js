@@ -50,6 +50,10 @@ function placeFactLine(p) {
         // the narrator hedged against its own deck — "I can't confirm any of
         // these are Uzbek" over a deck holding Uzbechka (live 2026-08-29).
         p._demandTerm ? `found by a live search for "${p._demandTerm}"` : null,
+        // Curator's description as CONTEXT (founder 2026-08-30): background
+        // for the model to understand what the place actually is — a rule in
+        // the narration prompt forbids copying or closely paraphrasing it.
+        p.description ? `about: "${String(p.description).replace(/\s+/g, ' ').trim().slice(0, 160)}"` : null,
         // Deliberately NOT told to the model (decision 2026-08-22): the partner
         // relationship is disclosed by the card BADGE, never by narration —
         // "a Jinni partner" in prose reads as advertising and burns blurb words
@@ -468,6 +472,7 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               + `- intro: 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. NEVER mention a place not on the list — including ones from earlier in the conversation.\n`
               + `- cards: one entry per listed index, blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n`
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
+              + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the intro by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -580,6 +585,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'budget from now on") — that is done immediately and you say so plainly, in the past tense. '
               + 'Add "explicit": false when you merely INFERRED it from something they said — then ask in one '
               + 'short sentence and wait, and never say it is done.\n'
+              + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
               // Owned notes on a PLACES turn (Arsen 2026-08-24, after "where can
               // I buy a SIM card" returned phone-repair shops and a blurb

@@ -237,6 +237,11 @@ function dbDocToCandidate(d, source, center) {
         // Semantic vector (battery fix #3 — curated rows used to carry none
         // and systematically LOST to cache rows under vector ranking).
         vector: Array.isArray(d.embedding) ? d.embedding : undefined,
+        // Curator's description, normalized to plain words — carried so the
+        // narrator can UNDERSTAND the place (fed as an 'about' context note,
+        // never copy material; see placeFactLine). Founder 2026-08-30:
+        // validator-written descriptions were invisible to v2 narration.
+        description: _descText(d.description) || null,
         // Business.description is an OBJECT ({short, detailed}) — joining it
         // raw put "[object Object]" into the BM25 text (found 2026-08-22).
         text: [d.name, ...(Array.isArray(d.type) ? d.type : []), d.location?.city, _descText(d.description)]

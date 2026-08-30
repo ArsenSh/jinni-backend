@@ -268,3 +268,24 @@ describe('buildEmptyDeckMessages no_web cause (honest no-internet reply, 2026-08
         expect(s).toMatch(/Never name a specific venue/);
     });
 });
+
+describe("curator descriptions as context (founder 2026-08-30: understand, don't copy)", () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    test('placeFactLine carries a trimmed about-note', () => {
+        const line = g.placeFactLine({ name: 'Cabinet', description: '  A hidden   cellar cafe with live jazz  ' + 'x'.repeat(300) });
+        expect(line).toContain('about: "A hidden cellar cafe with live jazz');
+        expect(line.length).toBeLessThan(230);        // 160-char cap holds
+        expect(g.placeFactLine({ name: 'NoDesc' })).not.toContain('about:');
+    });
+    test('both narration builders forbid copying the about-note', () => {
+        const streamed = g.buildStreamedNarrationMessages({ query: 'cafes', places: [{ name: 'A' }] })[0].content;
+        const json = g.buildNarrationJson({ query: 'cafes', places: [{ name: 'A' }] })[0].content;
+        for (const s of [streamed, json]) {
+            expect(s).toContain('NEVER copy or closely paraphrase');
+            expect(s).toContain('UNDERSTAND the place');
+        }
+    });
+    test('curation is never narrated (verified-by-staff stays gone)', () => {
+        expect(g.placeFactLine({ name: 'X', source: 'destination', description: 'quiet garden' })).not.toContain('verified');
+    });
+});
