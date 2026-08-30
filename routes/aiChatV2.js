@@ -454,11 +454,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             console.warn('[v2] intent failed, treating as place query:', err.message);
             intent = { isTravel: true, actionType: 'general', searchQuery: message, language: 'en', _userLanguage: 'en' };
         }
+        // ── Deterministic language brake (founder 2026-08-30: an English
+        //    "restaurants in Dilijan" answered in Russian under a Russian
+        //    history — twice, with the spec AND a STRICT prompt line both in
+        //    place). The message's SCRIPT is computable ground truth; no
+        //    model guess may override it. ──
+        intent.language = require('../services/intentService')
+            .pinLanguage(message, intent.language || intent._userLanguage || 'en');
         const langName = LANG_NAMES[intent.language] || LANG_NAMES[intent._userLanguage] || 'English';
         meta.langUsed = intent.language || intent._userLanguage || null;
 
         // ── Provider/web-search config, decided up here because the branch
-        //    signals below (webAsk) need to know whether web search exists
+        //    signals below need to know whether web search exists
         //    on this turn. Depends only on appCfg + the intent category. ──
         const providerName = (appCfg.aiProviderChat === 'claude'
             || (Array.isArray(appCfg.claudeChatCategories) && appCfg.claudeChatCategories.includes(intent.actionType))
@@ -505,10 +512,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             || (intent.infoAsk === undefined && isTransportAsk(msgLower));
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
-        // An explicit "search the internet" ask on a provider without web
-        // search gets an honest reply, never retrieval padding (live
-        // 2026-08-30: q="just internet pleas" padded 6 nature cards).
-        const webAsk = !!intent.wantsSearch && !webSearch;
+        // "Search the internet for X" is a SEARCH, not a capability quiz
+        // (founder reversal 2026-08-30: "truly i dont like that it replies
+        // cannot find in the internet… it can search in database silently
+        // then in google"). The deck path already IS a live search — owned
+        // data first, Google fallback for the rest — so these asks flow into
+        // it like any other, and the app never announces a limitation. The
+        // old honest no-web reply survives only as the identity rule for
+        // pure chit-chat about capabilities.
         // The BRAIN says this is a question about ONE SPECIFIC named place
         // (hours, price, booking — intent spec's 'place' label). Routed to
         // the tool loop regardless of card-name matching: the traveler's
@@ -521,7 +532,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // settings, place-question, info/chit-chat, or the no-web reply never
         // search places, so the session's centre and activeDestination are
         // not theirs to touch.
-        const questionTurn = transportAsk || settingsTurn || webAsk || placeQuestion || (infoTurn && !namedCard);
+        const questionTurn = transportAsk || settingsTurn || placeQuestion || (infoTurn && !namedCard);
 
         // ── The region the QUESTION is about — for owned-fact lookup ONLY.
         //    Geocodes a named place through the same type-gated resolver, but
@@ -616,7 +627,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    admin's model name.
         // (provider/webSearch + sessionCards / namedCard / transportAsk are
         // decided ABOVE the destination block now — a question must not move
-        // the centre, and webAsk needs the web-search config.)
+        // the centre.)
 
         // ── Refill follow-up ("can you give 10 other results?", "ещё") —
         //    caught live 2026-08-22: the intent LLM timed out, the keyword
@@ -784,37 +795,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
-        } else if (webAsk) {
-            // ── Honest no-web reply (Group C follow-up, 2026-08-30): the
-            //    traveler explicitly asked us to search the internet and this
-            //    turn's provider can't. Say so in their language and point at
-            //    the verified data instead — never run retrieval on the
-            //    ask's junk tokens and pad cards. ──
-            let streamedAny = false;
-            try {
-                const out = await narrator.stream({
-                    messages: buildEmptyDeckMessages({
-                        message, langName, cause: 'no_web',
-                        cityLabel: [center?.city, center?.country].filter(Boolean).join(', ') || null,
-                        history: recentTurns, preferences: intent._preferences,
-                    }),
-                    onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
-                    maxTokens: 120,
-                    realStream: true,
-                    model: providerName,
-                    modelName,
-                });
-                reply = out.text;
-                addUsage(out);
-            } catch (err) {
-                console.warn(`[v2] no-web narrator failed (${err.message}) — English fallback`);
-                if (!streamedAny) {
-                    reply = 'I can\'t browse the web here — everything I recommend comes from verified data. Ask me for places or events and I\'ll show you what I truly know.';
-                    send(res, { type: 'token', content: reply });
-                }
-            }
-            stats.path = 'no_web';
-            console.log(`[v2] no-web ask answered honestly, no retrieval (${Date.now() - t0}ms)`);
         } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same
@@ -881,7 +861,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Bounds and defaults come from proposal.js, which owns them — the
             // same numbers the Preferences slider enforces, stated once.
             const baseRadiusKm = radiusKmFor(mode, intent._preferences?._searchRadius);
-            const radiusKm = effectiveRadiusKm({ category, mode, radiusKm: baseRadiusKm });
+            let radiusKm = effectiveRadiusKm({ category, mode, radiusKm: baseRadiusKm });
+            // ONE named town is a boundary, not a bare centre (founder
+            // 2026-08-30: "hotels in Dilijan" mixed 20-31km regional places
+            // into the deck). Cap to the town's scale; the narrator's
+            // widen-offer stays the escape hatch. Two+ named places
+            // ("Dilijan, Ijevan also") keep the wide radius — the traveler
+            // drew the bigger map themselves.
+            if (meta.centreSource === 'named' && (intent.placeNames || []).length === 1 && radiusKm > 15) {
+                radiusKm = 15;
+            }
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
             // engine no longer serves a blind next-14-days slice).
@@ -936,6 +925,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // (battery fix #2) — but never a refill or an explicit
                 // count, where the traveler asked for a number and gets it.
                 adaptiveDeck: !refillActive && !explicitCount,
+                // A stated count is a promise: a cached pool that cannot
+                // fill it counts as a MISS (founder 2026-08-30: "give me 10
+                // examples" on a cacheHit delivered 3).
+                strictCount: !!explicitCount,
+                // City words are WHERE, not WHAT — they must never make the
+                // adaptive deck shrink to 3 the way "sushi" rightly does
+                // ("hotels in Dilijan" came back 3 cards, 2026-08-30).
+                geoTokens: Array.from(geoTokens),
                 timeContext,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /

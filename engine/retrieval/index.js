@@ -82,8 +82,19 @@ async function findPlaces(params = {}, deps = {}) {
     if (query) {
         const hit = cache.get(cacheParams, { queryVector, queryText: query });
         if (hit && Array.isArray(hit.pool)) {
-            pool = hit.pool;
-            Object.assign(provenance, hit.provenance, { cacheHit: true });
+            // A traveler-stated count is a promise (founder 2026-08-30:
+            // "give me 10 examples" on a cached pool delivered 3): if the
+            // pool minus this session's excludes cannot fill it, the hit is
+            // a MISS and the full pipeline — with its paid top-up — runs.
+            const exI = new Set((excludes.placeIds || []).filter(Boolean));
+            const exN = new Set((excludes.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
+            const usable = hit.pool.filter(c =>
+                !exI.has(c.placeId) && !exI.has(c.verifiedId)
+                  && !exN.has(normalizePlaceName(c.name || ''))).length;
+            if (!(params.strictCount && usable < wanted)) {
+                pool = hit.pool;
+                Object.assign(provenance, hit.provenance, { cacheHit: true });
+            }
         }
     }
 
@@ -228,6 +239,13 @@ async function findPlaces(params = {}, deps = {}) {
         // because candidate texts spell it differently.
         const catNorm = String(category || '').toLowerCase().replace(/_/g, ' ');
         const demand = rare.filter(t => !catNorm.includes(t));
+        // City words are WHERE, not WHAT (founder 2026-08-30: "hotels in
+        // Dilijan" shrank to 3 cards because "dilijan" read as a specific
+        // demand like "sushi"). Geo tokens still earn demand SEATS — the
+        // in-town matches should lead — but only a non-geo demand may
+        // shrink the deck.
+        const geo = new Set((params.geoTokens || []).map(t => String(t).toLowerCase()));
+        const nonGeoDemand = demand.filter(t => !geo.has(t));
         if (rare.length) {
             const seats = ordered.filter(c => {
                 // _demandMatch: the store FETCHED this place for the demanded
@@ -252,7 +270,7 @@ async function findPlaces(params = {}, deps = {}) {
                 // Shrink only on a REAL demand (beyond the category noun) —
                 // a broad categorical ask with an oddly-worded pool keeps its
                 // full deck.
-                if (params.adaptiveDeck && demand.length) {
+                if (params.adaptiveDeck && nonGeoDemand.length) {
                     effectiveWanted = Math.min(wanted, 3);
                     provenance.adaptive = 'no_match';
                 }
@@ -272,7 +290,7 @@ async function findPlaces(params = {}, deps = {}) {
                 //    alternatives, not six padded cards (the padding cost
                 //    battery rows 1/4/5). Broad asks keep the full deck;
                 //    refill asks (adaptiveDeck:false) honor the asked count. ──
-                if (params.adaptiveDeck) {
+                if (params.adaptiveDeck && nonGeoDemand.length) {
                     effectiveWanted = Math.min(wanted, 3);
                     provenance.adaptive = 'specific';
                 }

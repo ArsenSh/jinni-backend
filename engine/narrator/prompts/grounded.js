@@ -74,6 +74,7 @@ const ANSWER_ONLY_CURRENT =
   + 'START with the answer to the current message. Do not preface it with the traveler\'s preferences, '
   + 'with what you do or do not have, or with a recap of an earlier topic — asked "who made you", answer '
   + 'who made you and nothing else. '
+  + 'If the conversation already has earlier turns, never open with a greeting ("hi", "привет") — go straight to the answer. '
   + 'Plain sentences only: no headers, no bullet lists, no bold section titles.\n';
 
 // ── SELF-KNOWLEDGE AS EVIDENCE ───────────────────────────────────────────────
@@ -97,6 +98,10 @@ const ANSWER_ONLY_CURRENT =
 const IDENTITY_ROWS = [
     'You are Jinni, the travel companion inside the Jinni app (jinni.travel).',
     'You find real, verified places and events near the traveler, and answer practical travel questions from sourced notes.',
+    // Founder reversal 2026-08-30 ("truly i dont like that it replies cannot
+    // find in the internet"): search asks route into retrieval now — the
+    // model must never volunteer a capability disclaimer instead of results.
+    'Asked to "search the internet" or "google" something: you DO run live searches through your data and lookups — simply offer or show places. NEVER say you cannot browse, search, or access the internet.',
     'You DO see the current conversation. You do NOT carry memory between separate chats.',
     // It claimed "I don't have access to your device's location or any settings
     // panel" while the log read "User location: Yerevan, Armenia" — a blindfold
@@ -329,7 +334,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
               + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
-        { role: 'user', content: String(message || '') },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
     ];
 }
 
@@ -382,7 +387,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
-        { role: 'user', content: String(message || '') },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
     ];
 }
 
@@ -411,7 +416,7 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
               + 'Never suggest external websites or search engines.',
         },
         ...historyTurns(history),
-        { role: 'user', content: String(message || '') },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
     ];
 }
 
@@ -454,7 +459,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
               + 'Never suggest external websites or search engines.',
         },
         ...historyTurns(history),
-        { role: 'user', content: String(message || '') },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
     ];
 }
 
@@ -614,7 +619,12 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + (timeNote ? `Right now: ${timeNote}.\n` : '')
               // Capped hard: a places turn must not pay full-length notes.
               + localFactsBlock(localFacts, 1200)
-              + `Verified places:\n${facts}`,
+              + `Verified places:\n${facts}`
+              // The LAST thing the model reads restates the reply language —
+              // the mid-prompt STRICT rule lost to history pressure live
+              // (English "restaurants in Dilijan" answered in Russian,
+              // 2026-08-30). Recency is the strongest lever these models have.
+              + `\n\n[reply in ${langName}]`,
         },
     ];
 }
@@ -697,7 +707,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               + '- Never guess or invent details. 1–3 sentences, natural prose.',
         },
         ...historyTurns(history),
-        { role: 'user', content: String(message || '') },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
     ];
 }
 

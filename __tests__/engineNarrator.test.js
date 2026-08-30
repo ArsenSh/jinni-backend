@@ -71,7 +71,7 @@ describe('buildChitchatMessages', () => {
         expect(msgs[0].content).toContain('Do not invent or name any specific real venue');
         expect(msgs[0].content).toContain('never claim you cannot');
         expect(msgs[0].content).toContain('Never describe yourself as unable to name places');
-        expect(msgs[1].content).toBe('Hi');
+        expect(msgs[1].content).toBe('Hi\n\n[reply in English]')   // recency language tag (robustness pass 2026-08-30);
     });
 });
 

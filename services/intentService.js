@@ -160,7 +160,7 @@ Return ONLY this JSON object:
 "count":<a number 2-12 ONLY when the CURRENT message explicitly asks for that many results ("show me 10 hotels", "top 5", "дай 8 вариантов", "10 ռեստորան") — 0 when no count is asked. A number that is not a result count (an address, "table for 2", "2 nights") stays 0>,
 "price_direction":"<cheaper, pricier, or empty string "" — 'cheaper' when the CURRENT message pushes toward lower price ("cheap", "budget-friendly", "any cheaper ones?", "дешевле", "էժան"); 'pricier' when it pushes upscale ("fancier", "more upscale", "подороже"). Judge the message, not the saved style.>",
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
-"info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
+"info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?', 'Ինչքա՞ն արժե X-ը', 'X открыт сегодня вечером?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
 "settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
@@ -483,4 +483,31 @@ async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg
 // chain broke live (a polite "can you set…?" read as a question, so nothing was
 // ever written). Asserting the RULE still names its cases is the closest thing
 // to coverage available, and it stops the wording being trimmed away later.
-module.exports = { classify, validateIntent, buildUserPrompt };
+// ── Deterministic language brake (founder 2026-08-30) ───────────────────────
+// The spec already orders the model to judge ONLY the current message's
+// language — and under a Russian history it still tagged English messages
+// lang=ru, and the narrator answered English asks in Russian. Robust apps
+// don't plead with the model about ground truth they can compute: the SCRIPT
+// of the message decides, and the model's guess survives only where the
+// script is ambiguous (several languages share Latin or Cyrillic).
+const SCRIPT_ONLY = {
+    hy: /[԰-֏]/g, ar: /[؀-ۿ]/g,
+    ka: /[Ⴀ-ჿ]/g, he: /[֐-׿]/g,
+};
+const CYRILLIC_LANGS = /^(ru|uk|be|bg|sr|mk|kk|ky)$/;
+const NON_LATIN_LANGS = /^(hy|ru|uk|be|bg|sr|mk|kk|ky|ar|fa|ka|he|el|zh|ja|ko|th|hi)$/;
+function pinLanguage(message, lang) {
+    const s = String(message || '');
+    const counts = { cyr: (s.match(/[Ѐ-ӿ]/g) || []).length, lat: (s.match(/[A-Za-z]/g) || []).length };
+    for (const [code, re] of Object.entries(SCRIPT_ONLY)) counts[code] = (s.match(re) || []).length;
+    const max = Math.max(...Object.values(counts));
+    if (max === 0) return lang;                                   // emoji/numbers only → trust the model
+    const winner = Object.keys(counts).find(k => counts[k] === max);
+    if (winner in SCRIPT_ONLY) return winner;                     // unambiguous script → that language
+    if (winner === 'cyr') return CYRILLIC_LANGS.test(lang) ? lang : 'ru';
+    // Latin-dominant message: a non-Latin reply language is impossible;
+    // among Latin languages the model's guess stands (en/es/fr/de…).
+    return NON_LATIN_LANGS.test(lang) ? 'en' : lang;
+}
+
+module.exports = { classify, validateIntent, buildUserPrompt, pinLanguage };

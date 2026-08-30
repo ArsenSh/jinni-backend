@@ -553,3 +553,50 @@ describe('parseDeckCount (fresh-ask counts — "show me 10 hotels" → 3, Group 
         expect(parseDeckCount('is 40 Paronyan far?')).toBe(null);
     });
 });
+
+describe('robustness pass 2026-08-30 (deterministic guards)', () => {
+    const { pinLanguage } = require('../services/intentService');
+    test('pinLanguage: script is ground truth, model guess only breaks ties', () => {
+        expect(pinLanguage('restaurants in Dilijan', 'ru')).toBe('en');      // the live bug
+        expect(pinLanguage('search the internet for cafes', 'ru')).toBe('en');
+        expect(pinLanguage('привет, как дела?', 'en')).toBe('ru');
+        expect(pinLanguage('привет', 'uk')).toBe('uk');                      // cyrillic tie → trust model
+        expect(pinLanguage('Ինչքա՞ն արժե Cabinet-ը', 'en')).toBe('hy');      // armenian beats latin remnant
+        expect(pinLanguage('hola amigo', 'es')).toBe('es');                  // latin tie → trust model
+        expect(pinLanguage('👍', 'ru')).toBe('ru');                          // no script → trust model
+    });
+
+    const { findPlaces } = require('../engine/retrieval/index');
+    const mkPool = (n, prefix = 'P') => Array.from({ length: n }, (_, i) => ({ placeId: `${prefix}${i}`, name: `${prefix} Place ${i}`, text: 'hotel' }));
+    const fakeCache = (pool) => ({ get: () => ({ pool, provenance: {} }), set: () => {} });
+    test('strictCount: a cached pool that cannot fill the asked count is a MISS', async () => {
+        const fresh = mkPool(10, 'F');
+        const r = await findPlaces(
+            { query: 'hotels', count: 10, strictCount: true, excludes: { placeIds: ['C0', 'C1', 'C2'] } },
+            { cache: fakeCache(mkPool(6, 'C')), loadCandidates: async () => fresh, embedder: null },
+        );
+        expect(r.provenance.cacheHit).toBe(false);            // pool of 6 minus 3 shown < 10 → full pipeline
+        expect(r.places.length).toBe(10);
+    });
+    test('without strictCount the same hit is served (cost path unchanged)', async () => {
+        const r = await findPlaces(
+            { query: 'hotels', count: 10, excludes: { placeIds: ['C0', 'C1', 'C2'] } },
+            { cache: fakeCache(mkPool(6, 'C')), loadCandidates: async () => { throw new Error('must not load'); }, embedder: null },
+        );
+        expect(r.provenance.cacheHit).toBe(true);
+    });
+    test('geo tokens never shrink the deck; real demand still does', async () => {
+        const pool = mkPool(6).map(p => ({ ...p, text: 'hotel lodging' }));
+        const noCache = { get: () => null, set: () => {} };
+        const geo = await findPlaces(
+            { query: 'hotels in dilijan', coreQuery: 'hotels in dilijan', category: 'hotels', count: 6, adaptiveDeck: true, geoTokens: ['dilijan'] },
+            { cache: noCache, loadCandidates: async () => pool, embedder: null },
+        );
+        expect(geo.places.length).toBe(6);                    // was 3 before the fix
+        const sushi = await findPlaces(
+            { query: 'sushi restaurants', coreQuery: 'sushi restaurants', count: 6, adaptiveDeck: true, geoTokens: [] },
+            { cache: noCache, loadCandidates: async () => pool, embedder: null },
+        );
+        expect(sushi.places.length).toBeLessThanOrEqual(3);   // real demand still shrinks
+    });
+});
