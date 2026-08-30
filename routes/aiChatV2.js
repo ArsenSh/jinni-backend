@@ -18,6 +18,7 @@ const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
+const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
@@ -65,6 +66,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     }
     const recentTurns = recentTurnsFromMessages(sessionPeek?.messages);
     const shown = shownFromMessages(sessionPeek?.messages);
+    // Deterministic greeting-strip (polish 2026-08-31): mid-chat replies kept
+    // opening with "Привет! 😊" despite the prompt ban — the opener is now
+    // removed in code. Off on the FIRST turn (a greeting there is warmth, not
+    // bleed) and off when the traveler's own message greets (echo is natural).
+    const greetGateOn = recentTurns.length > 0 && !messageGreets(message);
 
     // ── Personal taste, one load for the whole turn (grown 2026-08-22 from the
     //    dislikes-only block): likes + saves + cross-session seen history +
@@ -830,15 +836,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 })
                 : [];
             if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
+            const chitGate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
             const out = await narrator.stream({
                 messages: buildChitchatMessages({ message, langName, history: recentTurns, localFacts: infoFacts, preferences: intent._preferences }),
-                onToken: (c) => send(res, { type: 'token', content: c }),
+                onToken: (c) => chitGate.feed(c),
                 maxTokens: 200,
                 realStream: true,
                 model: providerName,
                 modelName,
             });
-            reply = out.text;
+            chitGate.finalize();
+            reply = greetGateOn ? stripLeadingGreeting(out.text) : out.text;
             stats.path = 'chitchat';
             addUsage(out);
             console.log(`[v2] ${intent.infoAsk ? `info(${intent.infoAsk})` : 'chit-chat'} narrated in ${Date.now() - t0}ms (${out.usage.in}/${out.usage.out} tok)${infoFacts.length ? ` facts=${infoFacts.map(f => f.sourceName).join('+')}` : ''}`);
@@ -1054,6 +1062,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 }
                 if (!rescued) {
                     let streamedAny = false;
+                    // streamedAny flips only when text actually REACHES the
+                    // client — the gate holds back the first chars, and a
+                    // stream that dies inside that window must still get the
+                    // English fallback below.
+                    const emptyGate = makeGreetingGate((c) => { streamedAny = true; send(res, { type: 'token', content: c }); }, { enabled: greetGateOn });
                     try {
                         const out = await narrator.stream({
                             messages: buildEmptyDeckMessages({
@@ -1061,13 +1074,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                                 cityLabel: emptyCity, history: recentTurns,
                                 preferences: intent._preferences,
                             }),
-                            onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
+                            onToken: (c) => emptyGate.feed(c),
                             maxTokens: 120,
                             realStream: true,
                             model: providerName,
                             modelName,
                         });
-                        reply = out.text;
+                        emptyGate.finalize();
+                        reply = greetGateOn ? stripLeadingGreeting(out.text) : out.text;
                         addUsage(out);
                     } catch (err) {
                         console.warn(`[v2] empty-deck narrator failed (${err.message}) — English fallback`);
@@ -1128,13 +1142,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     })
                     : [];
                 if (placeFacts.length) meta.localFacts = placeFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
-                const promptArgs = { query: retrievalQuery, places: result.places, langName, timeNote, history: recentTurns, localFacts: placeFacts, preferences: intent._preferences };
+                const promptArgs = {
+                    query: retrievalQuery, places: result.places, langName, timeNote,
+                    history: recentTurns, localFacts: placeFacts, preferences: intent._preferences,
+                    // Honest max: CODE knows the promise fell short ("I want 10
+                    // hotels" → 3 new cards, live 2026-08-30); the prompt tells
+                    // the model to say these are all it could find.
+                    askedCount: explicitCount ? deckCount : null,
+                };
+                // The tail budget scales with the deck. 550 was sized for 6
+                // cards; a 10-card tail (one blurb per card) truncated at 550
+                // and only the salvage parser recovered 4 blurbs (blurbs=4/10,
+                // live 2026-08-30). 250 + 50/card keeps 6 cards at the proven
+                // 550 and gives bigger decks room to finish their JSON.
+                const narrationTokens = Math.min(250 + 50 * result.places.length, 1300);
                 let intro = '', blurbs = [], streamedOk = false;
                 try {
-                    const splitter = new DelimitedSplitter((text) => send(res, { type: 'token', content: text }));
+                    const proseGate = makeGreetingGate((text) => send(res, { type: 'token', content: text }), { enabled: greetGateOn });
+                    const splitter = new DelimitedSplitter((text) => proseGate.feed(text));
                     const streamOut = await narrator.stream({
                         messages: buildStreamedNarrationMessages(promptArgs),
-                        maxTokens: 550,
+                        maxTokens: narrationTokens,
                         temperature: 0.6,
                         realStream: true,
                         onToken: (d) => splitter.feed(d),
@@ -1151,8 +1179,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // discover.
                     });
                     addUsage(streamOut);
-                    const tail = splitter.finalize();
-                    intro = splitter.prose.trim();
+                    const tail = splitter.finalize();   // flushes held prose into the gate
+                    proseGate.finalize();               // …which flushes to the client
+                    intro = greetGateOn ? stripLeadingGreeting(splitter.prose.trim()) : splitter.prose.trim();
                     const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
                     if (parsedTail) {
                         blurbs = parsedTail.blurbs;
@@ -1207,7 +1236,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     console.warn(`[v2] streamed narration failed (${err.message}) — one-shot fallback`);
                 }
                 if (!streamedOk) {
-                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: 550, temperature: 0.6, model: providerName, modelName });
+                    const out = await narrator.stream({ messages: buildNarrationJson(promptArgs), maxTokens: narrationTokens, temperature: 0.6, model: providerName, modelName });
                     addUsage(out);
                     const parsed = parseNarrationJson(out.text, result.places.length);
                     if (parsed) {
@@ -1219,6 +1248,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         addUsage(fb);
                         intro = fb.text;
                     }
+                    if (greetGateOn) intro = stripLeadingGreeting(intro);
                     for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) {
                         send(res, { type: 'token', content: chunk });
                     }

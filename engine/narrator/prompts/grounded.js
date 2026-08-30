@@ -469,7 +469,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
  * no prices, hours, menus, phones, or ratings beyond the given ones.
  */
-function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [] }) {
+function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -483,6 +483,11 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the intro by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
+              // Same honest-max rule as the streamed builder — this is its
+              // failure-path twin and must not lose the promise on fallback.
+              + (askedCount && places.length && places.length < askedCount
+                  ? `- They asked for ${askedCount}, and these ${places.length} are EVERYTHING you could find right now — say so plainly in the intro, never implying more are available for the same ask.\n`
+                  : '')
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
         ...historyTurns(history),
@@ -522,7 +527,7 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -553,6 +558,15 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
                   + 'Judge from each NAME and its types which genuinely match the ask — lead with those, and present '
                   + 'the others honestly as nearby alternatives. Never claim you cannot confirm a match that a '
                   + 'place\'s own name or types make plain.\n'
+                  : '')
+              // Honest max (live 2026-08-30: "I want 10 hotels there" honestly
+              // delivered 3 NEW cards, but the prose never said that was the
+              // ceiling — the traveler is left waiting for seven more). The
+              // count gap is computed by CODE; the model only has to say it.
+              + (askedCount && places.length && places.length < askedCount
+                  ? `They asked for ${askedCount}, and these ${places.length} are EVERYTHING you could find for this ask right now. `
+                  + 'Say that plainly in the prose in one short clause — no apology spiral — and never imply more are '
+                  + 'available for the same ask; offer a slightly different angle instead.\n'
                   : '')
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
               + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
@@ -704,10 +718,19 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
               + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
-              + '- Never guess or invent details. 1–3 sentences, natural prose.',
+              + '- Never guess or invent details. 1–3 sentences, natural prose.\n'
+              // Trailing bleed (live 2026-08-30, twice): tool answers kept
+              // appending "As for the six hotels — I don't have a verified
+              // list" / "as for the other hotels" after a clean answer.
+              // ANSWER_ONLY_CURRENT bans opening with an earlier topic; this
+              // bans CLOSING with one, and the user-message tail below
+              // restates it at the recency slot.
+              + '- Your reply ENDS with the answer to THIS question. Never append a sentence about an earlier '
+              + 'request, an earlier deck of places, or what you have or lack for them — those turns are '
+              + 'already answered.',
         },
         ...historyTurns(history),
-        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName} — answer only this question, with no closing remark about earlier requests]` },
     ];
 }
 
