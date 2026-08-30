@@ -193,8 +193,9 @@ function huntCity(params = {}, evs = []) {
 }
 
 /** Defensive mapping for proximityService rows (Business/Destination). Their
- *  hours use a day-name schedule (not Google periods) — left null here, so the
- *  context engine treats them as UNKNOWN (kept, never dropped). Converter TODO. */
+ *  day-name hour schedules are converted to Google periods below
+ *  (scheduleToPeriods), so validator-entered hours feed the same open-now
+ *  math as PlaceCache rows; no valid schedule → null → UNKNOWN (kept). */
 function dbDocToCandidate(d, source, center) {
     if (!d || !d.name) return null;
     const lat = d?.location?.coordinates?.lat;

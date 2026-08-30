@@ -927,7 +927,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // be hunted, and Dubai returned "no listings" in 1.7s without ever
             // looking (live 2026-08-24). Reverse-geocoded once, ~1km grid cache.
             const searchRegion = await resolveRegion({ center, placeNames: intent.placeNames });
-            const result = await findPlaces({
+            const findArgs = {
                 query: retrievalQuery,
                 eventWindow,
                 regionCity: searchRegion.city || meta.searchCity || null,
@@ -992,7 +992,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // fused order, never a filter (personalization/taste.js).
                 taste,
                 excludes: shown,          // already shown this session → follow-ups get NEW places
-            }, { loadCandidates });
+            };
+            let result = await findPlaces(findArgs, { loadCandidates });
+            // ── NARROWING, not asking for more (live 2026-08-31): "in Dilijan
+            //    please" after a deck mixing in-town and regional hotels got
+            //    "you've seen everything" — true, and useless. A turn that
+            //    NAMES a town and comes back all_filtered is the traveler
+            //    organizing what they saw, not requesting novelty — so the
+            //    already-shown places are exactly the right answer. Re-run
+            //    once without the session excludes; the named-town 15km cap
+            //    above scopes the deck to the town. Refills ("other ones")
+            //    keep their excludes and stay on the honest-empty path. ──
+            if (!result.places.length && result.reason === 'all_filtered'
+                && meta.centreSource === 'named' && (intent.placeNames || []).length
+                && !refillActive && sessionCards.length) {
+                const rerun = await findPlaces({ ...findArgs, excludes: {} }, { loadCandidates });
+                if (rerun.places.length) {
+                    result = rerun;
+                    meta.reServed = true;
+                    console.log(`[v2] narrowing ask re-serves ${rerun.places.length} shown place(s) scoped to the named town`);
+                }
+            }
             meta.provenance = result.provenance;
             // Every branch below this point shares these, including the two
             // that ship no cards — a turn that found nothing is the one most

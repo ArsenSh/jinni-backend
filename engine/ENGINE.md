@@ -65,8 +65,11 @@ engine/
       (placeId AND normalized name). /chat-stream-v2 NOW SERVES REAL RETRIEVAL:
       owned-data candidates, hybrid-ranked, honest text list (no narrator, no
       Google tier yet) — logs `[v2] q=… → N/M in Xms`.
-- [ ] Business/Destination day-name hours → Google-periods converter (their
-      opening hours currently read as UNKNOWN in the context engine).
+- [x] Business/Destination day-name hours → Google-periods converter —
+      scheduleToPeriods in contextEngine.js, wired in dbDocToCandidate
+      (canonicalStore ~224), overnight + 24/7 + closed-day covered by
+      engineContext tests. (Checkbox was stale until 2026-08-31 — the code
+      shipped earlier; validator-entered hours DO feed open-now.)
 - [x] EMBEDDINGS (2026-08-22, Arsen sign-off): @xenova/transformers installed
       (all-MiniLM-L6-v2, 384-dim, verified locally); PlaceCache gains
       embedding/embeddingModel (additive, script-written only);
