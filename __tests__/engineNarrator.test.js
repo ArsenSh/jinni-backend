@@ -289,3 +289,20 @@ describe("curator descriptions as context (founder 2026-08-30: understand, don't
         expect(g.placeFactLine({ name: 'X', source: 'destination', description: 'quiet garden' })).not.toContain('verified');
     });
 });
+
+describe('battery fixes 2026-08-30 (second-person empty replies, current-message language)', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    test('empty-deck prompt orders direct address, never "they"', () => {
+        const sys = g.buildEmptyDeckMessages({ message: '10 examples please', cause: 'all_filtered' })[0].content;
+        expect(sys).toContain('always "you", never "they"');
+    });
+    test('streamed narration pins the CURRENT message language against history drift', () => {
+        const sys = g.buildStreamedNarrationMessages({ query: 'restaurants', places: [{ name: 'A' }], langName: 'English' })[0].content;
+        expect(sys).toContain('STRICTLY in English — the language of the CURRENT message');
+    });
+    test("ChatTurn accepts the no_web branch (turnlog validation failed live)", () => {
+        const ChatTurn = require('../models/ChatTurn');
+        const doc = new ChatTurn({ branch: 'no_web' });
+        expect(doc.validateSync('branch')).toBeUndefined();
+    });
+});

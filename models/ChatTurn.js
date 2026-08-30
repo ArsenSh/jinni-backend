@@ -42,7 +42,10 @@ const chatTurnSchema = new mongoose.Schema({
     // deliberately: a turn that threw is exactly the kind nobody sees.
     branch: {
         type: String,
-        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'error'],
+        // 'no_web' added 2026-08-30: the honest no-web-search branch shipped
+        // without its enum value — every such turn failed validation and was
+        // silently missing from the telemetry it exists to feed.
+        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'no_web', 'error'],
         index: true,
     },
 

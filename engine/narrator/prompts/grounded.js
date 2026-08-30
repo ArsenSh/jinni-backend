@@ -446,6 +446,10 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
               + NO_REMEMBERED_EVENTS
               + 'Your ENTIRE reply is 1–2 short sentences carrying EXACTLY this meaning, in '
               + langName + ' (no apology spiral, no extra offers):\n' + meaning + '\n'
+              // The meaning above describes the traveler in third person; the
+              // model once copied it verbatim — "They have already been shown
+              // everything…" straight to the traveler's face (live 2026-08-30).
+              + 'The meaning above describes the traveler as "they" — your reply speaks TO them: always "you", never "they".\n'
               + 'Never name a specific venue, address or business — none are verified on this turn. '
               + 'Never suggest external websites or search engines.',
         },
@@ -525,6 +529,12 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               // verified events…" came from (live 2026-08-24). A deck turn can
               // re-litigate an earlier turn just as easily as a prose one.
               + ANSWER_ONLY_CURRENT
+              // langName is derived from the CURRENT message, but the model
+              // drifted into the HISTORY's language — an English "restaurants
+              // in Dilijan" answered in Russian, an English "something
+              // interesting nearby" opened with an Armenian apology about an
+              // earlier question (live 2026-08-30). One explicit line pins it.
+              + `Reply STRICTLY in ${langName} — the language of the CURRENT message — even when earlier turns used another language.\n`
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
