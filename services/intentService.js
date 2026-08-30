@@ -160,7 +160,7 @@ Return ONLY this JSON object:
 "count":<a number 2-12 ONLY when the CURRENT message explicitly asks for that many results ("show me 10 hotels", "top 5", "дай 8 вариантов", "10 ռեստորան") — 0 when no count is asked. A number that is not a result count (an address, "table for 2", "2 nights") stays 0>,
 "price_direction":"<cheaper, pricier, or empty string "" — 'cheaper' when the CURRENT message pushes toward lower price ("cheap", "budget-friendly", "any cheaper ones?", "дешевле", "էժան"); 'pricier' when it pushes upscale ("fancier", "more upscale", "подороже"). Judge the message, not the saved style.>",
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
-"info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'), or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
+"info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
 "settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
@@ -289,7 +289,13 @@ function validateIntent(raw, message) {
     // this whole change exists to prevent.
     const rawInfo = typeof raw.info_ask === 'string' ? raw.info_ask.trim().toLowerCase().slice(0, 40) : '';
     const isInfo = !!rawInfo && !['none', 'null', 'false', 'places'].includes(rawInfo);
+    // 'place' = a question about ONE SPECIFIC named place (hours, price,
+    // booking…) — routed to the tool loop, where get_place_details' Google
+    // name search absorbs the traveler's typos ("toufenkian" → Tufenkian,
+    // live 2026-08-30). Recognized before the transport fold so labels like
+    // 'place' / 'place_hours' never degrade to how_to chit-chat.
     const infoAsk = !isInfo ? null
+        : /^(place|venue)/.test(rawInfo) ? 'place'
         : (/transport|taxi|metro|bus|drive|walk|fly|flight|ferry|ride|getting_around/.test(rawInfo) ? 'transport' : 'how_to');
     // The RAW label survives alongside the folded one. Folding 'visa' into
     // 'how_to' and keeping only that destroyed the one word saying WHICH stored

@@ -204,3 +204,19 @@ describe('sync + lookup: owned, ranked, and refused when stale', () => {
         expect(localFactsBlock([])).toBe('');
     });
 });
+
+describe("validateIntent 'place' label (brain-first place questions, 2026-08-30)", () => {
+    const { validateIntent } = require('../services/intentService');
+    const base = { is_travel: true, action_type: 'hotels', language: 'en' };
+    test("'place' passes through unfolded — routes to the tool loop", () => {
+        const r = validateIntent({ ...base, info_ask: 'place', place_search_query: 'toufenkian hotel' }, 'is toufenkian hotel open tonight?');
+        expect(r.infoAsk).toBe('place');
+        expect(r.searchQuery).toBe('toufenkian hotel');   // spelling kept — Google resolves typos
+    });
+    test("'place_hours'-style labels also count as place; transport/how_to folds unchanged", () => {
+        expect(validateIntent({ ...base, info_ask: 'place_hours' }, 'x').infoAsk).toBe('place');
+        expect(validateIntent({ ...base, info_ask: 'taxi' }, 'x').infoAsk).toBe('transport');
+        expect(validateIntent({ ...base, info_ask: 'visa' }, 'x').infoAsk).toBe('how_to');
+        expect(validateIntent({ ...base, info_ask: '' }, 'x').infoAsk).toBeNull();
+    });
+});

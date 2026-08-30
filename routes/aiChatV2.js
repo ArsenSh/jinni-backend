@@ -509,10 +509,19 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // search gets an honest reply, never retrieval padding (live
         // 2026-08-30: q="just internet pleas" padded 6 nature cards).
         const webAsk = !!intent.wantsSearch && !webSearch;
+        // The BRAIN says this is a question about ONE SPECIFIC named place
+        // (hours, price, booking — intent spec's 'place' label). Routed to
+        // the tool loop regardless of card-name matching: the traveler's
+        // spelling never has to match a card ("is toufenkian hotel open
+        // tonight?" fell to the deck path and got "you've seen everything",
+        // live 2026-08-30) — get_place_details' Google name search resolves
+        // typos on its own.
+        const placeQuestion = intent.infoAsk === 'place';
         // Mirrors the branch chain below: turns that end at transport,
-        // settings, info/chit-chat, or the no-web reply never search places,
-        // so the session's centre and activeDestination are not theirs to touch.
-        const questionTurn = transportAsk || settingsTurn || webAsk || (infoTurn && !namedCard);
+        // settings, place-question, info/chit-chat, or the no-web reply never
+        // search places, so the session's centre and activeDestination are
+        // not theirs to touch.
+        const questionTurn = transportAsk || settingsTurn || webAsk || placeQuestion || (infoTurn && !namedCard);
 
         // ── The region the QUESTION is about — for owned-fact lookup ONLY.
         //    Geocodes a named place through the same type-gated resolver, but
@@ -760,7 +769,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
-        } else if (namedCard) {
+        } else if (namedCard || placeQuestion) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
                 tools: [PLACE_DETAILS_TOOL],
@@ -996,27 +1005,62 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         : (cause === 'all_filtered'
                             ? 'You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
                             : 'I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
-                let streamedAny = false;
-                try {
-                    const out = await narrator.stream({
-                        messages: buildEmptyDeckMessages({
-                            message, langName, cause, isEvents: category === 'events',
-                            cityLabel: emptyCity, history: recentTurns,
-                            preferences: intent._preferences,
-                        }),
-                        onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
-                        maxTokens: 120,
-                        realStream: true,
-                        model: providerName,
-                        modelName,
-                    });
-                    reply = out.text;
-                    addUsage(out);
-                } catch (err) {
-                    console.warn(`[v2] empty-deck narrator failed (${err.message}) — English fallback`);
-                    if (!streamedAny) { reply = fallback; send(res, { type: 'token', content: reply }); }
+                // ── Brake pedal for the brain (deterministic): a QUESTION-
+                //    shaped ask that found nothing new is far more likely a
+                //    question about a place than a request for more cards —
+                //    try the tool loop before saying "you've seen everything"
+                //    ("is toufenkian hotel open tonight?" got the exhausted
+                //    reply, live 2026-08-30). Primary route is the intent's
+                //    'place' label above; this covers the LLM-timeout/missed
+                //    cases. Only when cards exist to ask about, and only on
+                //    a real question mark. ──
+                let rescued = false;
+                if (sessionCards.length && /[?？՞]\s*$/.test(String(message).trim())) {
+                    try {
+                        const loop = await runToolLoop({
+                            messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
+                            tools: [PLACE_DETAILS_TOOL],
+                            execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
+                            maxTokens: 400,
+                        }, { provider: deepseekProvider });
+                        if (loop.text) {
+                            addUsage(loop);
+                            reply = loop.text;
+                            for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
+                                send(res, { type: 'token', content: chunk });
+                            }
+                            stats.path = 'tool';
+                            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                            rescued = true;
+                            console.log(`[v2] empty deck rescued by tool loop (question-shaped ask) → ${loop.toolCalls.length} call(s) in ${Date.now() - t0}ms`);
+                        }
+                    } catch (err) {
+                        console.warn(`[v2] empty-deck tool rescue failed: ${err.message} — falling back to the empty reply`);
+                    }
                 }
-                console.log(`[v2] empty deck: cause=${cause}${result.provenance.openNowDropped ? ` openNowDropped=${result.provenance.openNowDropped}` : ''} city=${emptyCity || 'n/a'} lang=${langName}`);
+                if (!rescued) {
+                    let streamedAny = false;
+                    try {
+                        const out = await narrator.stream({
+                            messages: buildEmptyDeckMessages({
+                                message, langName, cause, isEvents: category === 'events',
+                                cityLabel: emptyCity, history: recentTurns,
+                                preferences: intent._preferences,
+                            }),
+                            onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
+                            maxTokens: 120,
+                            realStream: true,
+                            model: providerName,
+                            modelName,
+                        });
+                        reply = out.text;
+                        addUsage(out);
+                    } catch (err) {
+                        console.warn(`[v2] empty-deck narrator failed (${err.message}) — English fallback`);
+                        if (!streamedAny) { reply = fallback; send(res, { type: 'token', content: reply }); }
+                    }
+                    console.log(`[v2] empty deck: cause=${cause}${result.provenance.openNowDropped ? ` openNowDropped=${result.provenance.openNowDropped}` : ''} city=${emptyCity || 'n/a'} lang=${langName}`);
+                }
             } else if (
                 // ── RELEVANCE BRAKE (Arsen 2026-08-23). The deck matches
                 //    NOTHING the ask demands, nothing matched lexically, the
