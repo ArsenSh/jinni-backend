@@ -16,10 +16,10 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -612,7 +612,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             meta.refill = true;
             console.log(`[v2] refill → continuing the ask that made the deck: "${String(prevUserAsk).slice(0, 60)}"`);
         }
-        const deckCount = refillActive && refill.count ? Math.min(12, Math.max(3, refill.count)) : 6;
+        // Asked count is honored on ANY deck ask, not refills only (Group C
+        // 2026-08-30: fresh "show me 10 hotels" got the default 6 shrunk
+        // to 3). Brain first (intent.count), regex fallback second. An
+        // explicit count also switches the adaptive shrink off below —
+        // they asked for a number, they get it.
+        const explicitCount = intent.count
+            || (refillActive ? refill.count : parseDeckCount(message)) || null;
+        const deckCount = explicitCount ? Math.min(12, Math.max(2, explicitCount)) : 6;
 
         if (transportAsk) {
             const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
@@ -863,9 +870,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 radiusKm,
                 count: deckCount,
                 // Specific asks shrink the deck to match + alternatives
-                // (battery fix #2) — but never a refill, where the traveler
-                // asked for a number and gets it.
-                adaptiveDeck: !refillActive,
+                // (battery fix #2) — but never a refill or an explicit
+                // count, where the traveler asked for a number and gets it.
+                adaptiveDeck: !refillActive && !explicitCount,
                 timeContext,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /
@@ -876,7 +883,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
                 weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message }),
-                preferences: intent._preferences || {},   // tier gates + pref scoring in the store
+                // "Any cheaper ones?" beats the saved luxury style FOR THIS
+                // TURN only — the ask outranks the profile without rewriting
+                // it (Group C 2026-08-30: a cheap-hotels turn ranked with
+                // style=luxury and even carded the Radisson). The override
+                // rides the existing tier machinery: cache-tier mismatch
+                // skip, tier scoring, proximity style gating.
+                preferences: intent.priceDirection
+                    ? { ...(intent._preferences || {}), travelStyle: intent.priceDirection === 'cheaper' ? 'budget' : 'luxury' }
+                    : (intent._preferences || {}),        // tier gates + pref scoring in the store
                 // Likes/saves climb, oft-seen-unacted sinks — a nudge on the
                 // fused order, never a filter (personalization/taste.js).
                 taste,
@@ -899,26 +914,55 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 .filter(Boolean).join('+') || 'none';
             if (result.degraded || !result.places.length) stats.path = 'empty';
             if (result.degraded || !result.places.length) {
-                // Honest empty (copy refreshed 2026-08-22 — the old text
-                // claimed the Google tier wasn't wired; it is, and events now
-                // serve from owned data too. Reaching here means every source
-                // genuinely came up dry for this ask+area).
-                // all_filtered = everything I had was already shown (or
-                // excluded) — "that's the lot" reads honest; "I have none"
-                // would be false. no_candidates = genuinely nothing listed.
-                const sawEverything = result.reason === 'all_filtered';
+                // Honest empty, split by CAUSE and spoken in the traveler's
+                // language (Dilijan 23:21, 2026-08-30: an Armenian ask got a
+                // hardcoded-English "you've seen everything" when the truth
+                // was "everything here is closed right now").
+                //   all_closed   = open-now filter emptied the deck — offer
+                //                  "for tomorrow" (intent.when='planned'
+                //                  already skips the filter next turn).
+                //   all_filtered = everything real was already shown.
+                //   otherwise    = every source genuinely came up dry.
+                const cause = result.reason === 'all_closed' ? 'all_closed'
+                    : result.reason === 'all_filtered' ? 'all_filtered' : 'empty';
+                meta.emptyCause = cause;
                 // Name the city we actually searched. "this area" let a Dubai
                 // ask read as if it had been answered about Dubai when the
                 // search had run somewhere else entirely (live 2026-08-24).
-                const where = meta.searchCity ? ` in ${meta.searchCity}` : ' for this area';
-                reply = category === 'events'
-                    ? (sawEverything
-                        ? `That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
-                        : `I don't have any verified event listings${where} yet. I'll go looking for that city's sources — try again shortly, or ask me for places instead.`)
-                    : (sawEverything
-                        ? 'You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
-                        : 'I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
-                send(res, { type: 'token', content: reply });
+                const emptyCity = meta.searchCity
+                    || [center?.city, center?.country].filter(Boolean).join(', ') || null;
+                const where = emptyCity ? ` in ${emptyCity}` : ' for this area';
+                // English fallback — streamed only if the narrator call fails.
+                const fallback = cause === 'all_closed'
+                    ? `Everything I have${where} looks closed at this hour — ask me again "for tomorrow" and I'll line them up.`
+                    : category === 'events'
+                        ? (cause === 'all_filtered'
+                            ? `That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
+                            : `I don't have any verified event listings${where} yet. I'll go looking for that city's sources — try again shortly, or ask me for places instead.`)
+                        : (cause === 'all_filtered'
+                            ? 'You\'ve seen everything I have for that ask here — try shifting the ask a little for a fresh angle.'
+                            : 'I searched all my sources and came up empty for that ask here. Try broadening it — or a different area.');
+                let streamedAny = false;
+                try {
+                    const out = await narrator.stream({
+                        messages: buildEmptyDeckMessages({
+                            message, langName, cause, isEvents: category === 'events',
+                            cityLabel: emptyCity, history: recentTurns,
+                            preferences: intent._preferences,
+                        }),
+                        onToken: (c) => { streamedAny = true; send(res, { type: 'token', content: c }); },
+                        maxTokens: 120,
+                        realStream: true,
+                        model: providerName,
+                        modelName,
+                    });
+                    reply = out.text;
+                    addUsage(out);
+                } catch (err) {
+                    console.warn(`[v2] empty-deck narrator failed (${err.message}) — English fallback`);
+                    if (!streamedAny) { reply = fallback; send(res, { type: 'token', content: reply }); }
+                }
+                console.log(`[v2] empty deck: cause=${cause}${result.provenance.openNowDropped ? ` openNowDropped=${result.provenance.openNowDropped}` : ''} city=${emptyCity || 'n/a'} lang=${langName}`);
             } else if (
                 // ── RELEVANCE BRAKE (Arsen 2026-08-23). The deck matches
                 //    NOTHING the ask demands, nothing matched lexically, the
@@ -1112,7 +1156,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         await sleep(60);
                     }
                 }
-                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
+                console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'}${intent.priceDirection ? ` price=${intent.priceDirection}` : ''}${explicitCount ? ` count=${deckCount}` : ''} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
             }
         }
     } catch (err) {

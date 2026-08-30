@@ -153,10 +153,12 @@ Return ONLY this JSON object:
 "action_type":"<one of: hotels, restaurants, historical, hidden_gems, events, shopping, photo_spots, activities, general>",
 "shopping_subtype":"<ONLY when action_type is shopping, one of: souvenirs, clothing, market, mall, jewelry, food — otherwise an empty string "">",
 "place_names":["<GEOGRAPHIC destination explicitly named in the CURRENT message — a city, town, region, island or country, written in English>"],
-"place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). Empty string when the message is not asking to find places.>",
+"place_search_query":"<a short, clean Google-Maps-style search string for what the user wants, e.g. 'armenian restaurant Dubai' — resolve follow-ups from the conversation ('no, just show me there' after asking about Armenian restaurants in Dubai still yields 'armenian restaurant Dubai'). When the CURRENT message only ADDS a constraint to the ask that produced the results on screen, KEEP that ask's still-active qualifiers: 'she is vegetarian' right after a romantic-dinner ask yields 'romantic vegetarian restaurant', not just 'vegetarian restaurant'. Empty string when the message is not asking to find places.>",
 "when":"<now, planned, or unspecified — 'now' when the user wants something for RIGHT NOW or tonight (going out immediately, 'where can I eat', late-hour context); 'planned' when clearly for another day (tomorrow, next week, a trip); 'unspecified' otherwise>",
 "period":"<the TIME PERIOD the message asks about (events/activities): one of today, tomorrow, weekend, next_week, Ndays (e.g. 3days for 'the next 3 days'), or explicit dates as YYYY-MM-DD..YYYY-MM-DD (resolve phrases like 'on September 5' or 'when my parents visit early September' using today's date). Follow-ups INHERIT the conversation's period ('other ones' after a next-week ask is still next_week). Empty string when no period is asked.>",
 "refill":<true or false — true when the CURRENT message asks for MORE or OTHER results of the previous ask ("other ones", "another suggestions", "ещё", "d'autres") rather than a new topic>,
+"count":<a number 2-12 ONLY when the CURRENT message explicitly asks for that many results ("show me 10 hotels", "top 5", "дай 8 вариантов", "10 ռեստորան") — 0 when no count is asked. A number that is not a result count (an address, "table for 2", "2 nights") stays 0>,
+"price_direction":"<cheaper, pricier, or empty string "" — 'cheaper' when the CURRENT message pushes toward lower price ("cheap", "budget-friendly", "any cheaper ones?", "дешевле", "էժան"); 'pricier' when it pushes upscale ("fancier", "more upscale", "подороже"). Judge the message, not the saved style.>",
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'), or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
@@ -261,6 +263,18 @@ function validateIntent(raw, message) {
         ? raw.period.trim().toLowerCase()
         : null;
     const refill = raw.refill === true;
+    // Explicit asked count ("show me 10 hotels") — the brain names it, code
+    // validates the range. 0/absent → null (no explicit ask). Honored on
+    // FRESH asks too, not just refills (Group C 2026-08-30: "show me 10
+    // hotels" got the default deck of 6 shrunk to 3).
+    const countNum = Number(raw.count);
+    const count = Number.isFinite(countNum) && countNum >= 2 && countNum <= 12
+        ? Math.round(countNum) : null;
+    // Price direction of the CURRENT ask ("any cheaper ones?") — lets the
+    // turn outrank the saved style without rewriting it.
+    const priceDirection = (typeof raw.price_direction === 'string'
+        && ['cheaper', 'pricier'].includes(raw.price_direction.trim().toLowerCase()))
+        ? raw.price_direction.trim().toLowerCase() : null;
     const wantsSearch = raw.wants_search === true;
     // A question that wants an ANSWER, not place cards (additive 2026-08-23,
     // after "I want to book a taxi. How can I do it" was answered with six
@@ -302,6 +316,8 @@ function validateIntent(raw, message) {
         when,
         period,
         refill,
+        count,
+        priceDirection,
         wantsSearch,
         infoAsk,
         infoTopic,

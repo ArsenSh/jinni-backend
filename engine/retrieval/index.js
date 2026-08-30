@@ -58,7 +58,8 @@ async function findPlaces(params = {}, deps = {}) {
     const wanted = Math.min(Math.max(Number(count) || 8, 1), 20);
     // win: the asked time window's label — different windows must never share
     // a cached pool (the "next week served this-week events" live bug).
-    const cacheParams = { category, subType, mode, tapState, center, win: params.eventWindow?.label || null };
+    const cacheParams = { category, subType, mode, tapState, center, win: params.eventWindow?.label || null,
+        style: params.preferences?.travelStyle || null };
     const provenance = { candidateCount: 0, lexical: 0, vector: false, cacheHit: false, openNowDropped: 0 };
 
     // ── Query embedding (fail-open: an embedder problem only costs ranking) ──
@@ -152,6 +153,13 @@ async function findPlaces(params = {}, deps = {}) {
     ordered = ordered.filter(c =>
         !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
           && !exNames.has(normalizePlaceName(c.name || '')));
+    // Emptied HERE = everything real was already shown — that, and only that,
+    // is the "you've seen everything" case. (Dilijan 23:21 lesson, 2026-08-30:
+    // the open-now drop below used to land in the same bucket, so a town whose
+    // restaurants were merely CLOSED was told it had "seen everything".)
+    if (!ordered.length) {
+        return { places: [], degraded: true, reason: 'all_filtered', provenance };
+    }
 
     // ── Context engine: stamp _openNow FRESH (a cached pool may be 30 min
     //    old); drop only KNOWN-closed, only for droppable categories, only
@@ -166,7 +174,9 @@ async function findPlaces(params = {}, deps = {}) {
         }
     }
     if (!ordered.length) {
-        return { places: [], degraded: true, reason: 'all_filtered', provenance };
+        // Everything that survived the excludes was dropped as KNOWN-closed —
+        // the honest reply is "they're closed right now", never "seen it all".
+        return { places: [], degraded: true, reason: 'all_closed', provenance };
     }
 
     // ── Paid-tier nudge (Arsen's decision, 2026-08-22 evening: "only

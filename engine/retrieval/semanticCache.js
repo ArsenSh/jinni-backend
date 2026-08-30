@@ -31,10 +31,13 @@ class SemanticCache {
      *  must never be served the this-week pool however similar the wording
      *  (caught live: win=next-week hit the default-window cache and Claude
      *  had to apologize for a deck that contradicted the ask). */
-    paramsKey({ category = null, subType = null, mode = null, tapState = null, center = null, win = null } = {}) {
+    paramsKey({ category = null, subType = null, mode = null, tapState = null, center = null, win = null, style = null } = {}) {
         const lat = Number.isFinite(center?.lat) ? Math.round(center.lat * 20) / 20 : null;   // ~5 km buckets
         const lng = Number.isFinite(center?.lng) ? Math.round(center.lng * 20) / 20 : null;
-        return JSON.stringify([category, subType, mode, tapState, lat, lng, win]);
+        // `style` (2026-08-30): the travelStyle the pool was BUILT with — tier
+        // gating happens inside loadCandidates, so a luxury user's pool must
+        // never answer a budget user's (or a "cheaper ones" turn's) similar ask.
+        return JSON.stringify([category, subType, mode, tapState, lat, lng, win, style]);
     }
 
     /** @returns cached result or null. Never throws. */

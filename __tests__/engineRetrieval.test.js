@@ -302,6 +302,28 @@ describe('findPlaces orchestration (injected deps)', () => {
         expect(r.places.map(p => p.placeId)).toEqual(['unknown']);
         expect(r.provenance.openNowDropped).toBe(1);
     });
+    test('Dilijan lesson: open-now emptying the deck reads all_closed, never "seen everything"', async () => {
+        const d = deps();
+        d.loadCandidates = async () => ([
+            { placeId: 'closed1', name: 'Tava Dilijan',
+              opening_hours: { periods: [{ open: { day: 6, time: '0900' }, close: { day: 6, time: '2200' } }] } },
+        ]);
+        const r = await findPlaces({
+            category: 'restaurants',
+            timeContext: { dayOfWeek: 6, hour: 23, minute: 21 },
+            enforceOpenNow: true,
+        }, d);
+        expect(r.degraded).toBe(true);
+        expect(r.reason).toBe('all_closed');
+        expect(r.provenance.openNowDropped).toBe(1);
+    });
+    test('excludes emptying the deck stays all_filtered (truly seen everything)', async () => {
+        const d = deps();
+        d.loadCandidates = async () => ([{ placeId: 'p1', name: 'Only Spot' }]);
+        const r = await findPlaces({ category: 'restaurants', excludes: { placeIds: ['p1'] } }, d);
+        expect(r.degraded).toBe(true);
+        expect(r.reason).toBe('all_filtered');
+    });
     test('open-now never drops exempt categories (hotels), even known-closed', async () => {
         const d = deps();
         d.loadCandidates = async () => ([{ placeId: 'h1', name: 'Hotel',
@@ -321,6 +343,13 @@ describe('findPlaces orchestration (injected deps)', () => {
         const second = await findPlaces(p, d);
         expect(second.provenance.cacheHit).toBe(true);
         expect(second.places.map(x => x.placeId)).toEqual(first.places.map(x => x.placeId));
+    });
+    test('semantic cache: a pool built for one travelStyle never answers another style', async () => {
+        const d = deps();
+        const base = { category: 'hotels', query: 'hotels in yerevan', center: { lat: 40.18, lng: 44.51 } };
+        await findPlaces({ ...base, preferences: { travelStyle: 'luxury' } }, d);
+        const other = await findPlaces({ ...base, preferences: { travelStyle: 'budget' } }, d);
+        expect(other.provenance.cacheHit).toBe(false);
     });
     test('vector path: a fake embedder brings semantic matches in and flags provenance', async () => {
         const d = deps();
@@ -505,5 +534,22 @@ describe('parseRefillAsk (the "10 other results" lesson)', () => {
         expect(parseRefillAsk('suggest historical places').isRefill).toBe(false);
         expect(parseRefillAsk('best restaurants in Yerevan').isRefill).toBe(false);
         expect(parseRefillAsk('another 50 options').count).toBe(null);
+    });
+});
+
+describe('parseDeckCount (fresh-ask counts — "show me 10 hotels" → 3, Group C 2026-08-30)', () => {
+    const { parseDeckCount } = require('../engine/retrieval/tuning');
+    test('listing verbs and result nouns carry the count', () => {
+        expect(parseDeckCount('show me 10 hotels')).toBe(10);
+        expect(parseDeckCount('top 5 restaurants please')).toBe(5);
+        expect(parseDeckCount('I want 7 options for tonight')).toBe(7);
+        expect(parseDeckCount('покажи 8 ресторанов')).toBe(8);
+        expect(parseDeckCount('4 places near the opera')).toBe(4);
+    });
+    test('numbers that are not deck counts never resize the deck', () => {
+        expect(parseDeckCount('a table for 2 tonight')).toBe(null);
+        expect(parseDeckCount('we stay 3 nights')).toBe(null);
+        expect(parseDeckCount('romantic dinner spot')).toBe(null);
+        expect(parseDeckCount('is 40 Paronyan far?')).toBe(null);
     });
 });

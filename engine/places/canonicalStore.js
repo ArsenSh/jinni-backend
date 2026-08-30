@@ -492,7 +492,12 @@ function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
 async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, needed, requestId }, deps = {}) {
     const coverageAllowed = deps.coverage
         || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
-    if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) return [];
+    if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) {
+        // Say WHY nothing was bought — a silent [] here made the Dilijan
+        // empty-deck (2026-08-30) unreadable from the logs alone.
+        console.log(`[canonicalStore] google fallback skipped — coverage gate (cat=${category || 'general'})`);
+        return [];
+    }
 
     const findPlaces = deps.findPlaces
         || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));

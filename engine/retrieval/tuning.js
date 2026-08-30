@@ -114,4 +114,18 @@ function parseRefillAsk(message) {
     return { isRefill, count: m ? Number(m[1]) : null };
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, LOCAL_DISCOVERY_CAP_KM };
+// ── Explicit deck count on a FRESH ask ("show me 10 hotels", "топ 5 мест") —
+//    Group C 2026-08-30: counts were only honored on refill turns, so a fresh
+//    "show me 10 hotels" got the default 6 shrunk to 3. The intent LLM names
+//    the count (intent.count); this regex is the timeout fallback. Guarded:
+//    the number must sit next to a listing verb or a results-ish noun, so
+//    "table for 2", "2 nights" or a street number never resize the deck. ──
+const DECK_COUNT_VERB_RE = /(?:\b(?:show|give|list|suggest|recommend|find|top|want|need)\b|покажи|дай|найди|топ|порекомендуй|предложи|ցույց|տուր|առաջարկ|اعرض|أعطني|رشح)[^0-9]{0,16}\b([2-9]|1[0-2])\b/i;
+const DECK_COUNT_NOUN_RE = /\b([2-9]|1[0-2])\s*(?:hotels?|restaurants?|places?|spots?|options?|results?|events?|cafes?|bars?|ideas?|suggestions?|отел\S*|ресторан\S*|мест\S*|вариант\S*|событи\S*|идеи|հյուրանոց\S*|ռեստորան\S*|տեղ\S*|միջոցառ\S*|فنادق|مطاعم|أماكن|خيارات)/iu;
+function parseDeckCount(message) {
+    const msg = String(message || '');
+    const m = msg.match(DECK_COUNT_VERB_RE) || msg.match(DECK_COUNT_NOUN_RE);
+    return m ? Number(m[1]) : null;
+}
+
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

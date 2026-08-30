@@ -408,6 +408,43 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
 }
 
 /**
+ * Empty deck, localized (Dilijan lesson 2026-08-30: these replies were
+ * hardcoded English — an Armenian ask got an English brush-off — and
+ * 'all_filtered' lumped "everything is closed right now" in with "you've
+ * seen everything", which was false twice over). The MEANING per cause is
+ * fixed HERE; the model only renders it in the traveler's language. It may
+ * never add venues — nothing is verified on an empty turn.
+ */
+function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty', isEvents = false, cityLabel = null, history = [], preferences = null }) {
+    const where = cityLabel ? ` in ${cityLabel}` : ' in this area';
+    const meaning = cause === 'all_closed'
+        ? `Every matching place you have${where} is CLOSED at this hour (it is late). Say that plainly and warmly, then offer: if they want, they can ask for the list "for tomorrow" and you will show it for planning ahead.`
+        : cause === 'all_filtered'
+            ? (isEvents
+                ? `They have already been shown every upcoming event you have${where} — there are no new ones left right now. Suggest asking for places instead, or checking back in a day or two.`
+                : `They have already been shown everything you have for this exact ask${where}. Suggest shifting the ask a little for a fresh angle.`)
+            : (isEvents
+                ? `You have no verified event listings${where} yet. Say you will go looking for that city's sources — they can try again shortly, or ask for places instead.`
+                : `You searched all your sources and found nothing for this ask${where}. Suggest broadening it, or trying a different area.`);
+    return [
+        {
+            role: 'system',
+            content:
+                'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
+              + ANSWER_ONLY_CURRENT
+              + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
+              + NO_REMEMBERED_EVENTS
+              + 'Your ENTIRE reply is 1–2 short sentences carrying EXACTLY this meaning, in '
+              + langName + ' (no apology spiral, no extra offers):\n' + meaning + '\n'
+              + 'Never name a specific venue, address or business — none are verified on this turn. '
+              + 'Never suggest external websites or search engines.',
+        },
+        ...historyTurns(history),
+        { role: 'user', content: String(message || '') },
+    ];
+}
+
+/**
  * Structured narration: ONE call returns intro prose + a short blurb per card +
  * an optional follow-up question (v1's habit, kept). Card blurbs are flavor
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
@@ -716,4 +753,4 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
 }
 
 module.exports = {
-    buildSettingsMessages, buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
+    buildSettingsMessages, buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };

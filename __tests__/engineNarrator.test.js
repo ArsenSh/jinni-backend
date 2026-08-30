@@ -238,3 +238,22 @@ describe('evidence is the list', () => {
         expect(sys).toMatch(/a date nobody verified is a guess a traveler can act on/);
     });
 });
+
+describe('buildEmptyDeckMessages (localized empty decks — the Dilijan lesson, 2026-08-30)', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    const sys = (o) => g.buildEmptyDeckMessages({ message: 'x', ...o })[0].content;
+    test('speaks the traveler language, names the searched city, never names venues', () => {
+        const s = sys({ langName: 'Armenian', cause: 'all_closed', cityLabel: 'Dilijan' });
+        expect(s).toContain('Reply in Armenian');
+        expect(s).toContain('in Dilijan');
+        expect(s).toContain('CLOSED');
+        expect(s).toMatch(/Never name a specific venue/);
+    });
+    test('cause picks the fixed meaning: closed ≠ seen-everything ≠ came-up-dry', () => {
+        expect(sys({ cause: 'all_closed' })).toContain('for tomorrow');
+        expect(sys({ cause: 'all_filtered' })).toContain('already been shown everything');
+        expect(sys({ cause: 'empty' })).toContain('found nothing');
+        expect(sys({ cause: 'all_filtered', isEvents: true })).toContain('every upcoming event');
+        expect(sys({ cause: 'empty', isEvents: true })).toContain('no verified event listings');
+    });
+});
