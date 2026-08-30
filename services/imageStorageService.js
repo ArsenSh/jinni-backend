@@ -18,7 +18,13 @@ function buildPhotoUrl(photo) {
 }
 
 class ImageStorageService {
-    constructor() { this.downloading = new Set() }
+    constructor() {
+        this.downloading = new Set();
+        // Places already deep-healed (or attempted) this process — bounds the
+        // Place Details re-resolve in serveImage to ONE paid call per place,
+        // so a place with genuinely no photos can never become a spend loop.
+        this._reResolved = new Set();
+    }
 
     /**
      * Download and store Google Place images in MongoDB
@@ -160,6 +166,34 @@ class ImageStorageService {
                         return { data: buffer, contentType, fallback: photoIndex !== full.photos.indexOf(refRow) };
                     } catch (refetchErr) {
                         console.warn(`⚠️ ${placeId} byte-less photos and the re-fetch failed too (${refetchErr.message})`);
+                    }
+                }
+                // DEEP heal (live 2026-08-31: ChIJf7kh… had rows with NO usable
+                // reference at all, so the reference re-fetch above had nothing
+                // to work with). One Place Details call gets fresh photo names,
+                // the standard store path writes real bytes, and the place is
+                // healed for good. Once per place per process, whether it works
+                // or not — the _reResolved guard is the cost ceiling.
+                if (!this._reResolved.has(placeId)) {
+                    this._reResolved.add(placeId);
+                    try {
+                        const details = await require('./googleService').getPlaceDetails(placeId, false, null);
+                        if (details?.photos?.length) {
+                            const stored = await this.downloadAndStoreImages(placeId, details.photos, 8);
+                            const healed = (stored || []).find(p => p && this._toBuffer(p.imageData));
+                            if (healed) {
+                                console.log(`🔧 ${placeId} deep-healed: re-resolved Place Details for fresh photo references`);
+                                return {
+                                    data: this._toBuffer(healed.imageData),
+                                    contentType: healed.contentType || 'image/jpeg',
+                                    fallback: photoIndex !== stored.indexOf(healed),
+                                };
+                            }
+                        } else {
+                            console.warn(`⚠️ ${placeId} deep-heal: Google lists no photos for this place`);
+                        }
+                    } catch (resolveErr) {
+                        console.warn(`⚠️ ${placeId} deep-heal failed (${resolveErr.message})`);
                     }
                 }
             }
