@@ -414,18 +414,26 @@ async function loadCandidates(params = {}, deps = {}) {
     // the intent's CLEAN coreQuery only, never the enriched chat tokens
     // ("girlfriend", "acquainted" must not trigger paid searches).
     const wanted = Math.min(Math.max(Number(params.count) || 8, 1), 20);
+    // Places this session ALREADY SAW will be excluded downstream — a pool
+    // that merely re-finds them cannot fill the asked count ("give me 10
+    // examples" after a 6-card deck: Google's page of 10 minus the 6 shown
+    // left 4 cards, live 2026-08-30). The thinness target grows by the
+    // exclude count so the fallback buys enough genuinely NEW places.
+    const excludedCount = ((params.excludes?.placeIds || []).length
+        + (params.excludes?.names || []).length);
+    const wantedFresh = Math.min(20, wanted + Math.min(excludedCount, 12));
     // Category words never justify a PAID search: on a cat=historical request
     // the token "historical" is already answered by the category filter itself
     // (caught live 2026-08-22: fallback bought 3 places for "uncovered:
     // historical" while 22 owned historical candidates sat in the pool).
     const missing = uncoveredQueryTokens(params.coreQuery, merged)
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
-    if ((merged.length < wanted || missing.length) && (params.query || category)) {
+    if ((merged.length < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
             const extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
-                needed: Math.max(wanted - merged.length, missing.length ? 3 : 0), requestId,
+                needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (extra.length) {
                 // Report the spend to whoever is measuring this turn. Same
@@ -526,7 +534,7 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         return toks.every(t => t.length < 4 || VIBE_TOKENS.has(t));
     };
     const q = [coreQuery, query].filter(v => v && !_junkOnly(v))[0] || subType || category || 'places to visit';
-    const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(needed * 2, 10) }) || [];
+    const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20) }) || [];
 
     // Resolve at most `needed` through v1's shared resolver — it caches details
     // AND stores images, so the card's place-image endpoint is valid and the
