@@ -48,7 +48,11 @@ function _prefFitScore(types, primaryType, preferences) {
     if (/nature|outdoor/.test(interests)) want.push('park', 'garden', 'natural_feature', 'national_park', 'botanical_garden');
     if (/relax|wellness|spa/.test(interests)) want.push('spa', 'park', 'garden', 'resort_hotel');
     if (/family|kid/.test(interests)) want.push('zoo', 'aquarium', 'amusement_park', 'park', 'museum');
-    if (/art|culture|histor/.test(interests)) want.push('museum', 'art_gallery', 'tourist_attraction', 'historical_landmark');
+    // `cultur` not `culture`: the saved interest key is 'cultural', which does
+    // NOT contain the substring 'culture' — the branch never fired for users
+    // whose only culture-ish interest was 'cultural' (found 2026-08-30, same
+    // audit that caught food_drink vs food&drink).
+    if (/art|cultur|histor/.test(interests)) want.push('museum', 'art_gallery', 'tourist_attraction', 'historical_landmark');
     // ── The three interests that had NO branch at all (fixed 2026-08-27) ──
     // Live report: travel style luxury + interest romantic returned a deck the
     // preferences had no hand in. The cause was not weak weighting — it was
@@ -566,6 +570,7 @@ module.exports = {
     cacheDocToCandidate,
     dbDocToCandidate,
     scoreCachedDoc,
+    _prefFitScore,
     mergeAndDedupe,
     isCommunityRejected,
     feedbackScoreFor,

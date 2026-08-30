@@ -362,3 +362,18 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(out.map(c => c.name)).toContain('Fresh Find');
     });
 });
+
+describe("_prefFitScore 'cultural' interest (the culture-regex gap, 2026-08-30)", () => {
+    const { _prefFitScore } = require('../engine/places/canonicalStore');
+    test("interest 'cultural' alone lifts museums over unrelated types", () => {
+        expect(_prefFitScore(['museum'], 'museum', { interests: ['cultural'] })).toBe(1);
+        expect(_prefFitScore(['car_repair'], 'car_repair', { interests: ['cultural'] })).toBe(0);
+    });
+    test('every saved interest key triggers at least one want-branch', () => {
+        const keys = ['family','romantic','nature','adventure','cultural','history','art','food_drink','nightlife','relaxation'];
+        for (const k of keys) {
+            const neutral = _prefFitScore(['car_repair'], 'car_repair', { interests: [k] });
+            expect(neutral).toBe(0);   // 0 (not 0.5) proves a branch FIRED and discriminated
+        }
+    });
+});
