@@ -434,6 +434,7 @@ async function loadCandidates(params = {}, deps = {}) {
         try {
             const extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
+                regionCity: params.regionCity || null,
                 needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (extra.length) {
@@ -507,7 +508,7 @@ function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
 }
 
 /** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
-async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, needed, requestId }, deps = {}) {
+async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, regionCity = null, needed, requestId }, deps = {}) {
     const coverageAllowed = deps.coverage
         || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
     if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) {
@@ -534,7 +535,15 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         if (!toks.length) return false;
         return toks.every(t => t.length < 4 || VIBE_TOKENS.has(t));
     };
-    const q = [coreQuery, query].filter(v => v && !_junkOnly(v))[0] || subType || category || 'places to visit';
+    let q = [coreQuery, query].filter(v => v && !_junkOnly(v))[0] || subType || category || 'places to visit';
+    // The WHERE must survive in the TEXT: locationBias is only a bias, and a
+    // bare subject biased to a town can return nothing — q="villas" biased to
+    // Dilijan got 0 results while "villas Dilijan" finds them (live
+    // 2026-08-31: the refill chain's subject change dropped the city). Append
+    // the region city whenever the query text doesn't already carry it.
+    if (regionCity && !q.toLowerCase().includes(String(regionCity).toLowerCase())) {
+        q = `${q} ${regionCity}`;
+    }
     const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20) }) || [];
 
     // Resolve at most `needed` through v1's shared resolver — it caches details
@@ -588,4 +597,8 @@ module.exports = {
     mergeAndDedupe,
     isCommunityRejected,
     feedbackScoreFor,
+    // The repo's ONE vibe/function-word stoplist — session.js's narrowing
+    // detector reads it too (a second hand-typed copy is the repo's oldest
+    // recurring bug).
+    VIBE_TOKENS,
 };
