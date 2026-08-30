@@ -131,6 +131,10 @@ const chatSessionSchema = new mongoose.Schema({
     latitude: Number,
     longitude: Number,
     placeId: String,
+    // Whether the town was named ALONE in the ask that set it — the v2
+    // named-town radius cap reads this on refill turns. Absent on old
+    // sessions ⇒ no cap (the pre-2026-08-31 behavior).
+    singleTown: Boolean,
     updatedAt: Date
   },
   messages: [messageSchema],

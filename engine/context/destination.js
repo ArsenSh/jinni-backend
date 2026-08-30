@@ -144,7 +144,17 @@ async function resolveDestination({
                 center: { lat: geo.lat, lng: geo.lng },
                 source: 'named',
                 city: geo.name,
-                remember: { name: geo.name, latitude: geo.lat, longitude: geo.lng, placeId: geo.placeId, updatedAt: new Date() },
+                // singleTown records whether the town was named ALONE — the
+                // 15km named-town radius cap keys off it, and a REFILL turn
+                // (centre=session) must inherit the same cap: "find 5 more"
+                // after "hotels in Dilijan" ran at r=50km and seated
+                // Tsaghkadzor/Dzoraget again (live 2026-08-31). Multi-town
+                // asks stay wide — the traveler drew the bigger map.
+                remember: {
+                    name: geo.name, latitude: geo.lat, longitude: geo.lng, placeId: geo.placeId,
+                    singleTown: (placeNames || []).filter(Boolean).length === 1,
+                    updatedAt: new Date(),
+                },
             };
         }
     }

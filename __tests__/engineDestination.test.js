@@ -27,6 +27,17 @@ describe('resolveDestination', () => {
         expect(d.remember).toMatchObject({ name: 'Dubai', latitude: DUBAI.lat, longitude: DUBAI.lng });
     });
 
+    test('remember carries singleTown — one named town true, multi-town false (refill cap)', async () => {
+        const one = await resolveDestination(
+            { placeNames: ['dilijan1'], gps: YEREVAN },
+            geocoder({ dilijan1: { lat: 40.74, lng: 44.86, name: 'Dilijan', types: ['locality', 'political'] } }));
+        expect(one.remember.singleTown).toBe(true);
+        const two = await resolveDestination(
+            { placeNames: ['dilijan2', 'ijevan2'], gps: YEREVAN },
+            geocoder({ dilijan2: { lat: 40.74, lng: 44.86, name: 'Dilijan', types: ['locality', 'political'] } }));
+        expect(two.remember.singleTown).toBe(false);
+    });
+
     test('a chosen destination beats GPS — the whole point of choosing one', async () => {
         const d = await resolveDestination({ gps: YEREVAN, sessionDestination: SESSION_PAPHOS }, geocoder({}));
         expect(d.center).toEqual({ lat: 34.77, lng: 32.42 });

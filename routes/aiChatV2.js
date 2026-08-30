@@ -893,7 +893,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // widen-offer stays the escape hatch. Two+ named places
             // ("Dilijan, Ijevan also") keep the wide radius — the traveler
             // drew the bigger map themselves.
-            if (meta.centreSource === 'named' && (intent.placeNames || []).length === 1 && radiusKm > 15) {
+            // …and a REFILL inherits the deck's cap: "find 5 more" after
+            // "hotels in Dilijan" arrives with centre=session (nothing named
+            // THIS turn), ran at r=50km and seated Tsaghkadzor 25km +
+            // Dzoraget 31km again (live 2026-08-31, third sighting). The
+            // remembered destination carries singleTown from the ask that set
+            // it; multi-town asks remembered singleTown=false and old
+            // sessions carry nothing — both keep the wide radius.
+            if (radiusKm > 15 && (
+                (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
+                || (refillActive && meta.centreSource === 'session'
+                    && sessionPeek?.activeDestination?.singleTown === true)
+            )) {
                 radiusKm = 15;
             }
             // Events: the asked PERIOD rules the window ("upcoming weekend"
