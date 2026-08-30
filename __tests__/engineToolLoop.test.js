@@ -180,3 +180,34 @@ describe('find_flights: real fares or none, never remembered prices', () => {
         expect(_bookUrl('/search/x', {})).toBe('https://www.aviasales.com/search/x');
     });
 });
+
+describe('get_place_details session-card selection (the Dilijan Park Resort conflation, 2026-08-30)', () => {
+    const { makeExecutors } = require('../engine/narrator/tools');
+    const cards = [
+        { name: 'Black Diamond Sevan', placeId: 'dest_black' },
+        { name: 'Tufenkian Old Dilijan Complex', placeId: 'pid_tufenkian' },
+        { name: 'Dilijan Park Resort & Villas', placeId: 'pid_resort' },
+    ];
+    const spyLookup = () => {
+        const calls = [];
+        return { calls, lookup: async (nameOrId, knownPlaceId) => { calls.push(knownPlaceId); return { name: nameOrId, place_id: knownPlaceId }; } };
+    };
+    test('the asked card wins over an earlier card sharing only the city token', async () => {
+        const { calls, lookup } = spyLookup();
+        const ex = makeExecutors({ sessionPlaces: cards }, { lookup });
+        await ex.get_place_details({ name: 'Dilijan Park Resort & Villas' });
+        expect(calls[0]).toBe('pid_resort');          // was pid_tufenkian before the fix
+    });
+    test('a distinctive-name ask still resolves to its own card', async () => {
+        const { calls, lookup } = spyLookup();
+        const ex = makeExecutors({ sessionPlaces: cards }, { lookup });
+        await ex.get_place_details({ name: 'tell me about Tufenkian Old Dilijan Complex' });
+        expect(calls[0]).toBe('pid_tufenkian');
+    });
+    test('an unknown name passes no session placeId (fresh resolve)', async () => {
+        const { calls, lookup } = spyLookup();
+        const ex = makeExecutors({ sessionPlaces: cards }, { lookup });
+        await ex.get_place_details({ name: 'Some Totally Other Hotel' });
+        expect(calls[0]).toBe(null);
+    });
+});

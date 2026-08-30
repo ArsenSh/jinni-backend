@@ -5,7 +5,7 @@
 // tool returns; a missing field comes back null and MUST be described as
 // "not listed", never guessed (the round-61 honesty rules, now structural).
 
-const { namesPlausiblyMatch } = require('../places/matching');
+const { normalizePlaceName, messageNamesPlace, _sigTokens } = require('../places/matching');
 
 const PLACE_DETAILS_TOOL = {
     type: 'function',
@@ -70,7 +70,28 @@ function makeExecutors(ctx = {}, deps = {}) {
             // Session-first identity: if this name matches a card the traveler
             // ALREADY SAW, use that card's placeId — zero ambiguity, no
             // same-name-in-another-city risk (v1's round-61 concern).
-            const known = (ctx.sessionPlaces || []).find(p => namesPlausiblyMatch(name, p.name));
+            //
+            // SELECTION must be strict, not plausible (live 2026-08-30: asking
+            // about "Dilijan Park Resort & Villas" answered with Tufenkian Old
+            // Dilijan Complex's phone and hours — namesPlausiblyMatch accepts
+            // ANY one shared token, and both names share the city word
+            // "dilijan"; .find() took whichever card came first). Order now:
+            //   1. exact normalized-name equality;
+            //   2. else cards whose OWN distinctive tokens all appear in the
+            //      asked name (messageNamesPlace), preferring the most
+            //      specific match — a card that reduces to just the city
+            //      token can never beat a fuller name match.
+            // namesPlausiblyMatch stays what it was built for: sanity-KEEPING
+            // a resolved result, never picking between candidates.
+            const cards = ctx.sessionPlaces || [];
+            const nameLower = String(name).toLowerCase();
+            const nameNorm = normalizePlaceName(name);
+            let known = cards.find(p => normalizePlaceName(p.name || '') === nameNorm);
+            if (!known) {
+                known = cards
+                    .filter(p => messageNamesPlace(nameLower, p.name))
+                    .sort((a, b) => _sigTokens(b.name || '').length - _sigTokens(a.name || '').length)[0];
+            }
             let d;
             try {
                 d = await lookup(name, known?.placeId || null);
