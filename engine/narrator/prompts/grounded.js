@@ -28,7 +28,11 @@ function placeFactLine(p) {
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
-        p.source === 'destination' ? 'verified by Jinni staff' : null,
+        // Founder decision 2026-08-30: NEVER tell the model a place is
+        // "verified by Jinni staff" — the phrase leaked into blurbs ("open
+        // now and verified by Jinni staff") and reads as self-promotion.
+        // Trust shows through accuracy, not announcements; curation stays
+        // an internal ranking fact, like the partner tier below.
         // Event date — the ONE fact that makes an event an event. English
         // weekday/month; the narrator renders it in the reply language.
         p.eventSchedule?.startDate ? `event on ${new Date(p.eventSchedule.startDate).toUTCString().slice(0, 16)}` : null,

@@ -37,7 +37,7 @@ describe('placeFactLine', () => {
         expect(placeFactLine({ name: 'X', source: 'cache' })).toBe('- X');
     });
     test('validator/partner provenance is stated', () => {
-        expect(placeFactLine({ name: 'Matenadaran', source: 'destination' })).toContain('verified by Jinni staff');
+        expect(placeFactLine({ name: 'Matenadaran', source: 'destination' })).not.toContain('verified');   // founder 2026-08-30: curation is internal, never narrated
         // Decision 2026-08-22: the partner relationship is disclosed by the
         // card badge, NEVER told to the model — prose must sell the
         // experience, not the tier.
