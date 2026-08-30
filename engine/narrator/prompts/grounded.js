@@ -469,7 +469,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
  * no prices, hours, menus, phones, or ratings beyond the given ones.
  */
-function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null }) {
+function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null, reServed = false }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -487,6 +487,9 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               // failure-path twin and must not lose the promise on fallback.
               + (askedCount && places.length && places.length < askedCount
                   ? `- They asked for ${askedCount}, and these ${places.length} are EVERYTHING you could find right now — say so plainly in the intro, never implying more are available for the same ask.\n`
+                  : '')
+              + (reServed
+                  ? '- Every listed place was ALREADY SHOWN earlier in this conversation — this turn NARROWS what they saw: present them as the matching subset ("of the places you saw, these fit"), never as new discoveries.\n'
                   : '')
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -527,7 +530,7 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null, reServed = false }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -568,6 +571,15 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
                   + 'Say that plainly in the prose in one short clause — no apology spiral — and never imply more are '
                   + 'available for the same ask; offer a slightly different angle instead.\n'
                   : '')
+              // Narrowing re-serve (live 2026-08-31): the deck deliberately
+              // repeats already-shown places because the traveler is FILTERING
+              // what they saw ("villas please", "in Dilijan please") — the
+              // prose must own that, not sell them as fresh finds.
+              + (reServed
+                  ? 'Every listed place was ALREADY SHOWN to the traveler earlier in this conversation — this turn '
+                  + 'NARROWS what they saw. Say so plainly ("of the places you saw, these are the ones that fit") '
+                  + 'and present them as the matching subset, never as new discoveries.\n'
+                  : '')
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
               + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
@@ -581,7 +593,14 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + '  Judge from the name AND the raw types shown. Pick the most specific one that is TRUE; '
               + 'use "Place" only when nothing else honestly fits. Never invent a word outside the list.\n'
               + 'Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n'
-              + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
+              // The follow-up must be SERVABLE. Live 2026-08-31: the model
+              // offered "guesthouses or villas instead?" and the villas search
+              // came back empty — an offer is a promise, and the only offers
+              // code can keep are refinements over evidence it already holds.
+              + `- question: one short follow-up in ${langName} to refine the search (or null). `
+              + 'Offer ONLY refinements you can serve from the evidence: style, budget, distance, opening state, '
+              + 'or kinds of places VISIBLE in this list — never propose a category or place type that is not '
+              + 'in the evidence above.\n'
               // Noticing a contradiction is a judgement, so the model makes it.
               // Overwriting what a person set is not, so it only ever proposes,
               // and code needs an explicit yes before anything is written.

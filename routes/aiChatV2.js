@@ -27,7 +27,7 @@ const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels } = require('../engine/context/session');
+const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, narrowingMatches } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
@@ -1003,14 +1003,28 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             //    once without the session excludes; the named-town 15km cap
             //    above scopes the deck to the town. Refills ("other ones")
             //    keep their excludes and stay on the honest-empty path. ──
-            if (!result.places.length && result.reason === 'all_filtered'
-                && meta.centreSource === 'named' && (intent.placeNames || []).length
-                && !refillActive && sessionCards.length) {
-                const rerun = await findPlaces({ ...findArgs, excludes: {} }, { loadCandidates });
-                if (rerun.places.length) {
-                    result = rerun;
-                    meta.reServed = true;
-                    console.log(`[v2] narrowing ask re-serves ${rerun.places.length} shown place(s) scoped to the named town`);
+            if (!result.places.length && ['all_filtered', 'no_candidates'].includes(result.reason)
+                && sessionCards.length) {
+                const townNarrowing = result.reason === 'all_filtered'
+                    && meta.centreSource === 'named' && (intent.placeNames || []).length && !refillActive;
+                // SUBTYPE narrowing (live 2026-08-31): "villas please" after a
+                // mixed deck got "found nothing" while two SHOWN cards were
+                // villas — the intent LLM had even tagged the turn refill. A
+                // message token naming something already on screen is
+                // narrowing, whatever the intent said. parseRefillAsk's own
+                // regex on THIS message keeps real more-asks ("more villas")
+                // honest; city words and the deck's category noun never count
+                // (so an exhausted "more hotels in Dilijan" stays exhausted).
+                const subsetTokens = (!townNarrowing && !parseRefillAsk(message).isRefill)
+                    ? narrowingMatches(message, shown.names, { excludeTokens: [...geoTokens, category || ''] })
+                    : [];
+                if (townNarrowing || subsetTokens.length) {
+                    const rerun = await findPlaces({ ...findArgs, excludes: {} }, { loadCandidates });
+                    if (rerun.places.length) {
+                        result = rerun;
+                        meta.reServed = true;
+                        console.log(`[v2] narrowing ask re-serves ${rerun.places.length} shown place(s) (${townNarrowing ? 'named town' : `matched: ${subsetTokens.join(',')}`})`);
+                    }
                 }
             }
             meta.provenance = result.provenance;
@@ -1180,6 +1194,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     // hotels" → 3 new cards, live 2026-08-30); the prompt tells
                     // the model to say these are all it could find.
                     askedCount: explicitCount ? deckCount : null,
+                    // Narrowing turns re-serve already-shown places — the prose
+                    // must present them as the matching subset, never as new.
+                    reServed: !!meta.reServed,
                 };
                 // The tail budget scales with the deck. 550 was sized for 6
                 // cards; a 10-card tail (one blurb per card) truncated at 550

@@ -83,4 +83,33 @@ function lastDeckLabels(messages) {
     return [];
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels };
+/**
+ * Subtype-narrowing detector (live 2026-08-31: "villas please" after a mixed
+ * deck got "found nothing" while two SHOWN cards were villas — excluded as
+ * already-seen). A message token that names something already ON SCREEN is the
+ * traveler organizing what they saw, not asking for novelty — the caller may
+ * re-serve the matching shown subset instead of the exhausted reply.
+ *
+ * Deterministic by construction: token ≥4 chars, not a vibe/function word
+ * (canonicalStore's ONE stoplist), not an excluded token (city names, the
+ * deck's own category noun — "more hotels" must never read as narrowing),
+ * singular-folded ("villas"→"villa"), contained in a shown card's name.
+ * Returns the matched tokens; empty = not a narrowing ask.
+ */
+function narrowingMatches(message, shownNames = [], { excludeTokens = [] } = {}) {
+    let vibe;
+    // Lazy require: session.js stays light for its own tests; no cycle
+    // (canonicalStore never imports session.js).
+    try { vibe = require('../places/canonicalStore').VIBE_TOKENS; } catch { vibe = new Set(); }
+    const fold = (t) => String(t || '').toLowerCase().replace(/s$/, '');
+    const excluded = new Set((excludeTokens || []).filter(Boolean).map(fold));
+    const names = (shownNames || []).map(n => String(n || '').toLowerCase());
+    if (!names.length) return [];
+    const toks = String(message || '').toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u)
+        .filter(t => t.length >= 4 && !vibe.has(t))
+        .map(fold)
+        .filter(t => t.length >= 3 && !excluded.has(t));
+    return [...new Set(toks.filter(t => names.some(n => n.includes(t))))];
+}
+
+module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, narrowingMatches };
