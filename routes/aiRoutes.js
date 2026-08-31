@@ -8586,6 +8586,12 @@ router.patch('/chat-sessions/:id', auth, async (req, res) => {
               // whitelisted here or the PATCH strips it and the itinerary
               // vanishes after a refresh (frontend + schema alone are not enough).
               ...(msg.itineraryId && { itineraryId: msg.itineraryId }),
+              // Route answers + hidden greeting (founder 2026-09-01): the
+              // schema declares these, but THIS mapping is the doorman —
+              // without these lines the See-route button died on refresh
+              // even after the schema fix. The week's fourth allowlist bite.
+              ...(msg.hidden && { hidden: true }),
+              ...(msg.metadata?.routeTo && { metadata: { routeTo: { placeId: msg.metadata.routeTo.placeId || null, name: msg.metadata.routeTo.name || null } } }),
               feedback: msg.feedback || null,
               ...(msg.contentParts && { contentParts: msg.contentParts })
             };
