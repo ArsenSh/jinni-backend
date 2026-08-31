@@ -1232,11 +1232,34 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // asked about THOSE — serve only the named one(s). Category
                 // asks never trigger: no retrieved name appears in the message,
                 // and geo tokens alone never count (messageNamesPlace).
-                if ((result.places || []).length > 1) {
-                    const namedHits = result.places.filter(p => messageNamesPlace(msgLower, p.name, geoTokens));
+                {
+                    const namedHits = (result.places || []).filter(p => messageNamesPlace(msgLower, p.name, geoTokens));
                     if (namedHits.length && namedHits.length < result.places.length) {
                         console.log(`[v2] name-ask: serving ${namedHits.length}/${result.places.length} — the message names them`);
                         result.places = namedHits;
+                    }
+                    // Name-ask QUARANTINE (founder 2026-08-31): a row born from
+                    // this direct ask serves ITS asker now, but stays invisible
+                    // to every other user until staff admit it (see PlaceCache
+                    // model + buildCacheQuery/v1 suppression sets). Only fresh
+                    // Google-fallback places quarantine — a cache/curated hit
+                    // was already public, so a name ask merely counts it.
+                    for (const p of namedHits) {
+                        if (!p.placeId) continue;
+                        const quarantine = p.source === 'google';
+                        require('../models/PlaceCache').updateOne({ placeId: p.placeId }, [{
+                            $set: {
+                                askedByNameCount: { $add: [{ $ifNull: ['$askedByNameCount', 0] }, 1] },
+                                nameAskFirstAt: { $ifNull: ['$nameAskFirstAt', '$$NOW'] },
+                                // Unconditional: the row was just created by this
+                                // ask's fallback (mongoose default false is already
+                                // on it, so $ifNull could never fire). An admitted
+                                // row re-serves from the cache tier (source 'cache')
+                                // and never reaches this branch.
+                                ...(quarantine ? { nameAskPending: true } : {}),
+                            },
+                        }]).catch(err => console.warn(`[v2] name-ask flag failed for ${p.placeId}: ${err.message}`));
+                        if (quarantine) console.log(`[v2] name-ask quarantine: "${p.name}" pending staff verdict`);
                     }
                 }
                 const promptArgs = {

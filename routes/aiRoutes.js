@@ -1266,7 +1266,7 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
         //     place suppresses it EVERYWHERE (Explore + chat + quick-action),
         //     not just on the browse page.
         try {
-            (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }] }).select('placeId').lean())
+            (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }, { nameAskPending: true }] }).select('placeId').lean())
                 .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
         } catch (abErr) { console.warn('[chat] suppression-set load failed:', abErr.message); }
         // Persist the destination across turns. If THIS message named no new place and
@@ -2075,6 +2075,7 @@ async function findCachedBackfill({ center, radiusKm, action, subType = null, pr
         // served straight from cache. Both flags are indexed; `$ne` also matches
         // legacy docs that carry neither field.
         aiBlocked: { $ne: true },
+        nameAskPending: { $ne: true },   // name-ask quarantine (see PlaceCache model)
         'explore.status': { $ne: 'hidden' },
         lastFetched: { $gte: freshnessCutoff },
         'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },
@@ -2248,6 +2249,7 @@ async function loadKnownCachedPlaces({ center, radiusKm, action, limit = 12 }) {
             actions: action,
             imagesStored: true,
             aiBlocked: { $ne: true },
+            nameAskPending: { $ne: true },   // name-ask quarantine (see PlaceCache model)
             'explore.status': { $ne: 'hidden' },
             'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },
             'details.geometry.location.lng': { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta }
@@ -7015,7 +7017,7 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                     // Validator-suppressed places (Block AI + Hidden) — global
                     // suppression, same rule as chat.
                     try {
-                        (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }] }).select('placeId').lean())
+                        (await PlaceCache.find({ $or: [{ aiBlocked: true }, { 'explore.status': 'hidden' }, { nameAskPending: true }] }).select('placeId').lean())
                             .forEach(b => b.placeId && userDislikedIds.add(b.placeId));
                     } catch (abErr) { console.warn('[quick-action] suppression-set load failed:', abErr.message); }
 

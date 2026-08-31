@@ -207,7 +207,7 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
         const listFields = {
             placeId: 1, name: 1, rating: 1, country: 1, city: 1,
             'details.formatted_address': 1, 'details.geometry': 1,
-            imagesStored: 1, actions: 1, interests: 1, aiBlocked: 1,
+            imagesStored: 1, actions: 1, interests: 1, aiBlocked: 1, nameAskPending: 1, askedByNameCount: 1,
             likes: 1, dislikes: 1, useCount: 1, fetchCount: 1, explore: 1,
             createdAt: 1, lastUsed: 1, website: 1,
             formatted_phone_number: 1, international_phone_number: 1,
@@ -270,6 +270,9 @@ router.patch('/explore-places/:placeId/actions', requirePermission('moderateExpl
         }
         if (Array.isArray(body.interests)) set.interests = body.interests.filter(t => EXPLORE_INTEREST_TAGS.includes(t));
         if (typeof body.aiBlocked === 'boolean') set.aiBlocked = body.aiBlocked;
+        // Name-ask quarantine verdict: staff admit (false) or re-quarantine
+        // (true) a row that entered via a direct name ask.
+        if (typeof body.nameAskPending === 'boolean') set.nameAskPending = body.nameAskPending;
         if (!Object.keys(set).length) return res.status(400).json({ success: false, error: 'Nothing to update' });
         const scope = buildPlaceScopeFilter(req.user);
         if (scope === null) return res.status(403).json({ success: false, error: 'No region assigned yet — ask your admin' });
@@ -277,7 +280,7 @@ router.patch('/explore-places/:placeId/actions', requirePermission('moderateExpl
             ? { $and: [{ placeId: req.params.placeId }, scope] }
             : { placeId: req.params.placeId };
         const doc = await PlaceCache.findOneAndUpdate(filter, { $set: set }, { new: true })
-            .select('placeId name actions interests aiBlocked').lean();
+            .select('placeId name actions interests aiBlocked nameAskPending askedByNameCount').lean();
         if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });
         res.json({ success: true, place: doc, message: `"${doc.name}" categories updated` });
     } catch (err) {
@@ -945,7 +948,7 @@ router.get('/ai-events', aiEventGate, async (req, res) => {
         const pids = [...new Set(data.map(d => d.placeId).filter(Boolean))];
         if (pids.length) {
             const venues = await PlaceCache.find({ placeId: { $in: pids } }).select(
-                'placeId name rating country city details.formatted_address details.geometry imagesStored actions interests aiBlocked likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule'
+                'placeId name rating country city details.formatted_address details.geometry imagesStored actions interests aiBlocked nameAskPending askedByNameCount nameAskFirstAt likes dislikes useCount fetchCount explore createdAt lastUsed website formatted_phone_number international_phone_number opening_hours.weekday_text types primaryType priceLevel eventSchedule'
             ).lean();
             const byId = new Map(venues.map(v => [v.placeId, v]));
             for (const d of data) d.venue = d.placeId ? (byId.get(d.placeId) || null) : null;

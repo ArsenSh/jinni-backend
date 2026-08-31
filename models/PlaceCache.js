@@ -94,6 +94,16 @@ const PlaceCacheSchema = new mongoose.Schema({
     // from ALL recommendation pipelines (folded into the dislike sets at
     // request time). Independent from explore.status (Explore visibility).
     aiBlocked: { type: Boolean, default: false, index: true },
+    // ── Name-ask quarantine (founder 2026-08-31) ──────────────────────────
+    // A row born from a DIRECT name ask ("Do you know Elegant hotel…?") is
+    // the vector a business would use to self-inject into the index. It
+    // serves its asker, then stays INVISIBLE to every other user until
+    // staff/admin admit it (clear the flag) or hide it. Count + first-seen
+    // make repeat self-asks legible on the validation page — a high count
+    // is a sales lead, not just a moderation item.
+    nameAskPending: { type: Boolean, default: false, index: true },
+    askedByNameCount: { type: Number, default: 0 },
+    nameAskFirstAt: { type: Date, default: null },
     // Event schedule — only meaningful for places shown under the 'events' action.
     // Captured at request time from the recommendation an event venue was shown as,
     // so the admin cache view can display WHEN a cached venue was last surfaced as

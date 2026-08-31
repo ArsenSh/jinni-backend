@@ -79,6 +79,7 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
     const query = {
         imagesStored: true,
         aiBlocked: { $ne: true },                      // staff suppression at the SOURCE
+        nameAskPending: { $ne: true },                 // name-ask quarantine: invisible until staff admit
         'explore.status': { $ne: 'hidden' },
         lastFetched: { $gte: freshnessCutoff },
         'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },

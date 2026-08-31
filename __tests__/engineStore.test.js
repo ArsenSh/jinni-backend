@@ -414,3 +414,16 @@ describe("_prefFitScore 'cultural' interest (the culture-regex gap, 2026-08-30)"
         }
     });
 });
+
+// Name-ask quarantine (founder 2026-08-31: "this location will not appear
+// for other users if staff or admin have not admited yet"): the cache query
+// must exclude quarantined rows the same way it excludes aiBlocked ones.
+describe('buildCacheQuery — name-ask quarantine', () => {
+    test('quarantined rows are excluded at the source', () => {
+        const q = require('../engine/places/canonicalStore').buildCacheQuery({
+            center: { lat: 40.18, lng: 44.51 }, radiusKm: 15, category: 'hotels',
+        });
+        expect(q.nameAskPending).toEqual({ $ne: true });
+        expect(q.aiBlocked).toEqual({ $ne: true });   // the pattern it rides on
+    });
+});
