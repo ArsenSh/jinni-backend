@@ -13,11 +13,34 @@ const router = express.Router();
 
 const ORS_BASE = 'https://api.openrouteservice.org/v2/directions';
 const RoutingDailyStats = require('../models/RoutingDailyStats');
+const { osrmBaseFor, buildOsrmRouteUrl, normalizeOsrmRoute } = require('../engine/travel/osrm');
 const ALLOWED_PROFILES = new Set(['driving-car', 'foot-walking', 'cycling-regular', 'wheelchair']);
 
-// Fail loudly at boot so a missing key is obvious in the logs, not a silent 500.
-if (!process.env.ORS_API_KEY) {
-    console.warn('[routing] ORS_API_KEY is not set — /api/routing/directions will return 500 until it is configured.');
+// Fail loudly at boot so a missing provider is obvious in the logs, not a silent 500.
+if (!process.env.ORS_API_KEY && !process.env.OSRM_CAR_URL) {
+    console.warn('[routing] neither OSRM_CAR_URL nor ORS_API_KEY is set — /api/routing/* will fail until one is configured.');
+}
+
+// ── Self-hosted OSRM first; ORS cloud is the automatic fallback ─────────────
+// (founder direction 2026-08-31: routes computed BY THE APP, not a paying
+// service — the ORS free tier is quota-capped and we already log rateLimited
+// days). One env URL per profile (see engine/travel/osrm.js header for the
+// Coolify setup); unset = that profile stays on ORS, so nothing breaks before
+// the containers exist. Any OSRM failure quietly falls through to ORS.
+async function tryOsrm(profile, coords, { steps = false } = {}) {
+    const base = osrmBaseFor(profile);
+    if (!base) return null;
+    try {
+        const r = await fetch(buildOsrmRouteUrl(base, coords, { steps }), { signal: AbortSignal.timeout(4000) });
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        const norm = normalizeOsrmRoute(await r.json(), { withSteps: steps });
+        if (!norm) return null;                    // unroutable here — let ORS try
+        console.log(`[routing] via self-hosted OSRM (${profile})`);
+        return norm;
+    } catch (err) {
+        console.warn(`[routing] OSRM ${profile} failed (${err.message}) — falling back to ORS`);
+        return null;
+    }
 }
 
 function isLatLng(p) {
@@ -31,12 +54,6 @@ function isLatLng(p) {
 // 200:  { success: true, geometry: <GeoJSON LineString>, distance: <metres>, duration: <seconds>, profile }
 router.post('/directions', auth, async (req, res) => {
     try {
-        const apiKey = process.env.ORS_API_KEY;
-        if (!apiKey) {
-            console.error('[routing] blocked: ORS_API_KEY missing in this environment');
-            return res.status(500).json({ success: false, error: 'routing_not_configured', message: 'Routing service is not configured.' });
-        }
-
         const { from, to } = req.body || {};
         let { profile, language } = req.body || {};
         if (!isLatLng(from) || !isLatLng(to)) {
@@ -45,6 +62,19 @@ router.post('/directions', auth, async (req, res) => {
         if (!ALLOWED_PROFILES.has(profile)) profile = 'driving-car';
         // Only forward a plausible language tag (e.g. "en", "hy", "ru", "en-us").
         if (typeof language !== 'string' || !/^[a-z]{2}(-[a-z]{2})?$/i.test(language)) language = null;
+
+        // Our own OSRM answers first — same response shape, zero per-request cost.
+        const osrm = await tryOsrm(profile, [from, to], { steps: true });
+        if (osrm) {
+            RoutingDailyStats.track('directions');
+            return res.json({ success: true, ...osrm, profile });
+        }
+
+        const apiKey = process.env.ORS_API_KEY;
+        if (!apiKey) {
+            console.error('[routing] blocked: no OSRM answer and ORS_API_KEY missing in this environment');
+            return res.status(500).json({ success: false, error: 'routing_not_configured', message: 'Routing service is not configured.' });
+        }
 
         // ORS wants [lng, lat] order, and the key goes straight in Authorization (no "Bearer").
         // instructions:true makes ORS return per-step turn guidance (left/right/
@@ -124,27 +154,36 @@ router.post('/directions', auth, async (req, res) => {
 //   straight segments, so an unroutable day is not a hard error.
 router.post('/itinerary-route', auth, async (req, res) => {
     try {
+        let { profile } = req.body || {};
+        const { coordinates } = req.body || {};
+        if (!ALLOWED_PROFILES.has(profile)) profile = 'driving-car';
+
+        const stops = Array.isArray(coordinates)
+            ? coordinates
+                .filter(isLatLng)            // reuse the same validator as /directions
+                .slice(0, 25)               // sane per-day ceiling (ORS free tier allows ~50)
+            : [];
+        if (stops.length < 2) {
+            return res.status(400).json({ success: false, error: 'invalid_coordinates', message: 'Need at least 2 valid stops.' });
+        }
+
+        // Our own OSRM answers first — no steps needed for the overview path.
+        const osrm = await tryOsrm(profile, stops, { steps: false });
+        if (osrm) {
+            RoutingDailyStats.track('directions');
+            const { steps: _drop, ...overview } = osrm;
+            return res.json({ success: true, ...overview, profile });
+        }
+
         const apiKey = process.env.ORS_API_KEY;
         if (!apiKey) {
-            console.error('[routing] blocked: ORS_API_KEY missing in this environment');
+            console.error('[routing] blocked: no OSRM answer and ORS_API_KEY missing in this environment');
             // Soft-fail (200) so the client draws its straight-line fallback
             // instead of surfacing an error for a non-critical overlay.
             return res.status(200).json({ success: false, message: 'Routing service is not configured.' });
         }
 
-        let { profile } = req.body || {};
-        const { coordinates } = req.body || {};
-        if (!ALLOWED_PROFILES.has(profile)) profile = 'driving-car';
-
-        const coords = Array.isArray(coordinates)
-            ? coordinates
-                .filter(isLatLng)            // reuse the same validator as /directions
-                .slice(0, 25)               // sane per-day ceiling (ORS free tier allows ~50)
-                .map(p => [p.lng, p.lat])   // ORS wants [lng, lat]
-            : [];
-        if (coords.length < 2) {
-            return res.status(400).json({ success: false, error: 'invalid_coordinates', message: 'Need at least 2 valid stops.' });
-        }
+        const coords = stops.map(p => [p.lng, p.lat]);   // ORS wants [lng, lat]
 
         // No per-step instructions here — the itinerary path is an overview,
         // not turn-by-turn — so we keep the payload small.
