@@ -49,7 +49,7 @@ router.patch('/', authenticateToken, async (req, res) => {
         const updateData = {};
         if (language && ['en', 'ru', 'zh', 'hy', 'fr', 'ar'].includes(language)) { updateData['settings.language'] = language }
         if (theme && ['auto', 'light', 'dark'].includes(theme)) { updateData['settings.theme'] = theme }
-        if (fontStyle && ['standard', 'classic', 'elegant', 'rounded'].includes(fontStyle)) { updateData['settings.fontStyle'] = fontStyle }
+        if (fontStyle && ['standard', 'classic', 'elegant', 'modern', 'rounded'].includes(fontStyle)) { updateData['settings.fontStyle'] = fontStyle }
         if (textSize && ['small', 'normal', 'big'].includes(textSize)) { updateData['settings.textSize'] = textSize }
         if (location) {
             if (location.country) { updateData['settings.location.country'] = location.country }
