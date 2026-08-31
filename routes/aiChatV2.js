@@ -530,7 +530,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     .filter(t => looseTokenMatch(lower, t)).length;
                 return score(b) - score(a) || String(b.name).length - String(a.name).length;
             })[0];
-        let namedCard = intent.isTravel && !deckAsk && _bestCardFor(msgLower);
+        // Transport phrasing lifts the deckAsk gate: the intent LLM sometimes
+        // labels "how to reach <shown card>?" as a CATEGORY search (live
+        // 2026-09-01: '7 visions hotel' → action=hotels → tool-loop, no
+        // bridge, while the identical Ararat ask classified general and
+        // bridged). A named SHOWN card + transport wording is unambiguous.
+        let namedCard = intent.isTravel && (!deckAsk || isTransportAsk(msgLower)) && _bestCardFor(msgLower);
         // Follow-up asks name no place — "can you give a route?" right after
         // "how to reach to republic hotel?" (live 2026-09-01) got a generic
         // transit answer because the bridge only read the CURRENT message.
@@ -547,7 +552,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
         }
         const transportAsk = intent.infoAsk === 'transport'
-            || (intent.infoAsk === undefined && isTransportAsk(msgLower));
+            || (intent.infoAsk === undefined && isTransportAsk(msgLower))
+            // Deterministic override: transport wording about a card that is
+            // ON SCREEN is a route ask, whatever the intent model guessed
+            // (category, place_details, …). Requires BOTH signals, so plain
+            // category asks ("hotels near opera") can never trip it.
+            || (isTransportAsk(msgLower) && !!namedCard);
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
         // "Search the internet for X" is a SEARCH, not a capability quiz
