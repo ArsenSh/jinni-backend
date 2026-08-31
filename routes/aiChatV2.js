@@ -522,12 +522,30 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // and with places=[] nothing excluded the city word). Score = how many
         // of the card's own distinctive tokens the message actually contains;
         // ties go to the longer (more specific) name.
-        const _cardScore = (p) => String(p.name).toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u)
-            .filter(t => t.length >= 4 && !geoTokens.has(t))
-            .filter(t => looseTokenMatch(msgLower, t)).length;   // typo-tolerant (Tufenkisn ≈ Tufenkian)
-        const namedCard = intent.isTravel && !deckAsk
-            && sessionCards.filter(p => messageNamesPlace(msgLower, p.name, geoTokens))
-                .sort((a, b) => _cardScore(b) - _cardScore(a) || String(b.name).length - String(a.name).length)[0];
+        const _bestCardFor = (lower) => sessionCards
+            .filter(p => messageNamesPlace(lower, p.name, geoTokens))
+            .sort((a, b) => {
+                const score = (p) => String(p.name).toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u)
+                    .filter(t => t.length >= 4 && !geoTokens.has(t))
+                    .filter(t => looseTokenMatch(lower, t)).length;
+                return score(b) - score(a) || String(b.name).length - String(a.name).length;
+            })[0];
+        let namedCard = intent.isTravel && !deckAsk && _bestCardFor(msgLower);
+        // Follow-up asks name no place — "can you give a route?" right after
+        // "how to reach to republic hotel?" (live 2026-09-01) got a generic
+        // transit answer because the bridge only read the CURRENT message.
+        // The place lives one user turn back: try the PREVIOUS user message
+        // with the same matcher. (sessionPeek already contains the current
+        // message — the frontend saves before it fetches — so "previous"
+        // is the second-to-last user entry.)
+        if (!namedCard && intent.isTravel && !deckAsk) {
+            const userTurns = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
+            const prev = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : null;
+            if (prev) {
+                namedCard = _bestCardFor(String(prev.text).toLowerCase()) || false;
+                if (namedCard) console.log(`[v2] bridge follow-up: place carried from previous turn ("${namedCard.name}")`);
+            }
+        }
         const transportAsk = intent.infoAsk === 'transport'
             || (intent.infoAsk === undefined && isTransportAsk(msgLower));
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
