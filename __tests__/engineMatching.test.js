@@ -219,3 +219,23 @@ describe('mergeAndDedupe — street-twin pass', () => {
         expect(mergeAndDedupe([a], [b])).toHaveLength(2);
     });
 });
+
+// Typo tolerance (live 2026-08-31): "Tufenkisn heritage hotel" — one-letter
+// slip — broke the route bridge (exact substring check) and the answer lost
+// its See-route button. looseTokenMatch allows ONE edit on 5+ char words.
+describe('looseTokenMatch / typo-tolerant naming', () => {
+    const { looseTokenMatch } = require('../engine/places/matching');
+    test('one-letter typos match on long words', () => {
+        expect(looseTokenMatch('how to go to tufenkisn heritage hotel', 'tufenkian')).toBe(true);
+        expect(looseTokenMatch('the elegent hotel please', 'elegant')).toBe(true);
+    });
+    test('short words stay exact — no fuzzy on 4-char tokens', () => {
+        expect(looseTokenMatch('cafe near me', 'card')).toBe(false);
+    });
+    test('two edits never match', () => {
+        expect(looseTokenMatch('tufenksn hotel', 'tufenkian')).toBe(false);
+    });
+    test('messageNamesPlace survives the live typo end-to-end', () => {
+        expect(messageNamesPlace('how to go to tufenkisn heritage hotel?', 'Tufenkian Heritage Hotels')).toBe(true);
+    });
+});

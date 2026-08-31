@@ -96,6 +96,18 @@ const GENERIC_PLACE_WORDS = new Set(['hotel', 'hotels', 'resort', 'resorts', 'ho
 // Dilijan" was answered by the shown-card question path instead of a deck
 // (live 2026-08-30). Typing the full card name verbatim still matches —
 // that is a genuine reference regardless of what it contains.
+// Typo-tolerant "does the message contain this word?" — live 2026-08-31:
+// "Tufenkisn heritage hotel" (one-letter typo) failed the exact-substring
+// check and the route bridge fell back to a generic transit answer with no
+// See-route button. One edit allowed for words of 5+ chars, exact otherwise.
+function looseTokenMatch(msgLower, token) {
+    if (!msgLower || !token) return false;
+    if (msgLower.includes(token)) return true;
+    if (token.length < 5) return false;
+    return msgLower.split(/[^\p{L}\p{N}]+/u)
+        .some(w => w.length >= 5 && Math.abs(w.length - token.length) <= 2 && _lev(w, token) <= 1);
+}
+
 function messageNamesPlace(msgLower, placeName, excludeTokens = null) {
     if (!msgLower || !placeName) return false;
     const nameLower = String(placeName).toLowerCase();
@@ -103,7 +115,7 @@ function messageNamesPlace(msgLower, placeName, excludeTokens = null) {
     const sig = nameLower.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)
         .filter(w => w.length > 2 && !GENERIC_PLACE_WORDS.has(w)
             && !(excludeTokens && excludeTokens.has(w)));
-    return sig.length > 0 && sig.every(w => msgLower.includes(w));
+    return sig.length > 0 && sig.every(w => looseTokenMatch(msgLower, w));
 }
 
 function namesPlausiblyMatch(requested, resolved) {
@@ -114,4 +126,4 @@ function namesPlausiblyMatch(requested, resolved) {
     return a.some(x => b.some(y => _tokensSimilar(x, y)));
 }
 
-module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, _sigTokens, _scriptOf };
+module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, looseTokenMatch, _sigTokens, _scriptOf };

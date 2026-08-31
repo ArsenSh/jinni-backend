@@ -37,7 +37,7 @@ const { resolveDestination } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
 const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor, parseBudgetReply } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
-const { messageNamesPlace } = require('../engine/places/matching');
+const { messageNamesPlace, looseTokenMatch } = require('../engine/places/matching');
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
 const { loadTaste, dislikeExcludes, recordViews } = require('../engine/personalization/taste');
 
@@ -524,7 +524,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // ties go to the longer (more specific) name.
         const _cardScore = (p) => String(p.name).toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u)
             .filter(t => t.length >= 4 && !geoTokens.has(t))
-            .filter(t => msgLower.includes(t)).length;
+            .filter(t => looseTokenMatch(msgLower, t)).length;   // typo-tolerant (Tufenkisn ≈ Tufenkian)
         const namedCard = intent.isTravel && !deckAsk
             && sessionCards.filter(p => messageNamesPlace(msgLower, p.name, geoTokens))
                 .sort((a, b) => _cardScore(b) - _cardScore(a) || String(b.name).length - String(a.name).length)[0];
@@ -701,7 +701,44 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             || (refillActive ? refill.count : parseDeckCount(message)) || null;
         const deckCount = explicitCount ? Math.min(12, Math.max(2, explicitCount)) : 6;
 
-        if (transportAsk) {
+        // "Show on map (please)" is a UI wish about what is ALREADY on screen,
+        // not a search (live 2026-08-31: it went to retrieval as q="Show on
+        // map please" and served 6 semantically-random places — the relevance
+        // brake's blind spot). Deterministic: re-serve the named card (or the
+        // newest deck) with its map. No model, no retrieval, no Google.
+        const mapAsk = /\b(map|carte|карт\w*|քարտեզ\w*|خريطة|地图)\b/iu.test(msgLower)
+            && message.trim().split(/\s+/).length <= 6 && !deckAsk;
+        if (mapAsk && sessionCards.length) {
+            const target = namedCard || null;
+            const MAP_LINES = {
+                en: ['Here it is on the map 👇', 'Here they are on the map 👇'],
+                ru: ['Вот оно на карте 👇', 'Вот они на карте 👇'],
+                hy: ['Ահա քարտեզի վրա 👇', 'Ահա դրանք քարտեզի վրա 👇'],
+                fr: ['Le voici sur la carte 👇', 'Les voici sur la carte 👇'],
+                zh: ['已经在地图上标好了 👇', '都在地图上标好了 👇'],
+                ar: ['ها هو على الخريطة 👇', 'ها هي على الخريطة 👇'],
+            };
+            const lines = MAP_LINES[String(intent._userLanguage || 'en').slice(0, 2)] || MAP_LINES.en;
+            // Cards ride the session's stored payloads — real, already-served
+            // data, never parsed from prose (cards-from-retrieval invariant).
+            const _normM = (s2) => String(s2 || '').toLowerCase().trim();
+            const pool = [];
+            for (let i = (sessionPeek?.messages || []).length - 1; i >= 0; i--) {
+                for (const r of (sessionPeek.messages[i]?.recommendations || [])) {
+                    if (!target) pool.push(r);
+                    else if ((target.placeId && r.placeId === target.placeId) || _normM(r.name) === _normM(target.name)) pool.push(r);
+                }
+                if (pool.length) break;   // newest deck (or first match) only
+            }
+            send(res, { type: 'token', content: (target && pool.length) ? lines[0] : lines[1] });
+            if (pool.length) {
+                recommendations = target ? [pool[0]] : pool;
+                if (target) meta.routeTo = { placeId: target.placeId || null, name: target.name };
+            }
+            meta.answerType = 'map_reserve';
+            stats.path = 'map';
+            console.log(`[v2] map-ask re-served ${recommendations.length} card(s)${target ? ` for "${target.name}"` : ' (newest deck)'}`);
+        } else if (transportAsk) {
             const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
             const tz = buildTimeContext({ timezone: userTimezone, lng: center?.lng });
             const weather = center ? await getWeather(center.lat, center.lng).catch(() => null) : null;
