@@ -34,6 +34,10 @@ const userSchema = new mongoose.Schema({
     settings: {
         language: { type: String, enum: ['en', 'ru', 'zh', 'hy', 'fr', 'ar'], default: 'en' },
         theme: { type: String, enum: ['auto', 'light', 'dark'], default: 'auto' },
+        // Display prefs (founder 2026-09-01) — persisted like language/theme
+        // so every page and device reads the same choice.
+        fontStyle: { type: String, enum: ['standard', 'classic', 'elegant', 'rounded'], default: 'standard' },
+        textSize: { type: String, enum: ['small', 'normal', 'big'], default: 'normal' },
         location: {
             country: { type: String, default: '' },
             countryName: { type: String, default: 'Select a country' },

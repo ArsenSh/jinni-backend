@@ -14,6 +14,8 @@ router.get('/', authenticateToken, async (req, res) => {
         const settings = {
             language: user.settings?.language || 'en',
             theme: user.settings?.theme || 'auto',
+            fontStyle: user.settings?.fontStyle || 'standard',
+            textSize: user.settings?.textSize || 'normal',
             location: {
                 country: user.settings?.location?.country || 'AM',
                 countryName: user.settings?.location?.countryName || 'Armenia',
@@ -43,10 +45,12 @@ router.get('/', authenticateToken, async (req, res) => {
 
 router.patch('/', authenticateToken, async (req, res) => {
     try {
-        const { language, theme, location, searchRadius, privacy } = req.body;
+        const { language, theme, location, searchRadius, privacy, fontStyle, textSize } = req.body;
         const updateData = {};
         if (language && ['en', 'ru', 'zh', 'hy', 'fr', 'ar'].includes(language)) { updateData['settings.language'] = language }
         if (theme && ['auto', 'light', 'dark'].includes(theme)) { updateData['settings.theme'] = theme }
+        if (fontStyle && ['standard', 'classic', 'elegant', 'rounded'].includes(fontStyle)) { updateData['settings.fontStyle'] = fontStyle }
+        if (textSize && ['small', 'normal', 'big'].includes(textSize)) { updateData['settings.textSize'] = textSize }
         if (location) {
             if (location.country) { updateData['settings.location.country'] = location.country }
             if (location.countryName) { updateData['settings.location.countryName'] = location.countryName }
@@ -90,6 +94,8 @@ router.put('/reset', authenticateToken, async (req, res) => {
         const defaultSettings = {
             'settings.language': 'en',
             'settings.theme': 'auto',
+            'settings.fontStyle': 'standard',
+            'settings.textSize': 'normal',
             'settings.location.country': 'AM',
             'settings.location.countryName': 'Armenia',
             'settings.location.city': 'Yerevan',
