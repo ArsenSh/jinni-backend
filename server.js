@@ -415,6 +415,15 @@ const auth = require(path.join(__dirname, 'middleware', 'auth'));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/ai', aiRoutes);
+// Self-hosted map tiles (founder doctrine 2026-08-31): one static .pmtiles
+// archive served with HTTP range support — express.static does ranges
+// natively, and protomaps-leaflet reads the file directly, so no tile-server
+// process exists at all. Mount a persistent volume holding jinni.pmtiles and
+// set TILES_DIR (e.g. /app/tiles); CORS comes from the app-level middleware.
+if (process.env.TILES_DIR) {
+    app.use('/tiles', express.static(process.env.TILES_DIR, { maxAge: '7d' }));
+    console.log(`[tiles] serving self-hosted map tiles from ${process.env.TILES_DIR}`);
+}
 app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV2')));   // v2 engine, parallel to v1 — see backend/engine/ENGINE.md
 app.use('/auth', authRoutes);
 app.use('/api/contact', contactRoutes);
