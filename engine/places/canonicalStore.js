@@ -17,6 +17,10 @@
 const { normalizePlaceName } = require('./matching');
 const { haversineKm } = require('../utils/geo');
 const { scheduleToPeriods } = require('../context/contextEngine');
+// The CURRENT embedding model — stored vectors from another model are noise
+// in the new space and must be IGNORED until the sweep re-embeds them (the
+// 2026-08-31 multilingual swap made this gate load-bearing).
+const { LOCAL_MODEL: EMBED_MODEL } = require('../retrieval/embedder');
 const { priceTier, tierFit, tierMismatch, isPriceAction } = require('../../services/priceTier');
 
 const CACHE_VALIDITY_DAYS = 30;
@@ -165,7 +169,7 @@ function cacheDocToCandidate(d, center) {
         image: d.placeId ? `/api/ai/place-image/${d.placeId}/0` : null,
         likes: d.likes || 0,
         dislikes: d.dislikes || 0,
-        vector: Array.isArray(d.embedding) ? d.embedding : undefined,
+        vector: (Array.isArray(d.embedding) && d.embeddingModel === EMBED_MODEL) ? d.embedding : undefined,
         // BM25 document: name + kind words + place words the user might type.
         text: [d.name, d.primaryType, ...(d.types || []).slice(0, 6), ...(d.interests || []), d.city]
             .filter(Boolean).join(' '),
@@ -237,7 +241,7 @@ function dbDocToCandidate(d, source, center) {
         })(),
         // Semantic vector (battery fix #3 — curated rows used to carry none
         // and systematically LOST to cache rows under vector ranking).
-        vector: Array.isArray(d.embedding) ? d.embedding : undefined,
+        vector: (Array.isArray(d.embedding) && d.embeddingModel === EMBED_MODEL) ? d.embedding : undefined,
         // Curator's description, normalized to plain words — carried so the
         // narrator can UNDERSTAND the place (fed as an 'about' context note,
         // never copy material; see placeFactLine). Founder 2026-08-30:
@@ -348,7 +352,7 @@ async function loadCandidates(params = {}, deps = {}) {
         } else {
             const PlaceCache = require('../../models/PlaceCache');
             cacheDocs = await PlaceCache.find(query)
-                .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos opening_hours interests actions city country embedding')
+                .select('placeId name rating likes dislikes useCount types primaryType priceLevel details photos opening_hours interests actions city country embedding embeddingModel')
                 .limit(CACHE_SCAN_LIMIT)
                 .lean();
         }

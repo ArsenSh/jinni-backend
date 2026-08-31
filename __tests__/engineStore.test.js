@@ -51,7 +51,8 @@ describe('buildCacheQuery', () => {
 
 describe('candidate mapping', () => {
     test('cacheDocToCandidate: fields, distance, BM25 text, embedding→vector', () => {
-        const c = cacheDocToCandidate(cacheDoc({ embedding: [1, 2] }), CENTER);
+        const { LOCAL_MODEL } = require('../engine/retrieval/embedder');
+        const c = cacheDocToCandidate(cacheDoc({ embedding: [1, 2], embeddingModel: LOCAL_MODEL }), CENTER);
         expect(c.source).toBe('cache');
         expect(c.placeId).toBe('p_x');
         expect(c.distanceKm).toBeGreaterThan(0);
@@ -61,6 +62,10 @@ describe('candidate mapping', () => {
         expect(c.text).toContain('Yerevan');
         expect(c.vector).toEqual([1, 2]);
         expect(c.opening_hours).toEqual({ periods: [] });
+        // Model gate (multilingual swap 2026-08-31): a vector embedded by a
+        // DIFFERENT model is noise in the current space — dropped, not mixed.
+        const stale = cacheDocToCandidate(cacheDoc({ embedding: [1, 2], embeddingModel: 'Xenova/all-MiniLM-L6-v2' }), CENTER);
+        expect(stale.vector).toBeUndefined();
     });
     test('dbDocToCandidate: business/destination rows map defensively', () => {
         const d = dbDocToCandidate({
@@ -70,6 +75,7 @@ describe('candidate mapping', () => {
             // Business.description is an OBJECT — must become words, not "[object Object]"
             description: { short: 'Grand arena', detailed: 'Concerts and sports' },
             embedding: [0.1, 0.2],                                  // battery fix #3: curated rows carry vectors now
+            embeddingModel: require('../engine/retrieval/embedder').LOCAL_MODEL,
         }, 'business', CENTER);
         expect(d.source).toBe('business');
         expect(d.verifiedId).toBe('abc');

@@ -20,7 +20,17 @@ let _localPromise = null;      // lazy init of the local model (null = not loadi
 let _nextRetryAt = 0;
 let _failCount = 0;
 
-const LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';   // 384-dim, ~23 MB quantized, CPU-fine
+// MULTILINGUAL swap 2026-08-31 (founder-approved): all-MiniLM-L6-v2 was
+// English-centric — an Armenian query scored 0.066 cosine against a Dilijan
+// hotel doc, BELOW the unrelated-text noise floor (0.138), so hy/ru asks got
+// zero semantic help. paraphrase-multilingual-MiniLM-L12-v2 (~50 languages
+// incl. hy/ru/ka) scores the same pair 0.658 vs 0.189 noise — measured
+// locally before the swap. Same 384 dims (no schema change), ~120 MB
+// quantized. The sweep + backfill re-embed automatically on model mismatch
+// (embeddingModel: { $ne: model } filters); candidates gate stored vectors
+// by model name so old vectors are IGNORED, never mixed, until re-embedded.
+// AFTER DEPLOY run on the server: node scripts/embedPlaceCache.js --apply
+const LOCAL_MODEL = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';   // 384-dim multilingual, CPU-fine
 
 /** Inject a custom embedder ({ embed(texts)→number[][], model }) or null to reset. */
 function setEmbedder(embedder) {
