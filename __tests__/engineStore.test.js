@@ -337,15 +337,17 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(asked).toEqual(['uzbek restaurant', 'مطعم سوشي']);
     });
 
-    test('googleFallback: out-of-radius dropped; failed details still serve the place (no image)', async () => {
+    // REVERSED 2026-08-31 (founder quality direction): the old contract served
+    // a details-failed place with no image — live it carded "Location not
+    // specified" with a dead image (Sunny Lodge ECONNRESET). Details are now
+    // REQUIRED; a failed resolve skips the place, never the turn.
+    test('googleFallback: out-of-radius dropped; failed details SKIP the place', async () => {
         const out = await googleFallback({ query: 'q', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
             coverage: async () => true,
             findPlaces: async () => [googleRow('near', 'Near Place'), googleRow('far', 'Far Place', 5)],
             resolveDetails: async () => { throw new Error('details down'); },
         });
-        expect(out.map(c => c.name)).toEqual(['Near Place']);
-        expect(out[0].image).toBe(null);
-        expect(out[0].source).toBe('google');
+        expect(out).toEqual([]);
     });
 
     test('dedupe: a google row matching an owned placeId ships once (owned wins)', async () => {
@@ -355,7 +357,9 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
             placeMatches: () => true,
             coverage: async () => true,
             findPlaces: async () => [googleRow('p_Lavash', 'Lavash Google Copy'), googleRow('g9', 'Fresh Find')],
-            resolveDetails: async () => null,
+            // Details are required since 2026-08-31 — return a minimal real
+            // resolve so the dedupe intent of this test stays testable.
+            resolveDetails: async () => ({ name: null, types: ['restaurant'], primaryType: 'restaurant' }),
         });
         expect(out.filter(c => c.placeId === 'p_Lavash')).toHaveLength(1);
         expect(out.find(c => c.placeId === 'p_Lavash').source).toBe('cache');

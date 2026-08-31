@@ -56,16 +56,31 @@ function shownPlaces(messages) {
  */
 function lastCardAsk(messages) {
     const list = messages || [];
+    // Refill chains must not eat their own memory (live 2026-08-31: each
+    // filler refill became the NEXT refill's "ask" — "hotels in Dilijan"
+    // degraded to "another ones please", and that junk became the retrieval
+    // query and reached the paid search). A refill/count-only message is a
+    // POINTER at an earlier ask, not an ask — walk past it to the deck it
+    // continued. The newest filler is kept only as a last resort when the
+    // visible window holds nothing substantive (safe: the paid boundary
+    // independently refuses non-substantive queries).
+    let fallbackAsk = null;
     for (let i = list.length - 1; i >= 0; i--) {
         const m = list[i];
         if (!m || m.sender !== 'ai' || !(m.recommendations || []).length) continue;
         // The user turn immediately preceding that deck is the ask that made it.
+        let ask = null;
         for (let j = i - 1; j >= 0; j--) {
-            if (list[j]?.sender === 'user' && list[j].text) return String(list[j].text).slice(0, 300);
+            if (list[j]?.sender === 'user' && list[j].text) { ask = String(list[j].text).slice(0, 300); break; }
         }
-        return null;
+        if (!ask) continue;
+        let substantive = true;
+        try { substantive = require('../places/canonicalStore').isSubstantiveAsk(ask); }
+        catch { /* test-lite env without the store — old behavior */ }
+        if (substantive) return ask;
+        if (!fallbackAsk) fallbackAsk = ask;
     }
-    return null;
+    return fallbackAsk;
 }
 
 /** Display labels ('Hotel', 'Restaurant'…) of the deck on screen — the

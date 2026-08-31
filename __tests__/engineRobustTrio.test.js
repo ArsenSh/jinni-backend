@@ -110,3 +110,94 @@ describe('narration prompt: reServed + servable follow-ups', () => {
         expect(sys).toContain('never propose a category or place type that is not');
     });
 });
+
+// ── Brain-first paid boundary (founder 2026-08-31: "how to fix so it will
+//    work in 100% instead of each time adding a new word"). No blacklist
+//    arms race: raw chat words never reach Google; only the intent model's
+//    own query or code-written category+city do, results must pass the
+//    category type gate, and refill chains never eat their own memory. ──
+
+const { isSubstantiveAsk } = require('../engine/places/canonicalStore');
+const { lastCardAsk } = require('../engine/context/session');
+
+describe('isSubstantiveAsk (the one substance test)', () => {
+    test.each([
+        ['hotels in Dilijan', true],
+        ['uzbek restaurants', true],
+        ['romantic dinner spot', true],
+        ['another ones please', false],       // refill phrasing (the live leak)
+        ['another results please', false],
+        ['give 10 results please', false],    // count + function words only
+        ['find 3 more', false],
+        ['4 more', false],
+        ['tonight', false],                   // vibe-only (the 2026-08-29 leak)
+        ['مطعم سوشي', true],                  // unsplittable script passes through
+    ])('%j → %s', (text, expected) => {
+        expect(isSubstantiveAsk(text)).toBe(expected);
+    });
+});
+
+describe('paid query is whitelist-by-construction', () => {
+    const CENTER = { lat: 40.7404, lng: 44.8655 };
+    const deps = () => ({
+        coverage: async () => true,
+        findPlaces: jest.fn(async () => []),
+        resolveDetails: async () => null,
+        typeGate: jest.fn(() => true),
+    });
+
+    test('raw chat filler NEVER reaches Google — degrades to category+city', async () => {
+        const d = deps();
+        await googleFallback({
+            query: 'another ones please', coreQuery: 'another ones please', category: 'hotels',
+            subType: null, center: CENTER, radiusKm: 15, regionCity: 'Dilijan', needed: 3, requestId: null,
+        }, d);
+        expect(d.findPlaces.mock.calls[0][0]).toBe('hotels Dilijan');
+    });
+    test("the model's own clean query still wins the pick", async () => {
+        const d = deps();
+        await googleFallback({
+            query: 'uzbek food yerevan cozy', coreQuery: 'uzbek restaurant', category: 'restaurants',
+            subType: null, center: CENTER, radiusKm: 15, regionCity: 'Yerevan', needed: 3, requestId: null,
+        }, d);
+        expect(d.findPlaces.mock.calls[0][0]).toBe('uzbek restaurant Yerevan');
+    });
+    test('results failing the category type gate are dropped (cafe in a hotels chain)', async () => {
+        const d = deps();
+        d.findPlaces = jest.fn(async () => [
+            { place_id: 'g1', name: 'Real Hotel', geometry: { location: { lat: 40.741, lng: 44.866 } } },
+            { place_id: 'g2', name: 'Sneaky Cafe', geometry: { location: { lat: 40.742, lng: 44.867 } } },
+        ]);
+        d.resolveDetails = async (id) => (id === 'g1'
+            ? { name: 'Real Hotel', types: ['hotel', 'lodging'], primaryType: 'hotel' }
+            : { name: 'Sneaky Cafe', types: ['cafe'], primaryType: 'cafe' });
+        d.typeGate = jest.fn((action, st, types) => types.includes('hotel'));
+        const out = await googleFallback({
+            query: 'hotels', coreQuery: 'hotels in dilijan', category: 'hotels',
+            subType: null, center: CENTER, radiusKm: 15, regionCity: 'Dilijan', needed: 5, requestId: null,
+        }, d);
+        expect(out.map(p => p.name)).toEqual(['Real Hotel']);
+        expect(d.typeGate).toHaveBeenCalledWith('hotels', null, ['cafe'], 'cafe');
+    });
+});
+
+describe('lastCardAsk: refill chains never eat their own memory', () => {
+    const u = (text) => ({ sender: 'user', text });
+    const deck = () => ({ sender: 'ai', text: 'here you go', recommendations: [{ title: 'x' }] });
+
+    test('the live degradation: filler asks are walked past to the substantive one', () => {
+        const messages = [
+            u('hotels in Dilijan'), deck(),
+            u('give 10 results please'), deck(),
+            u('another ones please'), deck(),
+        ];
+        expect(lastCardAsk(messages)).toBe('hotels in Dilijan');
+    });
+    test('window holds only filler → newest filler survives as last resort', () => {
+        const messages = [u('another ones please'), deck(), u('4 more'), deck()];
+        expect(lastCardAsk(messages)).toBe('4 more');
+    });
+    test('no decks → null (fresh-ask behavior, unchanged)', () => {
+        expect(lastCardAsk([u('hello')])).toBe(null);
+    });
+});

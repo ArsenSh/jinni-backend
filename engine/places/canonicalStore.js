@@ -496,6 +496,24 @@ const VIBE_TOKENS = new Set([
     'when', 'morning', 'afternoon', 'later', 'soon', 'this', 'that', 'with',
     'from', 'about', 'around', 'also', 'just', 'like', 'some', 'they',
 ]);
+/** The ONE substance test (founder doctrine 2026-08-31). A text is a
+ *  SUBSTANTIVE ask when it is not refill phrasing (tuning's own multilingual
+ *  regex — the same brain the refill path trusts) AND carries at least one
+ *  ≥4-char token outside the vibe/function stoplist. Nothing failing this
+ *  test may reach a paid search or stand as a remembered "ask" — it degrades
+ *  to category+city / the earlier substantive ask instead. Scripts the
+ *  tokenizer can't split (Arabic, Chinese) pass through untouched, same as
+ *  the old junk rule. Reuses the TWO existing brains; no new word lists. */
+function isSubstantiveAsk(text) {
+    const s = String(text || '');
+    try {
+        if (require('../retrieval/tuning').parseRefillAsk(s).isRefill) return false;
+    } catch { /* regex unavailable → token test alone decides */ }
+    const toks = s.toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u).filter(Boolean);
+    if (!toks.length) return true;   // unsplittable scripts pass through
+    return toks.some(t => t.length >= 4 && !VIBE_TOKENS.has(t) && !/^\d+$/.test(t));
+}
+
 function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
     const tokens = String(coreQuery || '').toLowerCase().split(/[^a-zЀ-ӿ԰-֏]+/)
         .filter(t => t.length >= 4 && !VIBE_TOKENS.has(t));
@@ -520,22 +538,17 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
 
     const findPlaces = deps.findPlaces
         || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));
-    // The CLEAN intent query makes the best paid search — the enriched one
-    // drags raw chat tokens into Google ("...место можно спокоино", live find).
-    //
-    // But a query made ONLY of vibe/time/function words carries no retrieval
-    // information, and Google answers it with noise: "what do I do tonight?"
-    // reduced to q="tonight" and bought a Text Search that returned one
-    // arbitrary bar (live 2026-08-29). Such a query yields the pick to the
-    // subType/category noun — the same stoplist the demand path already
-    // trusts, no second word list. Scripts the tokenizer can't split
-    // (Arabic, Chinese) produce no tokens and pass through untouched.
-    const _junkOnly = (s) => {
-        const toks = String(s || '').toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/).filter(Boolean);
-        if (!toks.length) return false;
-        return toks.every(t => t.length < 4 || VIBE_TOKENS.has(t));
-    };
-    let q = [coreQuery, query].filter(v => v && !_junkOnly(v))[0] || subType || category || 'places to visit';
+    // ── WHITELIST BY CONSTRUCTION (founder doctrine 2026-08-31: "how to fix
+    //    so it will work in 100% instead of each time adding a new word").
+    //    Blacklisting junk words was an arms race — "results" leaked, then
+    //    "make", then "ones" ("another ones please Dilijan" bought a paid
+    //    search that carded a cafe and a wine bar in a hotels chain). The
+    //    paid query is now never assembled from raw chat text at all: only
+    //    the intent model's OWN clean query (the AI decides what to search)
+    //    or code-written subType/category may reach Google. The enriched
+    //    chat query stays in free BM25 where raw words belong. ──
+    let q = (coreQuery && isSubstantiveAsk(coreQuery) ? coreQuery : null)
+        || subType || category || 'places to visit';
     // The WHERE must survive in the TEXT: locationBias is only a bias, and a
     // bare subject biased to a town can return nothing — q="villas" biased to
     // Dilijan got 0 results while "villas Dilijan" finds them (live
@@ -553,6 +566,11 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         const { getCachedPlaceDetails } = require('../../routes/aiRoutes').shared;
         return getCachedPlaceDetails(placeId, false, requestId, center, placeId, null, true);
     });
+    // Same type test the cache gates and prefetch trust — one gate, no copy.
+    const typeGate = deps.typeGate || ((action, st, types, pt) => {
+        try { return require('../../services/googleService').placeMatchesActionType(action, st, types, pt); }
+        catch { return true; /* gate unavailable → lenient, never drop the turn */ }
+    });
     const out = [];
     for (const p of found) {
         if (out.length >= needed) break;
@@ -562,7 +580,22 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         const distanceKm = haversineKm(center.lat, center.lng, lat, lng);
         if (distanceKm > radiusKm) continue;
         let d = null;
-        try { d = await resolveDetails(p.place_id); } catch { /* skip this place */ }
+        try { d = await resolveDetails(p.place_id); } catch { /* d stays null → skipped below */ }
+        // Details are REQUIRED. A place whose resolve failed has no cache row
+        // and no stored image — it carded as "Location not specified" with a
+        // dead image (Sunny Lodge ECONNRESET, live 2026-08-31). The old
+        // comment promised "failures skip the place"; now the code does.
+        if (!d) {
+            console.log(`[canonicalStore] fallback skip "${p.name}" — details unresolved`);
+            continue;
+        }
+        // The asked CATEGORY is a hard gate on paid rows: mixed text-search
+        // results once carded a CAFE and a WINE BAR in a hotels chain (live
+        // 2026-08-31). Unknown types stay lenient inside the gate itself.
+        if (category && !typeGate(category, subType, d.types, d.primaryType)) {
+            console.log(`[canonicalStore] fallback skip "${p.name}" — not ${category} (${d.primaryType || (d.types || []).slice(0, 2).join('/') || 'unknown types'})`);
+            continue;
+        }
         out.push({
             placeId: p.place_id,
             name: d?.name || p.name,
@@ -601,4 +634,5 @@ module.exports = {
     // detector reads it too (a second hand-typed copy is the repo's oldest
     // recurring bug).
     VIBE_TOKENS,
+    isSubstantiveAsk,
 };
