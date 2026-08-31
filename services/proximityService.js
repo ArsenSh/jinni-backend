@@ -376,6 +376,21 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         }
         // else: no type gate — region/distance bound the set
         // and calculatePreferenceScore ranks by the user's interests.
+        // ── The validator's style verdict gates destinations too ─────────────
+        // The old assumption ("destinations almost never carry a price tier, so
+        // don't gate them on luxury/budget") is FALSE since the validator
+        // workflow: staff tag curated restaurants/hotels stored as Destinations
+        // with 'budget'/'luxury' (live 2026-08-31: budget-tagged restaurants
+        // served to a luxury profile — 42 destinations, zero style filtering).
+        // Rule mirrors the cache-twin suppression in canonicalStore: never
+        // REQUIRE the tag (untagged parks/viewpoints must still surface), but
+        // a doc tagged with the OPPOSITE style is a staff verdict — exclude it.
+        // On an array field, $ne excludes docs whose type array contains the
+        // value, and it composes with the $all/$in gates set above.
+        if (userStyle) {
+            const oppositeStyle = userStyle === 'luxury' ? 'budget' : 'luxury';
+            destinationQuery.type = { ...(destinationQuery.type || {}), $ne: oppositeStyle };
+        }
         // ── Budget gates destinations too ─────────────────────────────────────
         // Destination.pricing mirrors Business.pricing (validator-entered entry
         // fees / average meal prices), yet the budget clause only ever applied
