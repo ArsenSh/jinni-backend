@@ -146,8 +146,17 @@ async function findPlaces(params = {}, deps = {}) {
         const fused = lists.length > 1 ? fuseRankings(lists).map(r => r.id) : priorList;
         pool = fused.map(id => byId.get(id)).filter(Boolean);
         if (query) {
-            cache.set(cacheParams, { queryVector, queryText: query },
-                { pool, provenance: { ...provenance } });
+            // Name-ask quarantine ripple (2026-08-31): this cache is GLOBAL
+            // across users, and it is written BEFORE aiChatV2 quarantines a
+            // fallback-born place — caching a pool that holds one would hand
+            // the quarantined place to another user's similar ask as a hit.
+            // Fallback-born pools are novel one-offs; skip caching them.
+            if (pool.some(p => p && p.source === 'google')) {
+                console.log('[retrieval] semantic-cache skip: pool holds google-fallback place(s)');
+            } else {
+                cache.set(cacheParams, { queryVector, queryText: query },
+                    { pool, provenance: { ...provenance } });
+            }
         }
     }
 
