@@ -739,6 +739,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 reply = out.text;
                 addUsage(out);
             }
+            // Chat→map bridge (founder 2026-08-31: "will it trace in map too?"):
+            // a transport ask about a place already on a CARD carries routeTo
+            // meta — the frontend opens that card's map and runs the exact
+            // "Tap for distance" flow (self-hosted OSRM does the tracing).
+            if (namedCard) {
+                meta.routeTo = { placeId: namedCard.placeId || null, name: namedCard.name };
+                console.log(`[v2] transport answer routes to shown card "${namedCard.name}"`);
+            }
             meta.answerType = 'getting_around';
             stats.path = 'transport';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
