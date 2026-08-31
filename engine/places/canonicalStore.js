@@ -406,7 +406,54 @@ async function loadCandidates(params = {}, deps = {}) {
         console.warn(`[canonicalStore] validator tier failed: ${err.message} — continuing with cache only`);
     }
 
-    let merged = mergeAndDedupe(destinations, businesses, cacheCandidates);
+    // ── VALIDATOR VERDICT SUPPRESSION (live 2026-08-31: Aero Hotel was
+    //    curated + set to BUDGET by staff, yet appeared in a LUXURY user's
+    //    deck — the style gate removed the curated Destination while its
+    //    Google cache TWIN sailed through; the cache tier check above judges
+    //    by GOOGLE's guess, which must never override the validator). A
+    //    staff style judgment applies to the PLACE, not the row: curated docs
+    //    tagged with the OPPOSITE gating style contribute a suppress set
+    //    (placeId + googlePlaceId + normalized name) applied to cache rows
+    //    and Google fallback finds. Docs with neither tag were never gated
+    //    and suppress nothing. Fail-open on any load error. ──
+    let suppress = null;
+    {
+        const rawStyle = String(preferences?.travelStyle || '').toLowerCase();
+        const opposite = rawStyle === 'luxury' ? 'budget' : rawStyle === 'budget' ? 'luxury' : null;
+        if (opposite) {
+            try {
+                const loadMismatched = deps.styleMismatched || (async (tag) => {
+                    const Destination = require('../../models/Destination');
+                    const Business = require('../../models/Business');
+                    const [d1, d2] = await Promise.all([
+                        Destination.find({ type: tag }).select('name placeId googlePlaceId').lean(),
+                        Business.find({ type: tag }).select('name placeId googlePlaceId').lean(),
+                    ]);
+                    return [...d1, ...d2];
+                });
+                const rows = await loadMismatched(opposite);
+                if (rows.length) {
+                    suppress = { ids: new Set(), names: new Set() };
+                    for (const r of rows) {
+                        if (r.placeId) suppress.ids.add(r.placeId);
+                        if (r.googlePlaceId) suppress.ids.add(r.googlePlaceId);
+                        if (r.name) suppress.names.add(normalizePlaceName(r.name));
+                    }
+                }
+            } catch (err) {
+                console.warn(`[canonicalStore] style-suppress load failed (fail-open): ${err.message}`);
+            }
+        }
+    }
+    const suppressHit = (c) => !!suppress && (
+        (c.placeId && suppress.ids.has(c.placeId))
+        || suppress.names.has(normalizePlaceName(c.name || '')));
+    const keptCache = suppress ? cacheCandidates.filter(c => !suppressHit(c)) : cacheCandidates;
+    if (keptCache.length < cacheCandidates.length) {
+        console.log(`[canonicalStore] validator style verdict suppressed ${cacheCandidates.length - keptCache.length} cache twin(s) for style=${preferences.travelStyle}`);
+    }
+
+    let merged = mergeAndDedupe(destinations, businesses, keptCache);
 
     // ── Google fallback tier (bootstrap, not the engine — V3 §8e) ──
     // Only when the owned corpus is THIN, only through the coverage gates, and
@@ -436,11 +483,16 @@ async function loadCandidates(params = {}, deps = {}) {
     if ((merged.length < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
-            const extra = await googleFallback({
+            let extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
                 regionCity: params.regionCity || null,
                 needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
+            if (suppress && extra.length) {
+                const before = extra.length;
+                extra = extra.filter(c => !suppressHit(c));
+                if (extra.length < before) console.log(`[canonicalStore] validator style verdict suppressed ${before - extra.length} Google find(s)`);
+            }
             if (extra.length) {
                 // Report the spend to whoever is measuring this turn. Same
                 // shape as onStage: optional, ignored when nobody listens.

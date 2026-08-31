@@ -371,6 +371,33 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(out.find(c => c.placeId === 'p_Lavash').source).toBe('cache');
         expect(out.map(c => c.name)).toContain('Fresh Find');
     });
+
+    // Live 2026-08-31: Aero Hotel was curated + set BUDGET by staff, yet its
+    // Google cache twin appeared in a LUXURY user's deck — the staff verdict
+    // must suppress the twin (Google's own tier guess never overrides it).
+    test('validator style verdict suppresses the cache twin of an opposite-style curated place', async () => {
+        const deps = {
+            cacheFind: async () => [
+                cacheDoc({ name: 'Aero Hotel', placeId: 'p_aero' }),
+                cacheDoc({ name: 'Fine Palace', placeId: 'p_fine' }),
+            ],
+            proximity: async () => ({}),
+            placeMatches: () => true,
+            coverage: async () => false,
+            styleMismatched: async (tag) => (tag === 'budget' ? [{ name: 'Aero Hotel', placeId: 'p_aero' }] : []),
+        };
+        const luxury = await loadCandidates({
+            category: 'restaurants', center: CENTER, count: 4,
+            preferences: { travelStyle: 'luxury' },
+        }, deps);
+        expect(luxury.map(c => c.name)).not.toContain('Aero Hotel');
+        expect(luxury.map(c => c.name)).toContain('Fine Palace');
+        // No gating style → no suppression, the twin serves normally.
+        const anyStyle = await loadCandidates({
+            category: 'restaurants', center: CENTER, count: 4, preferences: {},
+        }, deps);
+        expect(anyStyle.map(c => c.name)).toContain('Aero Hotel');
+    });
 });
 
 describe("_prefFitScore 'cultural' interest (the culture-regex gap, 2026-08-30)", () => {
