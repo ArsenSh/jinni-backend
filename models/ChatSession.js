@@ -105,6 +105,17 @@ const messageSchema = new mongoose.Schema({
   isViewMore: Boolean,
   isLoadingMore: Boolean,
   contentParts: [contentPartSchema],
+  // A path absent from the schema is not a place to store anything (see the
+  // User.useGPS lesson): strict mode silently STRIPPED these on save, so the
+  // See-route button and the hidden greeting both died on refresh
+  // (founder 2026-09-01).
+  hidden: { type: Boolean, default: false },            // greeting bubble: engine sees it, user doesn't
+  // No defaults on purpose: defaults would materialize an empty routeTo on
+  // EVERY message and every truthiness check (CTA, card-hiding, map prop)
+  // would fire. Minimize strips the empty object when nothing was set.
+  metadata: {
+    routeTo: { placeId: String, name: String },
+  },
   // 'like' | 'dislike' | null  — last state only, null means no feedback / toggled off
   feedback: { type: String, enum: ['like', 'dislike', null], default: null }
 });
