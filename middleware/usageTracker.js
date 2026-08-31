@@ -33,6 +33,9 @@ const usageTracker = async (req, res, next) => {
         let userLimit = await UserAILimit.findOne({ userId: req.user.id });
         if (!userLimit) {
             userLimit = new UserAILimit({ userId: req.user.id, isPremium: req.user.isPremium || false });
+            // Delete-and-re-register with the same email resumes the SAME
+            // daily meter (UsageTombstone) — never a fresh one.
+            await UserAILimit.seedFromTombstone(userLimit, { email: req.user.email, userId: req.user.id });
             await userLimit.save();
             await mongoose.model('User').findByIdAndUpdate(req.user.id, { aiLimits: userLimit._id });
         }

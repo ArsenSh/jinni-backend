@@ -174,6 +174,28 @@ userAILimitSchema.methods.checkAndUpdateUsage = async function(tokensToAdd = 0, 
         isPremium
     };
 };
+// Free-tier laundering defense (2026-09-01): a fresh limit doc for an email
+// whose account died TODAY resumes the dead account's same-day usage
+// (salted-hash tombstone, 48h TTL) instead of starting a zero meter. Call
+// right after `new UserAILimit(...)`, before save. Fail-open: a tombstone
+// problem must never block a legitimate registration.
+userAILimitSchema.statics.seedFromTombstone = async function (doc, { email = null, userId = null } = {}) {
+    try {
+        let addr = email;
+        if (!addr && userId) {
+            addr = (await mongoose.model('User').findById(userId).select('email').lean())?.email;
+        }
+        if (!addr) return;
+        const Tomb = require('./UsageTombstone');
+        const t = await Tomb.findOne({ emailHash: Tomb.hashEmail(addr), day: Tomb.utcDay() })
+            .sort({ createdAt: -1 }).lean();
+        if (!t) return;
+        doc.dailyUsage.tokensUsed = Math.max(doc.dailyUsage.tokensUsed || 0, t.tokensUsed || 0);
+        doc.dailyUsage.placesViewed = Math.max(doc.dailyUsage.placesViewed || 0, t.placesViewed || 0);
+        console.log(`[limits] tombstone resumed for re-registered email: tok=${t.tokensUsed} places=${t.placesViewed}`);
+    } catch (e) { console.warn('[limits] tombstone seed failed (fail-open):', e.message); }
+};
+
 userAILimitSchema.statics.syncUserPremium = async function(userId, isPremium) {
     return this.findOneAndUpdate(
         { userId },

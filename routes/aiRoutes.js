@@ -3979,8 +3979,11 @@ async function handleImageRequestOnly(req, res) {
         let userLimit = await UserAILimit.findOne({ userId });
         if (!userLimit) {
             userLimit = new UserAILimit({ userId, isPremium: req.user.isPremium || false });
+            // Same-email re-registration resumes the dead account's daily
+            // meter (UsageTombstone) — see usageTracker's twin call.
+            await UserAILimit.seedFromTombstone(userLimit, { email: req.user.email, userId });
             await userLimit.save();
-        }        
+        }
         const status = await userLimit.getUsageStatus();
         if (status.cooldown.active) {
             console.log(`🚫 Image request blocked - user on cooldown`);
@@ -9026,6 +9029,25 @@ router.delete('/user/account', auth, async (req, res) => {
         // ── User-scoped data (regardless of business ownership) ───────────────
         await SavedPlace.deleteMany({ userId });
         await ChatSession.deleteMany({ userId });
+        // Free-tier laundering defense (founder 2026-09-01): before the limit
+        // doc dies, its SAME-DAY usage survives as a salted email-hash
+        // tombstone (48h TTL) — a same-email re-registration resumes this
+        // meter instead of a fresh one. Stale (pre-today) usage is skipped:
+        // it would have reset at midnight anyway.
+        try {
+            if (user?.email) {
+                const lim = await UserAILimit.findOne({ userId }).select('dailyUsage').lean();
+                const used = lim?.dailyUsage?.tokensUsed || 0;
+                const places = lim?.dailyUsage?.placesViewed || 0;
+                const reset = lim?.dailyUsage?.lastResetDate ? new Date(lim.dailyUsage.lastResetDate) : null;
+                const Tomb = require('../models/UsageTombstone');
+                const isToday = reset && reset.toISOString().slice(0, 10) === Tomb.utcDay();
+                if (isToday && (used > 0 || places > 0)) {
+                    await Tomb.create({ emailHash: Tomb.hashEmail(user.email), tokensUsed: used, placesViewed: places, day: Tomb.utcDay() });
+                    console.log(`[delete] usage tombstone written (tok=${used}, places=${places})`);
+                }
+            }
+        } catch (tombErr) { console.warn('[delete] usage tombstone failed (account deletion continues):', tombErr.message); }
         await UserAILimit.deleteMany({ userId });
         // Full cascade (founder 2026-08-31: "when i delete account it seems
         // not all data are deleted") — every remaining userId-keyed
