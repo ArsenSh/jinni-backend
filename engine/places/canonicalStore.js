@@ -14,7 +14,7 @@
 //      defensively mapped and fail-open — a broken tier degrades to [].
 // Models/services are required LAZILY so jest imports without booting Mongoose.
 
-const { normalizePlaceName } = require('./matching');
+const { normalizePlaceName, _sigTokens } = require('./matching');
 const { haversineKm } = require('../utils/geo');
 const { scheduleToPeriods } = require('../context/contextEngine');
 // The CURRENT embedding model — stored vectors from another model are noise
@@ -265,6 +265,20 @@ function _descText(desc) {
  *  registers BOTH identities — placeId AND normalized name — because a
  *  validator row (no placeId) and a cache row (with one) must still collide
  *  on the name, or the same place ships twice. */
+// Street signature for the twin pass below: house number + first distinctive
+// street word, diacritics folded. "14 Abovyan St," and "14 Abovyan poxoc,
+// Yerevan 0001, Armenia" both → "14 abovyan"; missing either part → null
+// (no signature, never merged on address alone).
+const _ADDR_GENERIC = new Set(['street', 'st', 'ave', 'avenue', 'blvd', 'boulevard', 'road', 'rd', 'lane', 'poxoc', 'pokhots', 'yerevan', 'armenia', 'tbilisi', 'georgia', 'dubai', 'united', 'arab', 'emirates']);
+function _addrSig(addr) {
+    if (!addr) return null;
+    const toks = String(addr).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+    const num = toks.find(t => /\d/.test(t));
+    const street = toks.find(t => /^\p{L}{4,}$/u.test(t) && !_ADDR_GENERIC.has(t));
+    return num && street ? `${num} ${street}` : null;
+}
+
 function mergeAndDedupe(...lists) {
     const seen = new Set();
     const out = [];
@@ -280,7 +294,27 @@ function mergeAndDedupe(...lists) {
             out.push(c);
         }
     }
-    return out;
+    // Same place under DIFFERENT names — "Grand Hotel Yerevan" (curated) and
+    // "Grand Hotel Yerevan, an SLH Hotel" (Google cache twin), both at
+    // 14 Abovyan (live 2026-08-31): the name keys differ, so a second pass
+    // uses street evidence. Drop a candidate when an already-kept one shares
+    // its street signature AND one name's distinctive tokens are a SUBSET of
+    // the other's (protects different venues at one address — a café and a
+    // gallery in the same building share the street, never the name tokens).
+    // Curated tiers arrive first in `lists`, so the curated twin always wins.
+    const kept = [];
+    for (const c of out) {
+        const sig = _addrSig(c.address);
+        const dup = sig && kept.some(k => _addrSig(k.address) === sig && (() => {
+            const a = _sigTokens(c.name || ''), b = _sigTokens(k.name || '');
+            if (!a.length || !b.length) return false;
+            const A = new Set(a), B = new Set(b);
+            return a.every(t => B.has(t)) || b.every(t => A.has(t));
+        })());
+        if (dup) { console.log(`[canonicalStore] street-twin dropped "${c.name}" (${sig})`); continue; }
+        kept.push(c);
+    }
+    return kept;
 }
 
 /**

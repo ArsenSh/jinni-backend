@@ -126,6 +126,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             res.set('X-Usage-Places-Remaining', usageStatus.dailyPlacesRemaining.toString());
             if (usageStatus.estimatedRequestsRemaining != null) { res.set('X-Usage-Requests-Remaining', usageStatus.estimatedRequestsRemaining.toString()); }
             if (usageStatus.onCooldown) {
+                // Diagnostic (founder 2026-08-31: hit "reached your limit"
+                // right after delete+re-register) — log WHO tripped it and
+                // the doc's numbers so a stale-doc leak is provable from logs.
+                console.warn(`[v2][limits] 429 user=${req.user.id} until=${usageStatus.cooldownUntil} tokensUsed=${usageStatus.dailyTokensUsed} tokensRemaining=${usageStatus.dailyTokensRemaining}`);
                 return res.status(429).json({ type: 'cooldown', message: 'AI services are on cooldown.', cooldownUntil: usageStatus.cooldownUntil, reason: 'daily_limit_exceeded' });
             }
         }

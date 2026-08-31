@@ -187,3 +187,35 @@ describe('normalizePlaceName — generic type-word plural fold', () => {
             .not.toBe(normalizePlaceName('Seven Vision Hotel'));
     });
 });
+
+// Street-twin pass (live 2026-08-31): "Grand Hotel Yerevan" (curated) and
+// "Grand Hotel Yerevan, an SLH Hotel" (Google cache twin) both at 14 Abovyan
+// shipped as two cards — different name keys, same hotel. mergeAndDedupe's
+// second pass drops a candidate whose street signature matches a kept one
+// AND whose distinctive name tokens are subset-related. Curated wins (listed
+// first); different venues in one building survive (no token subset).
+describe('mergeAndDedupe — street-twin pass', () => {
+    const { mergeAndDedupe } = require('../engine/places/canonicalStore');
+    const curated = { placeId: 'dest_1', name: 'Grand Hotel Yerevan', address: '14 Abovyan St,' };
+    const cacheTwin = { placeId: 'ChIJ54jQ', name: 'Grand Hotel Yerevan, an SLH Hotel', address: '14 Abovyan poxoc, Yerevan 0001, Armenia' };
+    test('the live Grand Hotel pair collapses to the curated card', () => {
+        const out = mergeAndDedupe([curated], [cacheTwin]);
+        expect(out).toHaveLength(1);
+        expect(out[0].placeId).toBe('dest_1');
+    });
+    test('different venues at the same address both survive', () => {
+        const cafe = { placeId: 'p1', name: 'Louvre Cafe', address: '14 Abovyan St' };
+        const gallery = { placeId: 'p2', name: 'Dalan Art Gallery', address: '14 Abovyan St' };
+        expect(mergeAndDedupe([cafe], [gallery])).toHaveLength(2);
+    });
+    test('same-name places with different street numbers both survive', () => {
+        const a = { placeId: 'p1', name: 'Tufenkian Heritage Hotels', address: '48 Hanrapetutyan pokhots' };
+        const b = { placeId: 'p2', name: 'Tufenkian Heritage Hotel Dilijan', address: '9 Sharambeyan St' };
+        expect(mergeAndDedupe([a], [b])).toHaveLength(2);
+    });
+    test('candidates without addresses fall back to the classic keys only', () => {
+        const a = { placeId: 'p1', name: 'Grand Hotel Yerevan' };
+        const b = { placeId: 'p2', name: 'Grand Hotel Yerevan, an SLH Hotel' };
+        expect(mergeAndDedupe([a], [b])).toHaveLength(2);
+    });
+});

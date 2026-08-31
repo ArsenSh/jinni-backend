@@ -9025,6 +9025,27 @@ router.delete('/user/account', auth, async (req, res) => {
         await SavedPlace.deleteMany({ userId });
         await ChatSession.deleteMany({ userId });
         await UserAILimit.deleteMany({ userId });
+        // Full cascade (founder 2026-08-31: "when i delete account it seems
+        // not all data are deleted") — every remaining userId-keyed
+        // collection, plus the email-keyed auth flows. Payment is KEPT on
+        // purpose: financial records outlive the account (refunds, audits).
+        // Best-effort so a missing collection never blocks the deletion.
+        try {
+            await Promise.all([
+                require('../models/PlaceFeedback').deleteMany({ userId }),
+                require('../models/PlaceDislike').deleteMany({ userId }),
+                require('../models/PlaceView').deleteMany({ userId }),
+                require('../models/UserActivity').deleteMany({ userId }),
+                require('../models/Itinerary').deleteMany({ userId }),
+                TravelQuery.deleteMany({ userId }),
+                require('../models/UserGoogleUsage').deleteMany({ userId }),
+                require('../models/ChatTurn').deleteMany({ userId }),
+                ...(user?.email ? [
+                    require('../models/EmailVerification').deleteMany({ email: user.email }),
+                    require('../models/PasswordReset').deleteMany({ email: user.email }),
+                ] : []),
+            ]);
+        } catch (cascadeErr) { console.error('⚠️ Deletion cascade partial failure (account still deleted):', cascadeErr.message) }
         await User.findByIdAndDelete(userId);
         if (user?.email) {emailService.sendAccountDeletedEmail(user.email, user.name, user.settings?.language).then(() => console.log(`✅ Account deleted email sent to ${user.email}`)).catch(err => console.error('⚠️ Failed to send account deleted email:', err.message))}
         res.json({success: true, message: 'Account and all associated data deleted successfully'});
