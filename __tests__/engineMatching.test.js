@@ -167,3 +167,23 @@ describe('messageNamesPlace geo-token exclusion (the "Cafe #2 Dilijan" hijack, 2
         expect(messageNamesPlace('what about dilijan?', 'Cafe #2 Dilijan')).toBe(true);
     });
 });
+
+// Plural-fold dedupe (live 2026-08-31): "Seven Visions Hotels" (Google cache
+// twin) and "7 Visions Hotel" (curated Destination) shipped as TWO cards in
+// one Yerevan hotel deck — the numeral fold matched but the trailing s on the
+// TYPE word kept the keys distinct. Type-word plurals now fold to singular;
+// distinctive name words never do.
+describe('normalizePlaceName — generic type-word plural fold', () => {
+    test('the live twin pair collapses to one key', () => {
+        expect(normalizePlaceName('Seven Visions Hotels'))
+            .toBe(normalizePlaceName('7 Visions Hotel'));
+    });
+    test('distinct real hotels sharing a name word stay distinct', () => {
+        expect(normalizePlaceName('Republica Hotel'))
+            .not.toBe(normalizePlaceName('Republica Suites'));
+    });
+    test('distinctive plural words are never singularized', () => {
+        expect(normalizePlaceName('Seven Visions Hotel'))
+            .not.toBe(normalizePlaceName('Seven Vision Hotel'));
+    });
+});

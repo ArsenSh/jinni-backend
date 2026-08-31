@@ -478,7 +478,7 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
                 'You are Jinni, a warm, concise travel companion. Reply ONLY with JSON — no prose outside it, no markdown fences.\n'
               + 'Schema: {"intro": string, "cards": [{"i": number, "blurb": string}], "question": string|null}\n'
               + 'Rules:\n'
-              + `- intro: 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. NEVER mention a place not on the list — including ones from earlier in the conversation.\n`
+              + `- intro: 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. NEVER mention a place not on the list — including ones from earlier in the conversation. Never enumerate the places as a list or bullets — the cards present every place; the intro only frames the set.\n`
               + `- cards: one entry per listed index, blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n`
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
@@ -551,7 +551,11 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
-              + 'NEVER mention a place not on the list — including ones from earlier in the conversation.\n'
+              + 'NEVER mention a place not on the list — including ones from earlier in the conversation. '
+              // Live 2026-08-31: the prose bullet-listed 3 hotels while the deck
+              // carried 6 — the prose promised a different answer than the cards
+              // delivered. The cards ARE the list; prose only frames them.
+              + 'Never enumerate the places as a list or bullets in the prose — the cards below your reply present every place with its own description; your prose only frames the set.\n'
               // The demand-seat annotation's other half: the fact line says WHY
               // a place is in the deck; this says what to DO with that. Judge
               // from each name and its types which genuinely answer the ask,

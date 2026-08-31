@@ -13,6 +13,15 @@
 const _NUM_WORDS = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', eleven: '11', twelve: '12' };
 const _NUM_WORDS_RE = /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g;
 
+// Generic place-TYPE words fold plural→singular so "Seven Visions Hotels" ≡
+// "7 Visions Hotel" (live 2026-08-31: the numeral fold above matched, but the
+// trailing s kept the curated doc and its Google cache twin as TWO cards in
+// one hotel deck). Type words only, never distinctive names — "Republica
+// Hotel" and "Republica Suites" are genuinely different Yerevan hotels and
+// must stay distinct.
+const _TYPE_PLURALS = { hotels: 'hotel', resorts: 'resort', suites: 'suite', apartments: 'apartment', restaurants: 'restaurant', cafes: 'cafe', bars: 'bar', gardens: 'garden', inns: 'inn', lodges: 'lodge', hostels: 'hostel', guesthouses: 'guesthouse', taverns: 'tavern', grills: 'grill', clubs: 'club', lounges: 'lounge', houses: 'house' };
+const _TYPE_PLURALS_RE = new RegExp(`\\b(${Object.keys(_TYPE_PLURALS).join('|')})\\b`, 'g');
+
 const normalizePlaceName = (s) => (s || '')
     .toLowerCase()
     .trim()
@@ -28,7 +37,8 @@ const normalizePlaceName = (s) => (s || '')
     .replace(/[^\p{L}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(_NUM_WORDS_RE, (w) => _NUM_WORDS[w]);
+    .replace(_NUM_WORDS_RE, (w) => _NUM_WORDS[w])
+    .replace(_TYPE_PLURALS_RE, (w) => _TYPE_PLURALS[w]);
 
 // ── Name-similarity guard ─────────────────────────────────────────────────────
 // The model proposes a NAME; Google's text search returns its closest real match
