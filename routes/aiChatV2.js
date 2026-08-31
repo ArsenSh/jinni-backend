@@ -1226,8 +1226,26 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     })
                     : [];
                 if (placeFacts.length) meta.localFacts = placeFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
+                // Direct name-ask (live 2026-08-31: "Do you know Elegant hotel
+                // and resort in Tsaghkadzor?" → Elegant + an unasked resort):
+                // when the traveler's message NAMES retrieved places, they
+                // asked about THOSE — serve only the named one(s). Category
+                // asks never trigger: no retrieved name appears in the message,
+                // and geo tokens alone never count (messageNamesPlace).
+                if ((result.places || []).length > 1) {
+                    const namedHits = result.places.filter(p => messageNamesPlace(msgLower, p.name, geoTokens));
+                    if (namedHits.length && namedHits.length < result.places.length) {
+                        console.log(`[v2] name-ask: serving ${namedHits.length}/${result.places.length} — the message names them`);
+                        result.places = namedHits;
+                    }
+                }
                 const promptArgs = {
                     query: retrievalQuery, places: result.places, langName, timeNote,
+                    // Distances honesty: with a NAMED centre the km figures are
+                    // from that town's centre, not from the traveler (who may
+                    // be in another city — live 2026-08-31, Yerevan user told
+                    // "2.5 km from you" about Tsaghkadzor).
+                    centreCity: meta.centreSource === 'named' ? (meta.searchCity || null) : null,
                     history: recentTurns, localFacts: placeFacts, preferences: intent._preferences,
                     // Honest max: CODE knows the promise fell short ("I want 10
                     // hotels" → 3 new cards, live 2026-08-30); the prompt tells

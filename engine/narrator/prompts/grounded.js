@@ -469,7 +469,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
  * no prices, hours, menus, phones, or ratings beyond the given ones.
  */
-function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null, reServed = false }) {
+function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null, reServed = false, centreCity = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -490,6 +490,9 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
                   : '')
               + (reServed
                   ? '- Every listed place was ALREADY SHOWN earlier in this conversation — this turn NARROWS what they saw: present them as the matching subset ("of the places you saw, these fit"), never as new discoveries.\n'
+                  : '')
+              + (centreCity
+                  ? `- Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say "from the centre of ${centreCity}".\n`
                   : '')
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -530,7 +533,7 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null, reServed = false }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null, reServed = false, centreCity = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -550,6 +553,9 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + `Reply STRICTLY in ${langName} — the language of the CURRENT message — even when earlier turns used another language.\n`
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
+              + (centreCity
+                  ? `Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say it as "from the centre of ${centreCity}" (e.g. "0.9 km from the centre of ${centreCity}").\n`
+                  : '')
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation. '
               // Live 2026-08-31: the prose bullet-listed 3 hotels while the deck
