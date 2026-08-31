@@ -512,8 +512,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const deckAsk = intent.isTravel && !intent.infoAsk
             && (!!intent.count
                 || (intent.actionType && intent.actionType !== 'general' && (intent.placeNames || []).length > 0));
+        // MOST-SPECIFIC match wins — the city-token disease's FOURTH home
+        // (live 2026-08-31: "how to get to DilijanInn Hotel and Restaurant?"
+        // routed to "Dilijan Resort" — .find() took the first any-token match,
+        // and with places=[] nothing excluded the city word). Score = how many
+        // of the card's own distinctive tokens the message actually contains;
+        // ties go to the longer (more specific) name.
+        const _cardScore = (p) => String(p.name).toLowerCase().split(/[^a-z0-9Ѐ-ӿ԰-֏]+/u)
+            .filter(t => t.length >= 4 && !geoTokens.has(t))
+            .filter(t => msgLower.includes(t)).length;
         const namedCard = intent.isTravel && !deckAsk
-            && sessionCards.find(p => messageNamesPlace(msgLower, p.name, geoTokens));
+            && sessionCards.filter(p => messageNamesPlace(msgLower, p.name, geoTokens))
+                .sort((a, b) => _cardScore(b) - _cardScore(a) || String(b.name).length - String(a.name).length)[0];
         const transportAsk = intent.infoAsk === 'transport'
             || (intent.infoAsk === undefined && isTransportAsk(msgLower));
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
@@ -745,7 +755,24 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // "Tap for distance" flow (self-hosted OSRM does the tracing).
             if (namedCard) {
                 meta.routeTo = { placeId: namedCard.placeId || null, name: namedCard.name };
-                console.log(`[v2] transport answer routes to shown card "${namedCard.name}"`);
+                // Give the ANSWER its own map (founder 2026-08-31: "it auto
+                // expanded old map above, can it give new map? showing see
+                // route?"). The full card payload already lives in the
+                // session's stored messages — riding it on this reply makes
+                // the frontend render a fresh one-card map right under the
+                // answer, and the bridge traces the route THERE instead of
+                // expanding a deck far up the scroll.
+                const _norm = (s2) => String(s2 || '').toLowerCase().trim();
+                outer: for (let i = (sessionPeek?.messages || []).length - 1; i >= 0; i--) {
+                    for (const r of (sessionPeek.messages[i]?.recommendations || [])) {
+                        if ((namedCard.placeId && r.placeId === namedCard.placeId)
+                            || _norm(r.name) === _norm(namedCard.name)) {
+                            recommendations = [r];
+                            break outer;
+                        }
+                    }
+                }
+                console.log(`[v2] transport answer routes to shown card "${namedCard.name}"${recommendations.length ? ' (own map attached)' : ''}`);
             }
             meta.answerType = 'getting_around';
             stats.path = 'transport';
