@@ -360,7 +360,7 @@ function localFactsBlock(facts = [], maxChars = 4000) {
         }).join('\n\n') + '\n';
 }
 
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null }) {
     return [
         {
             role: 'system',
@@ -371,6 +371,13 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + NO_REMEMBERED_EVENTS
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'
+              // The bridge resolved WHICH place — the prose must never deny a
+              // card that sits attached under the reply (live 2026-09-01:
+              // "I'm not able to verify a restaurant called Sherep" beside
+              // Sherep's own card).
+              + (destination
+                  ? `The destination is "${destination.name}" — already shown to the traveler as a card, attached again under this reply. Speak about reaching THAT place by name; NEVER say you cannot find or verify it.\n`
+                  : '')
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
               + 'Answer the MODE they actually asked about — walking, taxi or ride-hailing, metro or bus, '
               + 'driving or renting, ferry, or flying between cities — and name what a local would name: '

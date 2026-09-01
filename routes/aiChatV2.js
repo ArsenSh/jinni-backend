@@ -57,7 +57,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, messages: { $slice: -8 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, messages: { $slice: -30 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
@@ -543,6 +543,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // with the same matcher. (sessionPeek already contains the current
         // message — the frontend saves before it fetches — so "previous"
         // is the second-to-last user entry.)
+        // Ordinal references — "first restaurant you mentioned" (live
+        // 2026-09-01: answered about the WRONG place): resolve against the
+        // newest multi-card deck, in deck order. Beats the stale-carry below.
+        if (!namedCard && intent.isTravel && !deckAsk) {
+            const ORD = { first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2, fourth: 3, '4th': 3, fifth: 4, last: -1, 'первый': 0, 'первого': 0, 'второй': 1, 'третий': 2, 'последний': -1, 'առաջին': 0, 'երկրորդ': 1, 'վերջին': -1 };
+            const hit = Object.keys(ORD).find(w => msgLower.includes(w));
+            if (hit) {
+                for (let i = (sessionPeek?.messages || []).length - 1; i >= 0; i--) {
+                    const recs = sessionPeek.messages[i]?.recommendations || [];
+                    if (recs.length > 1) {
+                        const idx = ORD[hit] === -1 ? recs.length - 1 : ORD[hit];
+                        if (recs[idx]) { namedCard = recs[idx]; console.log(`[v2] bridge ordinal: "${hit}" → "${namedCard.name}"`); }
+                        break;
+                    }
+                }
+            }
+        }
         if (!namedCard && intent.isTravel && !deckAsk) {
             const userTurns = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
             const prev = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : null;
@@ -551,13 +568,31 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 if (namedCard) console.log(`[v2] bridge follow-up: place carried from previous turn ("${namedCard.name}")`);
             }
         }
+        // A bare name as the whole message ("amar") right after a transport
+        // exchange is the traveler ANSWERING "which place?" — it must not
+        // fall to chit-chat (live 2026-09-01: intent even misread it as
+        // Armenian and denied knowing the address).
+        let forceTransport = false;
+        if (!namedCard && !deckAsk && message.trim().split(/\s+/).length <= 4) {
+            const cand = _bestCardFor(msgLower);
+            if (cand) {
+                const userTurns2 = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
+                const prevU = userTurns2.length >= 2 ? String(userTurns2[userTurns2.length - 2].text).toLowerCase() : '';
+                if (isTransportAsk(prevU)) {
+                    namedCard = cand;
+                    forceTransport = true;
+                    console.log(`[v2] bare-name follow-up: "${message.trim()}" → "${namedCard.name}"`);
+                }
+            }
+        }
         const transportAsk = intent.infoAsk === 'transport'
             || (intent.infoAsk === undefined && isTransportAsk(msgLower))
             // Deterministic override: transport wording about a card that is
             // ON SCREEN is a route ask, whatever the intent model guessed
             // (category, place_details, …). Requires BOTH signals, so plain
             // category asks ("hotels near opera") can never trip it.
-            || (isTransportAsk(msgLower) && !!namedCard);
+            || (isTransportAsk(msgLower) && !!namedCard)
+            || forceTransport;
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
         // "Search the internet for X" is a SEARCH, not a capability quiz
@@ -780,6 +815,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const gaFacts = await lookupFacts({ ...region, topic: topicFor(intent.infoTopic) || 'get_around' });
             const gaMessages = buildGettingAroundMessages({
                 message, langName, cityLabel, history: recentTurns,
+                destination: namedCard ? { name: namedCard.name } : null,
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
                     weatherNote(weather) || null].filter(Boolean).join('; ') || null,
                 canQuoteFares: flightsEnabled(),
