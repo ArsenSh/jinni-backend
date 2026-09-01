@@ -131,4 +131,23 @@ function parseDeckCount(message) {
     return m ? Number(m[1]) : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
+/* 2b. A DESTINATION NAME must not score lexically (live 2026-09-01).
+ * "suggest 3 good locations in Dilijan" put "dilijan" into BM25, and a place's
+ * text is name + primaryType + types + interests + CITY. Every Dilijan
+ * candidate carries the token once through `city`; a place BRANDED with it —
+ * "Dilijan Resort & Restaurant" — carries it twice, so tf=2 beat tf=1 and the
+ * town's namesakes took the deck. The token cannot discriminate anything: the
+ * geography was already applied as coordinates before retrieval ran.
+ *
+ * Returns null when nothing but the place name was asked — that is a browse
+ * ask, and ranking should fall to the prior (rating, popularity, interests)
+ * rather than to whoever is named after the town. Kept separate from
+ * buildRetrievalQuery because its output also feeds the narration prompt. */
+function stripGeoTokens(query, geoTokens = []) {
+    const geo = new Set((geoTokens || []).flatMap(t => tokenize(String(t || ''))));
+    if (!geo.size) return query || null;
+    const kept = tokenize(query || '').filter(t => !geo.has(t));
+    return kept.length ? kept.join(' ') : null;
+}
+
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

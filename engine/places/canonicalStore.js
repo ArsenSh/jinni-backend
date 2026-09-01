@@ -635,6 +635,8 @@ const VIBE_TOKENS = new Set([
     'attractions', 'explore', 'exploring', 'tour', 'touring', 'trip', 'travel',
     'things', 'todo', 'worth', 'must', 'famous', 'popular', 'top', 'recommend',
     'recommended', 'suggest', 'interesting', 'beautiful', 'amazing',
+    'location', 'locations', 'spot', 'spots', 'area', 'around', 'city', 'town',
+    'somewhere', 'anything', 'something', 'options',
     'cheap', 'authentic', 'local', 'open', 'beautiful', 'view', 'views',
     'lively', 'relax', 'relaxing', 'social', 'today', 'meet', 'date',
     // Function/request words (2026-08-23 live leak: a misread meta-question

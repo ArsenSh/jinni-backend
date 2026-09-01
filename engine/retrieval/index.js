@@ -306,6 +306,26 @@ async function findPlaces(params = {}, deps = {}) {
             }
         }
     }
+    // ── A category-less BROWSE ask gets a mixed deck (2026-09-01) ──
+    // Only when there is no demand left in the query: "sushi in Dilijan" must
+    // return sushi, not one sushi and a park. Geo tokens are already stripped
+    // upstream, so a query that was nothing but a place name arrives as null,
+    // and a vibe-only query ("good locations") is not substantive either.
+    // A CATEGORY ask never diversifies — it was asked for one kind.
+    if (!category && params.diversify !== false) {
+        let browseAsk = !query;
+        if (!browseAsk) {
+            try { browseAsk = !require('../places/canonicalStore').isSubstantiveAsk(query); }
+            catch { browseAsk = false; }
+        }
+        if (browseAsk) {
+            const { diversify } = require('./diversify');
+            const before = ordered.slice(0, effectiveWanted).map(c => c && c.name).join('|');
+            ordered = diversify(ordered, { want: effectiveWanted });
+            provenance.diversified = ordered.slice(0, effectiveWanted).map(c => c && c.name).join('|') !== before;
+        }
+    }
+
     const places = ordered.slice(0, effectiveWanted);
     return { places, degraded: false, provenance };
 }

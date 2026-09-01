@@ -20,7 +20,7 @@ const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -1107,7 +1107,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // looking (live 2026-08-24). Reverse-geocoded once, ~1km grid cache.
             const searchRegion = await resolveRegion({ center, placeNames: intent.placeNames });
             const findArgs = {
-                query: retrievalQuery,
+                // Retrieval sees the query WITHOUT the destination name; the
+                // narration prompt below still gets the full one.
+                query: stripGeoTokens(retrievalQuery, Array.from(geoTokens)),
                 eventWindow,
                 regionCity: searchRegion.city || meta.searchCity || null,
                 regionCountry: searchRegion.country || null,
