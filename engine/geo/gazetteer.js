@@ -19,6 +19,11 @@ const _model = () => require('../../models/GeoName');
 //   2. race every query against a short deadline in case it is up but stuck.
 const GUARD_MS = 1500;
 
+// GeoNames feature codes that are NOT a city in their own right: sections of a
+// populated place (Yerevan's Avan), subdivisions, and abandoned / destroyed /
+// historical / religious entries. Excluded from reverse geocoding.
+const SUBPLACE_CODES = ['PPLX', 'PPLL', 'PPLR', 'PPLQ', 'PPLW', 'PPLH', 'PPLCH', 'PPLF'];
+
 function _ready() {
     try { return require('mongoose').connection?.readyState === 1; } catch { return false; }
 }
@@ -124,29 +129,46 @@ async function lookupPlace(name, { near = null } = {}, deps = {}) {
     const Model = _pick(deps);
     if (!Model) return null;
     try {
-        const rows = await _guard(Model.find({ names: key })
-            .sort({ population: -1 })
-            .limit(10)
-            .lean());
-        if (!rows || !rows.length) return null;
+        // ── TIERED, not one population-sorted query (bug found live on the
+        //    first seeded server, 2026-09-01) ──
+        // Countries are seeded with population 0, so a single
+        // `.sort({population:-1}).limit(10)` put "Armenia" the COUNTRY below
+        // Armenia, Colombia (~300k) and every other populated namesake — and
+        // the limit could drop it before any in-memory ranking ran. A country
+        // ask would have re-centred on Colombia.
+        //
+        // The order is country → city → region:
+        //  · an exact country name is unambiguous, so it wins outright;
+        //  · CITY beats REGION because admin regions routinely share their
+        //    capital's name (Yerevan, Moscow, Tashkent), and "hotels in
+        //    Yerevan" means the city — resolving it as a region would also
+        //    skip the town radius sizing entirely.
+        const asCountry = await _guard(Model.find({ names: key, kind: 'country' }).limit(1).lean());
+        if (asCountry && asCountry[0]) return _toGeo(asCountry[0]);
 
-        // Countries and regions outrank cities on an exact name tie ("Armenia"
-        // the country, not some village of the same name), then population.
-        const rank = { country: 0, region: 1, city: 2 };
-        let best = [...rows].sort((a, b) =>
-            (rank[a.kind] ?? 3) - (rank[b.kind] ?? 3) || (b.population || 0) - (a.population || 0))[0];
-
-        // Same name, several real cities (Springfield, Tripoli): prefer the one
-        // nearest the traveler — but only among cities, so a nearby village can
-        // never outrank the country the name actually denotes.
-        if (near && Number.isFinite(near.lat) && Number.isFinite(near.lng)) {
-            const cities = rows.filter(r => r.kind === 'city' && r.lat != null);
-            if (cities.length > 1 && best.kind === 'city') {
-                best = cities.reduce((a, b) =>
-                    _km(near.lat, near.lng, a.lat, a.lng) <= _km(near.lat, near.lng, b.lat, b.lng) ? a : b);
+        const cities = await _guard(Model.find({ names: key, kind: 'city' })
+            .sort({ population: -1 }).limit(10).lean());
+        if (cities && cities.length) {
+            let best = cities[0];
+            // Same name, several real cities: prefer the one nearest the
+            // traveler — but only among cities of COMPARABLE size. Nearest
+            // alone would answer "Paris" with Paris, Texas (~25k) for a
+            // traveler in the US; the 20% floor keeps that from outranking
+            // Paris, France while still letting genuine local ties resolve
+            // by distance.
+            if (near && Number.isFinite(near.lat) && Number.isFinite(near.lng) && cities.length > 1) {
+                const floor = (cities[0].population || 0) * 0.2;
+                const viable = cities.filter(c => c.lat != null && (c.population || 0) >= floor);
+                if (viable.length > 1) {
+                    best = viable.reduce((a, b) =>
+                        _km(near.lat, near.lng, a.lat, a.lng) <= _km(near.lat, near.lng, b.lat, b.lng) ? a : b);
+                }
             }
+            return _toGeo(best);
         }
-        return _toGeo(best);
+
+        const asRegion = await _guard(Model.find({ names: key, kind: 'region' }).limit(1).lean());
+        return (asRegion && asRegion[0]) ? _toGeo(asRegion[0]) : null;
     } catch (err) {
         console.warn(`[gazetteer] lookup "${name}" failed: ${err.message} — falling back`);
         return null;
@@ -164,18 +186,37 @@ async function lookupPlace(name, { near = null } = {}, deps = {}) {
  *
  * @returns {Promise<{city, country, countryCode, distanceKm}|null>}
  */
-async function regionAt({ lat, lng } = {}, { maxKm = 120 } = {}, deps = {}) {
+async function regionAt({ lat, lng } = {}, { maxKm = 30, mergeKm = 12 } = {}, deps = {}) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     const Model = _pick(deps);
     if (!Model) return null;
     try {
         const rows = await _guard(Model.find({
             kind: 'city',
+            // Sections, subdivisions and abandoned/historical entries are never
+            // the answer to "what city is this".
+            featureCode: { $nin: SUBPLACE_CODES },
             location: { $near: { $geometry: { type: 'Point', coordinates: [lng, lat] },
                                  $maxDistance: maxKm * 1000 } },
-        }).limit(1).lean());
-        const near = (rows || [])[0];
-        if (!near) return null;
+        }).limit(5).lean());
+        if (!rows || !rows.length) return null;
+
+        // ── Nearest is not the same as RIGHT (live 2026-09-01) ──
+        // Standing in Yerevan, the nearest gazetteer entry was "Avan" — one of
+        // the city's own districts, which GeoNames carries as its own row.
+        // Google said "Yerevan", and Yerevan is the true answer: the label
+        // reaches the model as "you are in X" and is appended to fallback
+        // search queries, so a district name is both a small lie and a worse
+        // query ("best places to visit Armenia Avan"). Among entries within
+        // mergeKm of each other, the most POPULOUS one is the city; a genuinely
+        // separate town further out still wins on its own, because it is the
+        // only candidate in range.
+        let near = rows[0];
+        for (const r of rows) {
+            if (r.lat == null) continue;
+            if (_km(lat, lng, r.lat, r.lng) <= mergeKm
+                && (r.population || 0) > (near.population || 0)) near = r;
+        }
         return {
             city: near.name,
             country: near.countryName || null,
@@ -232,5 +273,5 @@ async function isSeeded(deps = {}) {
 
 module.exports = {
     lookupPlace, regionAt, mainCities, radiusForPopulation,
-    normalizeName, isSeeded, TYPES_BY_KIND, _toGeo, _km,
+    normalizeName, isSeeded, TYPES_BY_KIND, SUBPLACE_CODES, _toGeo, _km,
 };

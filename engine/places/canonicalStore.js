@@ -541,7 +541,16 @@ async function loadCandidates(params = {}, deps = {}) {
     // the token "historical" is already answered by the category filter itself
     // (caught live 2026-08-22: fallback bought 3 places for "uncovered:
     // historical" while 22 owned historical candidates sat in the pool).
+    // A DESTINATION NAME is never an unmet demand (live 2026-09-01: the
+    // Armenia ask bought a Text Search for "uncovered: visit", and "armenia"
+    // would have kept buying one every turn once "visit" was fixed). No cache
+    // row's text carries its country, so the token can never be "covered" —
+    // and it does not need to be: it is the search CENTRE, already applied as
+    // coordinates. findPlaces has excluded geo tokens from the adaptive deck
+    // since the tuning round; the paid path was simply never given the list.
+    const geoTokens = new Set((params.geoTokens || []).map(t => String(t).toLowerCase()));
     const missing = uncoveredQueryTokens(params.coreQuery, merged)
+        .filter(t => !geoTokens.has(t))
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
     if ((merged.length < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
@@ -598,6 +607,18 @@ async function loadCandidates(params = {}, deps = {}) {
 const VIBE_TOKENS = new Set([
     'cozy', 'quiet', 'romantic', 'talk', 'chat', 'evening', 'tonight', 'night',
     'hours', 'near', 'nearby', 'place', 'places', 'good', 'best', 'nice',
+    // ── Generic TRAVEL verbs and nouns (live 2026-09-01) ──
+    // "What are the best places to visit in Armenia?" treated "visit" as an
+    // unmet demand: it bought a paid Google Text Search ("uncovered: visit")
+    // AND tripped the adaptive-deck brake, so the traveler got 3 cards instead
+    // of 6 for the most ordinary question in travel. No place's text contains
+    // the word "visit" — these describe the ASK, never a venue, exactly like
+    // the adjectives above. Only concrete demands (sushi, uzbek, vegan) may
+    // justify a paid fetch or shrink a deck.
+    'visit', 'visiting', 'see', 'seeing', 'sights', 'sightseeing', 'attraction',
+    'attractions', 'explore', 'exploring', 'tour', 'touring', 'trip', 'travel',
+    'things', 'todo', 'worth', 'must', 'famous', 'popular', 'top', 'recommend',
+    'recommended', 'suggest', 'interesting', 'beautiful', 'amazing',
     'cheap', 'authentic', 'local', 'open', 'beautiful', 'view', 'views',
     'lively', 'relax', 'relaxing', 'social', 'today', 'meet', 'date',
     // Function/request words (2026-08-23 live leak: a misread meta-question

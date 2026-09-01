@@ -6,11 +6,28 @@ const { resolveRegion, _CACHE } = require('../engine/context/region');
 
 // A fake mongoose chain: find().sort().limit().lean() → rows.
 const fakeModel = (rows, capture = {}) => ({
-    find(q) { capture.query = q; return this; },
-    sort(s) { capture.sort = s; return this; },
-    limit(n) { capture.limit = n; return this; },
-    lean: async () => rows,
-    estimatedDocumentCount: async () => rows.length,
+    _sel: rows,
+    find(q) {
+        capture.query = q;
+        (capture.queries = capture.queries || []).push(q);
+        this._sel = rows.filter(r => {
+            if (q.names && !(r.names || []).includes(q.names)) return false;
+            if (typeof q.kind === 'string' && r.kind !== q.kind) return false;
+            if (q.countryCode && r.countryCode !== q.countryCode) return false;
+            if (q.population?.$gte != null && (r.population || 0) < q.population.$gte) return false;
+            if (q.featureCode?.$nin && q.featureCode.$nin.includes(r.featureCode)) return false;
+            return true;
+        });
+        return this;
+    },
+    sort(sp) {
+        capture.sort = sp;
+        if (sp && sp.population === -1) this._sel = [...this._sel].sort((a, b) => (b.population || 0) - (a.population || 0));
+        return this;
+    },
+    limit(n) { capture.limit = n; this._sel = this._sel.slice(0, n); return this; },
+    async lean() { return this._sel; },
+    async estimatedDocumentCount() { return rows.length; },
 });
 
 const YEREVAN = {
@@ -78,8 +95,8 @@ describe('gazetteer: lookupPlace', () => {
     });
 
     test('same-named CITIES disambiguate by proximity to the traveler', async () => {
-        const far = { ...DILIJAN, name: 'Springfield', names: ['springfield'], lat: 0, lng: 0 };
-        const near = { ...YEREVAN, name: 'Springfield', names: ['springfield'], population: 100 };
+        const far = { ...DILIJAN, name: 'Springfield', names: ['springfield'], lat: 0, lng: 0, population: 20000 };
+        const near = { ...YEREVAN, name: 'Springfield', names: ['springfield'], population: 18000 };
         const geo = await gz.lookupPlace('Springfield', { near: { lat: 40.2, lng: 44.5 } },
             { model: fakeModel([far, near]) });
         expect(geo.lat).toBeCloseTo(40.18111, 3);
@@ -98,7 +115,9 @@ describe('gazetteer: lookupPlace', () => {
     test('the query matches on the normalized key', async () => {
         const cap = {};
         await gz.lookupPlace("  T'bilisi ", {}, { model: fakeModel([], cap) });
-        expect(cap.query).toEqual({ names: 'tbilisi' });
+        // Tiered now: country, then city, then region — all on the same key.
+        expect(cap.queries[0]).toEqual({ names: 'tbilisi', kind: 'country' });
+        expect(cap.queries.every(q => q.names === 'tbilisi')).toBe(true);
     });
 });
 
@@ -110,8 +129,8 @@ describe('gazetteer: regionAt', () => {
     });
     test('bounds the search so mid-ocean never gets a confident answer', async () => {
         const cap = {};
-        await gz.regionAt({ lat: 0, lng: -140 }, { maxKm: 120 }, { model: fakeModel([], cap) });
-        expect(cap.query.location.$near.$maxDistance).toBe(120000);
+        await gz.regionAt({ lat: 0, lng: -140 }, {}, { model: fakeModel([], cap) });
+        expect(cap.query.location.$near.$maxDistance).toBe(30000);
         expect(cap.query.kind).toBe('city');
     });
     test('bad coordinates return null without querying', async () => {
@@ -221,5 +240,71 @@ describe('region: gazetteer first, Google as fallback', () => {
             detectUserRegion: async () => ({ city: 'Tbilisi', country: 'Georgia' }),
         });
         expect(r.city).toBe('Tbilisi');
+    });
+});
+
+
+// ── Regressions from the first seeded server (2026-09-01) ────────────────────
+describe('gazetteer: regressions found live once real data was in', () => {
+    const ARMENIA_CO = {
+        kind: 'city', scale: 'town', name: 'Armenia', names: ['armenia'],
+        countryCode: 'CO', countryName: 'Colombia', population: 300000,
+        lat: 4.53656, lng: -75.67263,
+    };
+
+    test('"Armenia" is the COUNTRY, never the 300k city in Colombia', async () => {
+        // The country carries population 0, so one population-sorted query put
+        // it below every populated namesake and `.limit(10)` could drop it.
+        const geo = await gz.lookupPlace('Armenia', {}, { model: fakeModel([ARMENIA_CO, ARMENIA]) });
+        expect(geo.countryCode).toBe('AM');
+        expect(geo.scale).toBe('country');
+        expect(geo.lat).toBeCloseTo(40.18, 1);
+    });
+
+    test('a city still resolves when no country shares its name', async () => {
+        const geo = await gz.lookupPlace('Yerevan', {}, { model: fakeModel([YEREVAN, ARMENIA]) });
+        expect(geo).toMatchObject({ name: 'Yerevan', scale: 'town' });
+    });
+
+    test('a CITY outranks a same-named admin REGION (hotels in Yerevan)', async () => {
+        const region = { kind: 'region', scale: 'region', name: 'Yerevan', names: ['yerevan'],
+                         countryCode: 'AM', population: 0, lat: 40.18, lng: 44.51 };
+        const geo = await gz.lookupPlace('Yerevan', {}, { model: fakeModel([region, YEREVAN]) });
+        expect(geo.scale).toBe('town');          // town scale keeps radius sizing
+        expect(geo.population).toBe(1093485);
+    });
+
+    test('a region still answers when nothing else carries the name', async () => {
+        const region = { kind: 'region', scale: 'region', name: 'Gegharkunik', names: ['gegharkunik'],
+                         countryCode: 'AM', population: 0, lat: 40.3, lng: 45.3 };
+        const geo = await gz.lookupPlace('Gegharkunik', {}, { model: fakeModel([region]) });
+        expect(geo.scale).toBe('region');
+    });
+
+    test('standing in a DISTRICT reports the city, not the district', async () => {
+        // Live: centre=here "Avan" — one of Yerevan's own districts, where
+        // Google correctly said "Yerevan".
+        const avan = { kind: 'city', name: 'Avan', names: ['avan'], featureCode: 'PPL',
+                       countryCode: 'AM', countryName: 'Armenia', population: 50000,
+                       lat: 40.216, lng: 44.560 };
+        const r = await gz.regionAt({ lat: 40.216, lng: 44.560 }, {},
+            { model: fakeModel([avan, YEREVAN]) });
+        expect(r.city).toBe('Yerevan');
+    });
+
+    test('a genuinely separate town is NOT swallowed by a nearby big city', async () => {
+        const abovyan = { kind: 'city', name: 'Abovyan', names: ['abovyan'], featureCode: 'PPL',
+                          countryCode: 'AM', countryName: 'Armenia', population: 44000,
+                          lat: 40.27, lng: 44.63 };
+        // Yerevan is ~15 km off — beyond mergeKm, so Abovyan keeps its own name.
+        const r = await gz.regionAt({ lat: 40.27, lng: 44.63 }, { mergeKm: 12 },
+            { model: fakeModel([abovyan, YEREVAN]) });
+        expect(r.city).toBe('Abovyan');
+    });
+
+    test('sections of a populated place are excluded from reverse geocoding', async () => {
+        const cap = {};
+        await gz.regionAt({ lat: 40.2, lng: 44.5 }, {}, { model: fakeModel([], cap) });
+        expect(cap.query.featureCode.$nin).toContain('PPLX');
     });
 });
