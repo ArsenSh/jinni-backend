@@ -560,7 +560,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 }
             }
         }
-        if (!namedCard && intent.isTravel && !deckAsk) {
+        // Carry is ONLY for referential follow-ups ("can you give a route?").
+        // A message that names its OWN subject must never inherit the old one
+        // (live 2026-09-01: "how to go to Four seasons hotel in Moscow?"
+        // answered with The Club's card carried from the previous turn).
+        const _referential = (intent.places || []).length === 0
+            && (message.trim().split(/\s+/).length <= 6
+                || /\b(it|there|that|this|one|them|туда|там|это|его|её|այնտեղ|այն)\b/i.test(msgLower));
+        if (!namedCard && intent.isTravel && !deckAsk && _referential) {
             const userTurns = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
             const prev = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : null;
             if (prev) {
@@ -1042,6 +1049,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // sessions carry nothing — both keep the wide radius.
             if (radiusKm > 15 && (
                 (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
+                // 'here' too (live 2026-09-01): "hotels in yerevan" from
+                // Yerevan kept centre=here and the default 50km — Tsaghkadzor
+                // Marriott (38km) seated in a deck the user scoped BY NAME to
+                // Yerevan. Naming the city you are in scopes like naming any
+                // other town.
+                || (meta.centreSource === 'here' && (intent.placeNames || []).length === 1)
                 || (refillActive && meta.centreSource === 'session'
                     && sessionPeek?.activeDestination?.singleTown === true)
             )) {
