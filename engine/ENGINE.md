@@ -137,3 +137,31 @@ engine/
       reply in v1's SSE dialect; reached only via the admin-only "Chat engine"
       toggle in JinniChat settings (frontend commit 1da6ef8). Grows into the real
       pipeline as canonicalStore + narrator land.
+- [x] OWNED GAZETTEER (2026-09-01, Arsen sign-off): GeoNames (CC BY 4.0)
+      seeded into our own Mongo — `models/GeoName.js`, `scripts/seedGazetteer.js`
+      (dry-run default, `--apply`, `--countries=AM,GE,AE`, `--alt`),
+      `engine/geo/gazetteer.js` (lookupPlace / regionAt / mainCities /
+      radiusForPopulation). Both Google geocoding call sites are now
+      gazetteer-FIRST with Google as fallback: `destination._geocode` (was a
+      Places TEXT SEARCH — the priciest SKU — just to locate a city) and
+      `region.resolveRegion` (Geocoding reverse, up to 3×/turn).
+      Fixes the COUNTRY-RADIUS BUG: "best places to visit in Armenia" geocoded
+      to the country CENTROID (~40.07,45.04, near Lake Sevan, ~47 km from
+      Yerevan) and was then capped to 15 km by the named-TOWN rule — a country
+      searched as one small circle of countryside, with googleFallback's
+      `distanceKm > radiusKm` filter discarding everything Google returned.
+      Now: `scaleOf()` carries country/region/town out of resolveDestination,
+      the 15 km cap applies to towns ONLY, `remember.singleTown` can no longer
+      be set by a country (it used to poison every later refill), and a known
+      population sizes the radius (village 5 → Dilijan 10 → Yerevan 20 →
+      Dubai 30) instead of a flat 15.
+      FAIL-FAST fail-open: an unconnected mongoose BUFFERS 10s before throwing,
+      so the gazetteer skips unless `readyState === 1` and races every query
+      against a 1.5s deadline — an unseeded deploy behaves exactly as today.
+      29 tests (`__tests__/engineGazetteer.test.js`); suite at 737.
+      ⚠ RUN ON THE SERVER after deploy (Atlas IP whitelist blocks local):
+        node scripts/seedGazetteer.js --apply
+      NOT yet done: `radiusForAsk()` as a pure engine function, the
+      multi-centre country search over `mainCities()`, `retrieval/diversify`,
+      the `_prefFitScore` pure-bonus change, and 2dsphere/$geoNear on
+      PlaceCache (kills the unsorted CACHE_SCAN_LIMIT=200 truncation).

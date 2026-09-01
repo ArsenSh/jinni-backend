@@ -33,6 +33,30 @@ const GEO_DESTINATION_TYPES = new Set([
     'country', 'natural_feature', 'archipelago', 'colloquial_area', 'political', 'continent',
 ]);
 
+// How big is the thing they named? The types were already fetched for
+// isGeographic() and then thrown away — which is why a COUNTRY was re-centred
+// on its geometric centroid and then searched with the 15 km cap meant for a
+// single town (analysis 2026-09-01: "best places to visit in Armenia" searched
+// a 15 km circle near Lake Sevan, ~47 km from Yerevan). 'political' is generic
+// and must never decide a scale. Pure.
+const SCALE_BY_TYPE = {
+    continent: 'continent',
+    country: 'country',
+    administrative_area_level_1: 'region',
+    administrative_area_level_2: 'region',
+    archipelago: 'region',
+    colloquial_area: 'region',
+};
+function scaleOf(geo) {
+    // The gazetteer states its own scale; Google only implies it through types.
+    if (geo && typeof geo.scale === 'string' && geo.scale) return geo.scale;
+    for (const t of (geo?.types || [])) {
+        const s = SCALE_BY_TYPE[String(t).toLowerCase()];
+        if (s) return s;
+    }
+    return 'town';   // locality / sublocality / postal_town / natural_feature
+}
+
 const MEMO_TTL_MS = 60 * 60 * 1000;
 const MEMO_CAP = 500;
 const _memo = new Map();
@@ -50,6 +74,30 @@ async function _geocode(name, gps, deps) {
     if (hit && (Date.now() - hit.ts) < MEMO_TTL_MS) return hit.value;
 
     let value = null;
+    // ── Gazetteer FIRST (2026-09-01) ──
+    // "Where is Yerevan" is a fact we own (models/GeoName.js), and it used to
+    // cost a Places TEXT SEARCH — the priciest SKU, drawn from the same
+    // 10k/mo free quota real place searches need. Google is kept for the one
+    // thing only it can do: resolve a VENUE name ("Nairi", a restaurant). A
+    // gazetteer MISS is itself evidence the name is not a place on the map.
+    // Pass deps.gazetteer === null to force the Google path (tests).
+    try {
+        const gz = deps.gazetteer === null ? null : (deps.gazetteer || require('../geo/gazetteer'));
+        if (gz) {
+            const local = await gz.lookupPlace(name, { near: gps || null });
+            if (local) {
+                console.log(`[destination] "${name}" → gazetteer (${local.scale}, pop=${local.population})`);
+                value = local;
+            }
+        }
+    } catch (err) {
+        console.warn(`[destination] gazetteer lookup failed: ${err.message} — asking Google`);
+    }
+    if (value) {
+        if (_memo.size >= MEMO_CAP) _memo.delete(_memo.keys().next().value);
+        _memo.set(key, { value, ts: Date.now() });
+        return value;
+    }
     try {
         const found = await deps.findPlaces(name, gps || null);
         const first = (found || [])[0];
@@ -132,6 +180,8 @@ async function resolveDestination({
                 return {
                     center: gpsCenter,
                     source: 'here',
+                    scale: scaleOf(geo),
+                    population: geo.population || 0,
                     city: currentRegion.city || geo.name,
                     remember: gpsCenter ? {
                         name: currentRegion.city || geo.name,
@@ -140,9 +190,12 @@ async function resolveDestination({
                     } : null,
                 };
             }
+            const scale = scaleOf(geo);
             return {
                 center: { lat: geo.lat, lng: geo.lng },
                 source: 'named',
+                scale,
+                population: geo.population || 0,
                 city: geo.name,
                 // singleTown records whether the town was named ALONE — the
                 // 15km named-town radius cap keys off it, and a REFILL turn
@@ -152,7 +205,11 @@ async function resolveDestination({
                 // asks stay wide — the traveler drew the bigger map.
                 remember: {
                     name: geo.name, latitude: geo.lat, longitude: geo.lng, placeId: geo.placeId,
-                    singleTown: (placeNames || []).filter(Boolean).length === 1,
+                    // …and a COUNTRY is not a town boundary at all. Letting
+                    // "Armenia" set this flag made every later refill in the
+                    // session inherit a 15 km cap on a country-wide ask.
+                    singleTown: scale === 'town' && (placeNames || []).filter(Boolean).length === 1,
+                    scale,
                     updatedAt: new Date(),
                 },
             };
@@ -195,4 +252,4 @@ function _savedCentre(saved) {
     return { lat, lng, name };
 }
 
-module.exports = { resolveDestination, isGeographic, _samePlace, _savedCentre, GEO_DESTINATION_TYPES };
+module.exports = { resolveDestination, isGeographic, scaleOf, _samePlace, _savedCentre, GEO_DESTINATION_TYPES, SCALE_BY_TYPE };

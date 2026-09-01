@@ -32,11 +32,31 @@ async function resolveRegion({ center = null, placeNames = [] } = {}, deps = {})
             ({ city, country } = CACHE.get(key));
         } else {
             try {
+                // ── Gazetteer FIRST (2026-09-01) ──
+                // Which city a coordinate sits in is a fact we own
+                // (models/GeoName.js). This ran up to 3× per turn against
+                // Google's Geocoding API. Google stays the fallback for
+                // coordinates the gazetteer will not place — mid-ocean, an
+                // unseeded server, an empty collection — so an un-seeded
+                // deploy behaves exactly as it does today.
+                // Pass deps.gazetteer === null to force the Google path.
+                let local = null;
+                try {
+                    const gz = deps.gazetteer === null ? null : (deps.gazetteer || require('../geo/gazetteer'));
+                    if (gz) local = await gz.regionAt({ lat: center.lat, lng: center.lng });
+                } catch (gzErr) {
+                    console.warn(`[region] gazetteer failed: ${gzErr.message} — asking Google`);
+                }
+                if (local?.city) {
+                    city = local.city;
+                    country = local.country || null;
+                } else {
                 const detect = deps.detectUserRegion
                     || require('../../services/googleService').detectUserRegion;
                 const r = await detect({ lat: center.lat, lng: center.lng });
                 city = r?.city || null;
                 country = (r?.country && r.country !== 'Unknown') ? r.country : null;
+                }
                 if (CACHE.size >= MAX_CACHE) CACHE.clear();
                 CACHE.set(key, { city, country });
             } catch (err) {

@@ -685,6 +685,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 currentRegion: hereRegion,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             meta.centreSource = dest.source;
+            // How big the named place IS — country / region / town. The named-
+            // town radius cap below is only correct for a TOWN; without this
+            // it capped a whole COUNTRY to 15 km around its centroid.
+            meta.destScale = dest.scale || 'town';
+            meta.destPopulation = dest.population || 0;
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
@@ -1047,7 +1052,20 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // remembered destination carries singleTown from the ask that set
             // it; multi-town asks remembered singleTown=false and old
             // sessions carry nothing — both keep the wide radius.
-            if (radiusKm > 15 && (
+            // A place we know the SIZE of sizes its own search (gazetteer,
+            // 2026-09-01): the flat 15 km below was too wide for Dilijan
+            // (~17k) and far too tight for a metro like Dubai. Only applies
+            // to a town named THIS turn — everything else keeps the old path.
+            if ((meta.destScale || 'town') === 'town' && meta.destPopulation > 0
+                && (meta.centreSource === 'named' || meta.centreSource === 'here')
+                && (intent.placeNames || []).length === 1) {
+                const { radiusForPopulation } = require('../engine/geo/gazetteer');
+                radiusKm = Math.min(radiusKm, radiusForPopulation(meta.destPopulation));
+            }
+            // A COUNTRY or a REGION is not a town boundary — capping one to
+            // 15 km is what made "best places to visit in Armenia" search a
+            // small circle of countryside (analysis 2026-09-01).
+            if ((meta.destScale || 'town') === 'town' && radiusKm > 15 && (
                 (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
                 // 'here' too (live 2026-09-01): "hotels in yerevan" from
                 // Yerevan kept centre=here and the default 50km — Tsaghkadzor
