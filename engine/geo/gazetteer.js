@@ -24,6 +24,14 @@ const GUARD_MS = 1500;
 // historical / religious entries. Excluded from reverse geocoding.
 const SUBPLACE_CODES = ['PPLX', 'PPLL', 'PPLR', 'PPLQ', 'PPLW', 'PPLH', 'PPLCH', 'PPLF'];
 
+// How many nearby settlements regionAt compares before choosing. This was 5,
+// which was too few (live 2026-09-01): standing in Arinj — one of the villages
+// ringing Yerevan — five CLOSER entries (Jrvezh, Nor Nork, Avan, …) filled the
+// list, so Yerevan never reached the most-populous comparison and the traveler
+// was told they were in Arinj. The rows are tiny and the query is index-served,
+// so the pool costs nothing to widen.
+const NEAR_CANDIDATES = 25;
+
 function _ready() {
     try { return require('mongoose').connection?.readyState === 1; } catch { return false; }
 }
@@ -198,7 +206,7 @@ async function regionAt({ lat, lng } = {}, { maxKm = 30, mergeKm = 12 } = {}, de
             featureCode: { $nin: SUBPLACE_CODES },
             location: { $near: { $geometry: { type: 'Point', coordinates: [lng, lat] },
                                  $maxDistance: maxKm * 1000 } },
-        }).limit(5).lean());
+        }).limit(NEAR_CANDIDATES).lean());
         if (!rows || !rows.length) return null;
 
         // ── Nearest is not the same as RIGHT (live 2026-09-01) ──

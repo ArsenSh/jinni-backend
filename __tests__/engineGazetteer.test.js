@@ -403,3 +403,30 @@ describe('nearby mode switches to discovery for a place you are not in', () => {
         expect(gz.radiusForPopulation(17000)).toBe(10);     // Dilijan, not 5 km
     });
 });
+
+// Live 2026-09-01: "your current spot in Arinj" — a village ringing Yerevan.
+// Excluding district feature codes was not enough; the city has to survive the
+// nearest-N cut before it can win on population.
+describe('regionAt: a ring of closer villages must not hide the city', () => {
+    const near = (name, pop, lat, lng) => ({
+        kind: 'city', name, names: [name.toLowerCase()], featureCode: 'PPL',
+        countryCode: 'AM', countryName: 'Armenia', population: pop, lat, lng,
+    });
+    test('Yerevan wins even when several villages are nearer', async () => {
+        const rows = [
+            near('Arinj', 5000, 40.216, 44.560),
+            near('Jrvezh', 6000, 40.205, 44.575),
+            near('Nor Nork', 8000, 40.210, 44.550),
+            near('Avan', 9000, 40.212, 44.545),
+            near('Zovuni', 4000, 40.220, 44.540),
+            near('Yerevan', 1093485, 40.18111, 44.51361),   // 6th nearest
+        ];
+        const fake = {
+            find() { return this; }, sort() { return this; },
+            limit(n) { this._n = n; return this; },
+            async lean() { return rows.slice(0, this._n); },
+        };
+        const r = await gz.regionAt({ lat: 40.216, lng: 44.560 }, {}, { model: fake });
+        expect(r.city).toBe('Yerevan');
+    });
+});
