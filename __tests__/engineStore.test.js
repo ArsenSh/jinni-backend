@@ -427,3 +427,20 @@ describe('buildCacheQuery — name-ask quarantine', () => {
         expect(q.aiBlocked).toEqual({ $ne: true });   // the pattern it rides on
     });
 });
+
+// Staff verdict on CACHE rows (founder 2026-09-01, 4th budget-in-luxury
+// report): validator tags cached places via INTERESTS chips — a different
+// field from curated type tags — and nothing read it. Plus: luxury demands
+// evidence from untagged rows (Google tier / rating), budget keeps unknowns.
+describe('cache style gate — interests verdict + luxury evidence', () => {
+    const { cacheDocToCandidate } = require('../engine/places/canonicalStore');
+    const mk = (over) => cacheDocToCandidate({
+        placeId: 'p', name: 'X Hotel', rating: 4.6, types: ['hotel', 'lodging'],
+        primaryType: 'hotel', priceLevel: null, interests: [], details: {}, photos: [],
+        ...over,
+    }, null);
+    test('candidate carries the staff interests chips', () => {
+        expect(mk({ interests: ['budget'] }).interests).toEqual(['budget']);
+        expect(mk({}).interests).toEqual([]);
+    });
+});

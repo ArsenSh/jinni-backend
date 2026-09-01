@@ -168,6 +168,7 @@ function cacheDocToCandidate(d, center) {
         // imagesStored:true is part of the cache query, so the stored-image
         // endpoint is always valid for these rows.
         image: d.placeId ? `/api/ai/place-image/${d.placeId}/0` : null,
+        interests: d.interests || [],   // staff chips on the CACHE row — the style gate reads them
         likes: d.likes || 0,
         dislikes: d.dislikes || 0,
         vector: (Array.isArray(d.embedding) && d.embeddingModel === EMBED_MODEL) ? d.embedding : undefined,
@@ -488,7 +489,34 @@ async function loadCandidates(params = {}, deps = {}) {
         console.log(`[canonicalStore] validator style verdict suppressed ${cacheCandidates.length - keptCache.length} cache twin(s) for style=${preferences.travelStyle}`);
     }
 
-    let merged = mergeAndDedupe(destinations, businesses, keptCache);
+    // ── Staff verdict lives on CACHE rows too (founder 2026-09-01, FOURTH
+    //    report of budget-in-luxury): the validator tags cached places via
+    //    the INTERESTS chips ('budget' / 'luxury' — Yerevan Boutique Hotel,
+    //    Pushkin Hotel) — a different field from curated `type` tags, and
+    //    nothing ever read it as a gate. Opposite-tagged rows are OUT, both
+    //    directions. LUXURY additionally demands EVIDENCE from untagged
+    //    rows: Google tier 'budget' is out, and unknown tier needs rating
+    //    ≥ 4.2 — luxury is a promise; unknown must not impersonate it.
+    //    (Budget style keeps unknowns: nothing wrong with a hidden gem.)
+    const rawStyleG = String(preferences?.travelStyle || '').toLowerCase();
+    const styleGate = (c) => {
+        if (!['luxury', 'budget'].includes(rawStyleG)) return true;
+        const ints = (c.interests || []).map(s2 => String(s2).toLowerCase());
+        const oppG = rawStyleG === 'luxury' ? 'budget' : 'luxury';
+        if (ints.includes(oppG)) return false;                    // staff said the opposite
+        if (ints.includes(rawStyleG)) return true;                // staff said it fits
+        if (rawStyleG === 'luxury' && isPriceAction(category)) {
+            const t = priceTier(c.types, c.primaryType, c.priceLevel).tier;
+            if (t === 'budget') return false;
+            if (t !== 'luxury' && (c.rating || 0) < 4.2) return false;
+        }
+        return true;
+    };
+    const gatedCache = keptCache.filter(styleGate);
+    if (gatedCache.length !== keptCache.length) {
+        console.log(`[canonicalStore] style gate dropped ${keptCache.length - gatedCache.length} cache row(s) for style=${rawStyleG}: ${keptCache.filter(c => !styleGate(c)).map(c => c.name).join(', ')}`);
+    }
+    let merged = mergeAndDedupe(destinations, businesses, gatedCache);
 
     // ── Google fallback tier (bootstrap, not the engine — V3 §8e) ──
     // Only when the owned corpus is THIN, only through the coverage gates, and
@@ -525,7 +553,7 @@ async function loadCandidates(params = {}, deps = {}) {
             }, deps);
             if (suppress && extra.length) {
                 const before = extra.length;
-                extra = extra.filter(c => !suppressHit(c));
+                extra = extra.filter(c => !suppressHit(c)).filter(styleGate);
                 if (extra.length < before) console.log(`[canonicalStore] validator style verdict suppressed ${before - extra.length} Google find(s)`);
             }
             if (extra.length) {
