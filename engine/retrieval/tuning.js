@@ -87,12 +87,15 @@ function isTransportAsk(message) {
  * the weights findPlaces has always used. Pure. */
 const ROMANTIC_RE = /\b(romantic|romance|anniversary|proposal|honeymoon|special occasion|celebrat\w*|impress|romantique|anniversaire|lune de miel)\b|романти|годовщин|юбилей|ռոմանտիկ|浪漫|求婚|周年|蜜月|رومانسي|شهر العسل|ذكرى/i;
 
-function rankingWeights({ rightNow = false, nearbyMode = false, message = '' } = {}) {
+function rankingWeights({ rightNow = false, nearbyMode = false, message = '', countryScope = false } = {}) {
     const romantic = ROMANTIC_RE.test(String(message || ''));
     return {
         lexical: 1,
         vector: 1,
-        proximity: (rightNow || nearbyMode) ? 1 : romantic ? 0.35 : 0.5,
+        // Across a whole COUNTRY, distance from the centre ranks nothing: it
+        // would simply rebuild the capital-only deck the country scope exists
+        // to escape (Arsen 2026-09-01).
+        proximity: countryScope ? 0 : (rightNow || nearbyMode) ? 1 : romantic ? 0.35 : 0.5,
         prior: romantic ? 0.9 : 0.5,
     };
 }

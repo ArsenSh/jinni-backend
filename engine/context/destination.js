@@ -197,6 +197,7 @@ async function resolveDestination({
                 source: 'named',
                 scale,
                 population: geo.population || 0,
+                countryName: geo.countryName || null,
                 city: geo.name,
                 // singleTown records whether the town was named ALONE — the
                 // 15km named-town radius cap keys off it, and a REFILL turn

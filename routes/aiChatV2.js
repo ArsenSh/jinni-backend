@@ -690,6 +690,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // it capped a whole COUNTRY to 15 km around its centroid.
             meta.destScale = dest.scale || 'town';
             meta.destPopulation = dest.population || 0;
+            meta.destCountryName = dest.countryName || null;
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
@@ -1134,6 +1135,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // adaptive deck shrink to 3 the way "sushi" rightly does
                 // ("hotels in Dilijan" came back 3 cards, 2026-08-30).
                 geoTokens: Array.from(geoTokens),
+                // A COUNTRY ask is scoped BY COUNTRY, not by any circle
+                // (Arsen 2026-09-01). Falls back to the resolved place name
+                // when the gazetteer had no country name to give.
+                countryScope: meta.destScale === 'country'
+                    ? (meta.destCountryName || meta.searchCity || null) : null,
                 timeContext,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /
@@ -1143,7 +1149,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 enforceOpenNow: rightNow,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
-                weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message }),
+                weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message,
+                    countryScope: meta.destScale === 'country' }),
                 // "Any cheaper ones?" beats the saved luxury style FOR THIS
                 // TURN only — the ask outranks the profile without rewriting
                 // it (Group C 2026-08-30: a cheap-hotels turn ranked with

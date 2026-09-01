@@ -308,3 +308,38 @@ describe('gazetteer: regressions found live once real data was in', () => {
         expect(cap.query.featureCode.$nin).toContain('PPLX');
     });
 });
+
+// ── A country ask is scoped BY COUNTRY, not by a circle (Arsen 2026-09-01) ──
+describe('country-scoped retrieval', () => {
+    const { buildCacheQuery } = require('../engine/places/canonicalStore');
+    const { rankingWeights } = require('../engine/retrieval/tuning');
+    const CENTRE = { lat: 40.18, lng: 44.51 };
+
+    test('a country ask filters on country and drops the bounding box', () => {
+        const q = buildCacheQuery({ center: CENTRE, radiusKm: 50, category: 'restaurants', countryScope: 'Armenia' });
+        expect(q.country).toBeInstanceOf(RegExp);
+        expect(q.country.test('armenia')).toBe(true);      // address-parsed, so case-insensitive
+        expect(q.country.test('Armenia Colombia')).toBe(false);
+        expect(q['details.geometry.location.lat']).toBeUndefined();
+        expect(q.actions).toBe('restaurants');             // category still applies, after country
+    });
+
+    test('every other ask keeps the bounding box and no country filter', () => {
+        const q = buildCacheQuery({ center: CENTRE, radiusKm: 15, category: 'hotels' });
+        expect(q.country).toBeUndefined();
+        expect(q['details.geometry.location.lat']).toBeDefined();
+        expect(q.actions).toBe('hotels');
+    });
+
+    test('a country name with regex characters cannot break the query', () => {
+        const q = buildCacheQuery({ center: CENTRE, radiusKm: 50, countryScope: "Cote d'Ivoire (.*)" });
+        expect(q.country.test("Cote d'Ivoire (.*)")).toBe(true);
+        expect(q.country.test('Cote dIvoire anything')).toBe(false);
+    });
+
+    test('distance stops ranking once the scope is a whole country', () => {
+        expect(rankingWeights({ countryScope: true }).proximity).toBe(0);
+        expect(rankingWeights({}).proximity).toBe(0.5);
+        expect(rankingWeights({ nearbyMode: true }).proximity).toBe(1);
+    });
+});

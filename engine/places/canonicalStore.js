@@ -72,7 +72,9 @@ function _prefFitScore(types, primaryType, preferences) {
 }
 
 /** The indexed bounding-box prefilter — v1's query shape, category optional. */
-function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = [] }) {
+const _rxEscape = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = [], countryScope = null }) {
     const freshnessCutoff = new Date(Date.now() - CACHE_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
     const latDelta = radiusKm / 111.32;
     const lngDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(center.lat * Math.PI / 180)));
@@ -82,9 +84,22 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
         nameAskPending: { $ne: true },                 // name-ask quarantine: invisible until staff admit
         'explore.status': { $ne: 'hidden' },
         lastFetched: { $gte: freshnessCutoff },
-        'details.geometry.location.lat': { $gte: center.lat - latDelta, $lte: center.lat + latDelta },
-        'details.geometry.location.lng': { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta },
     };
+    // ── A COUNTRY IS NOT A CIRCLE (Arsen's rule, 2026-09-01: "if user asks in
+    //    Armenia then it should see in country, it should filter by country
+    //    then should filter by categories") ──
+    // No radius centred anywhere can cover a country honestly: centred on the
+    // capital it is a Yerevan deck, centred on the centroid it is farmland.
+    // PlaceCache.country is indexed and holds the country NAME (parsed from
+    // Google's formatted address), so a country ask filters on it directly and
+    // the category gate below then applies exactly as it always has.
+    // Case-insensitive because the field is address-parsed, not normalized.
+    if (countryScope) {
+        query.country = new RegExp(`^${_rxEscape(countryScope)}$`, 'i');
+    } else {
+        query['details.geometry.location.lat'] = { $gte: center.lat - latDelta, $lte: center.lat + latDelta };
+        query['details.geometry.location.lng'] = { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta };
+    }
     if (category) query.actions = category;            // ground-truth category match
     if (excludePlaceIds.length) query.placeId = { $nin: excludePlaceIds };
     return query;
@@ -382,7 +397,8 @@ async function loadCandidates(params = {}, deps = {}) {
     // ── Cache tier ──
     let cacheDocs = [];
     try {
-        const query = buildCacheQuery({ center, radiusKm, category, excludePlaceIds: excludes.placeIds || [] });
+        const query = buildCacheQuery({ center, radiusKm, category,
+            excludePlaceIds: excludes.placeIds || [], countryScope: params.countryScope || null });
         if (deps.cacheFind) {
             cacheDocs = await deps.cacheFind(query);
         } else {
