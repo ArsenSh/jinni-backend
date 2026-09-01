@@ -343,3 +343,63 @@ describe('country-scoped retrieval', () => {
         expect(rankingWeights({ nearbyMode: true }).proximity).toBe(1);
     });
 });
+
+// ── nearby mode + a place you are NOT in (Arsen's rule + live 2026-09-01) ────
+// "suggest 3 good locations in Dilijan" in nearby mode returned at the very
+// first line of resolveDestination, so Dilijan was never geocoded: the search
+// ran 5 km around the traveler's GPS in Yerevan and the narrator then called
+// those Yerevan places Dilijan.
+describe('nearby mode switches to discovery for a place you are not in', () => {
+    const YER = { lat: 40.216, lng: 44.560 };
+    const HERE = { city: 'Yerevan', country: 'Armenia' };
+    const geo = (rows) => ({
+        gazetteer: null,
+        findPlaces: async (q) => {
+            const hit = rows[q];
+            return hit ? [{ name: hit.name, geometry: { location: { lat: hit.lat, lng: hit.lng } }, types: hit.types }] : [];
+        },
+    });
+
+    test('naming another town leaves nearby and centres on that town', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Dilijan'], gps: YER, nearbyMode: true, currentRegion: HERE },
+            geo({ Dilijan: { name: 'Dilijan', lat: 40.7408, lng: 44.8628, types: ['locality'] } }));
+        expect(d.source).toBe('named');
+        expect(d.switchedFromNearby).toBe(true);
+        expect(d.center).toEqual({ lat: 40.7408, lng: 44.8628 });
+    });
+
+    test('naming the COUNTRY you are standing in keeps nearby', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Armenia'], gps: YER, nearbyMode: true, currentRegion: HERE },
+            geo({ Armenia: { name: 'Armenia', lat: 40.18, lng: 44.51, types: ['country'] } }));
+        expect(d.source).toBe('nearby');
+        expect(d.switchedFromNearby).toBeUndefined();
+        expect(d.center).toEqual(YER);
+    });
+
+    test('naming the CITY you are standing in keeps nearby', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Yerevan'], gps: YER, nearbyMode: true, currentRegion: HERE },
+            geo({ Yerevan: { name: 'Yerevan', lat: 40.18, lng: 44.51, types: ['locality'] } }));
+        expect(d.source).toBe('nearby');
+    });
+
+    test('a VENUE name never leaves nearby — that is not a destination', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Nairi'], gps: YER, nearbyMode: true, currentRegion: HERE },
+            geo({ Nairi: { name: 'Nairi', lat: 40.19, lng: 44.52, types: ['restaurant'] } }));
+        expect(d.source).toBe('nearby');
+    });
+
+    test('naming nothing at all still just means nearby', async () => {
+        const d = await resolveDestination(
+            { placeNames: [], gps: YER, nearbyMode: true, currentRegion: HERE }, geo({}));
+        expect(d.source).toBe('nearby');
+        expect(d.center).toEqual(YER);
+    });
+
+    test('a switched turn is a single named town, so it sizes by population', () => {
+        expect(gz.radiusForPopulation(17000)).toBe(10);     // Dilijan, not 5 km
+    });
+});

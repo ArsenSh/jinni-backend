@@ -149,8 +149,49 @@ async function resolveDestination({
 } = {}, deps = {}) {
     const gpsCenter = (gps && gps.lat != null && gps.lng != null) ? { lat: gps.lat, lng: gps.lng } : null;
 
-    // 1. "near me" is not ambiguous.
-    if (nearbyMode) return { center: gpsCenter, source: gpsCenter ? 'nearby' : 'none', city: null, remember: null };
+    // 1. "near me" is not ambiguous — UNLESS they named somewhere else.
+    //
+    // Live 2026-09-01: in nearby mode, "suggest 3 good locations in Dilijan"
+    // returned at this very line, so "Dilijan" was never geocoded at all. The
+    // search ran 5 km around the traveler's GPS in Yerevan and the narrator
+    // then described Yerevan places as being in Dilijan — In Tempo Mega Mall,
+    // whose own card reads "16 Gai Ave, Yerevan".
+    //
+    // Arsen's rule: "if user is nearby mode and asks for dilijan ai can switch
+    // to discovery mode ... then make search." Naming a place you are NOT in is
+    // a request to go there, and no 5 km circle around you can answer it. But
+    // naming the country or region you are standing in is not a request to
+    // travel ("in Armenia" while in Armenia), so that keeps nearby.
+    if (nearbyMode) {
+        if ((placeNames || []).length && typeof deps.findPlaces === 'function') {
+            for (const name of (placeNames || []).slice(0, 3)) {
+                if (!name) continue;
+                const geo = await _geocode(name, gpsCenter, deps);
+                if (!geo || !isGeographic(geo)) continue;
+                const containsUs = currentRegion
+                    && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city));
+                if (containsUs) break;                 // already here -> stay nearby
+                const scale = scaleOf(geo);
+                console.log(`[destination] nearby -> discovery: "${geo.name}" is not where you are`);
+                return {
+                    center: { lat: geo.lat, lng: geo.lng },
+                    source: 'named',
+                    scale,
+                    population: geo.population || 0,
+                    countryName: geo.countryName || null,
+                    city: geo.name,
+                    // The caller flips the turn out of nearby mode and says so.
+                    switchedFromNearby: true,
+                    remember: {
+                        name: geo.name, latitude: geo.lat, longitude: geo.lng, placeId: geo.placeId,
+                        singleTown: scale === 'town' && (placeNames || []).filter(Boolean).length === 1,
+                        scale, updatedAt: new Date(),
+                    },
+                };
+            }
+        }
+        return { center: gpsCenter, source: gpsCenter ? 'nearby' : 'none', city: null, remember: null };
+    }
 
     // 2. A city named in THIS message wins, and is remembered.
     if (typeof deps.findPlaces === 'function') {

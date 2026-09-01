@@ -46,12 +46,25 @@ describe('resolveDestination', () => {
         expect(d.remember).toBeNull();
     });
 
-    test('nearby mode always means GPS, whatever is chosen or named', async () => {
+    // Rule changed 2026-09-01 (Arsen): nearby means GPS, but naming a place you
+    // are NOT in is a request to go there — "suggest 3 good locations in
+    // Dilijan" in nearby mode used to answer from 5 km around Yerevan and call
+    // those places Dilijan. A chosen destination still loses to nearby; only a
+    // place named in THIS message switches the turn to discovery.
+    test('nearby mode ignores a chosen destination — that is still GPS', async () => {
+        const d = await resolveDestination(
+            { placeNames: [], gps: YEREVAN, sessionDestination: SESSION_PAPHOS, nearbyMode: true },
+            geocoder({}));
+        expect(d.center).toEqual(YEREVAN);
+        expect(d.source).toBe('nearby');
+    });
+
+    test('nearby mode switches to discovery for a town named in the message', async () => {
         const d = await resolveDestination(
             { placeNames: ['dubai2'], gps: YEREVAN, sessionDestination: SESSION_PAPHOS, nearbyMode: true },
             geocoder({ dubai2: { ...DUBAI, types: ['locality'] } }));
-        expect(d.center).toEqual(YEREVAN);
-        expect(d.source).toBe('nearby');
+        expect(d.source).toBe('named');
+        expect(d.switchedFromNearby).toBe(true);
     });
 
     test('a VENUE name never re-centres — the Paphos harbour hijack', async () => {

@@ -691,6 +691,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             meta.destScale = dest.scale || 'town';
             meta.destPopulation = dest.population || 0;
             meta.destCountryName = dest.countryName || null;
+            // They named somewhere they are not, while the toggle said nearby.
+            // The switch applies to THIS turn only — an inferred change never
+            // rewrites a saved setting — and the reply says what it did.
+            if (dest.switchedFromNearby) {
+                effectiveNearbyMode = false;
+                meta.modeSwitched = 'discovery';
+                meta.modeSwitchedTo = dest.city || null;
+            }
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
             if (dest.source === 'named' && dest.center && dest.city) {
@@ -1057,16 +1065,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // 2026-09-01): the flat 15 km below was too wide for Dilijan
             // (~17k) and far too tight for a metro like Dubai. Only applies
             // to a town named THIS turn — everything else keeps the old path.
+            let sizedByPopulation = false;
             if ((meta.destScale || 'town') === 'town' && meta.destPopulation > 0
                 && meta.centreSource === 'named'
                 && (intent.placeNames || []).length === 1) {
                 const { radiusForPopulation } = require('../engine/geo/gazetteer');
                 radiusKm = Math.min(radiusKm, radiusForPopulation(meta.destPopulation));
+                sizedByPopulation = true;
             }
             // A COUNTRY or a REGION is not a town boundary — capping one to
             // 15 km is what made "best places to visit in Armenia" search a
             // small circle of countryside (analysis 2026-09-01).
-            if ((meta.destScale || 'town') === 'town' && radiusKm > 15 && (
+            // Live 2026-09-01: Yerevan (pop 1.14M) sized to 20 km and was then
+            // immediately re-capped to 15 by this rule. A place we know the size
+            // of has already been sized; this is only for places we do not.
+            if (!sizedByPopulation && (meta.destScale || 'town') === 'town' && radiusKm > 15 && (
                 (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
                 || (refillActive && meta.centreSource === 'session'
                     && sessionPeek?.activeDestination?.singleTown === true)
@@ -1402,6 +1415,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     // be in another city — live 2026-08-31, Yerevan user told
                     // "2.5 km from you" about Tsaghkadzor).
                     centreCity: meta.centreSource === 'named' ? (meta.searchCity || null) : null,
+                    modeNote: meta.modeSwitched ? (meta.modeSwitchedTo || meta.searchCity || null) : null,
                     history: recentTurns, localFacts: placeFacts, preferences: intent._preferences,
                     // Honest max: CODE knows the promise fell short ("I want 10
                     // hotels" → 3 new cards, live 2026-08-30); the prompt tells

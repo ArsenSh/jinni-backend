@@ -476,7 +476,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
  * text in v1's spirit (hasAIDescription) — but hard facts stay forbidden:
  * no prices, hours, menus, phones, or ratings beyond the given ones.
  */
-function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null, reServed = false, centreCity = null }) {
+function buildNarrationJson({ query, places = [], langName = 'English', timeNote = null, history = [], askedCount = null, reServed = false, centreCity = null, modeNote = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -500,6 +500,9 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
                   : '')
               + (centreCity
                   ? `- Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say "from the centre of ${centreCity}".\n`
+                  : '')
+              + (modeNote
+                  ? `- Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote}, which is not where they are — so this answer covers ${modeNote} instead. Say that plainly in ONE short clause at the start of the intro, as something you did, and never imply these places are near them.\n`
                   : '')
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -540,7 +543,7 @@ function parseNarrationJson(text, count) {
  * <<<CARDS>>> delimiter, then a private JSON tail with a blurb for EVERY card
  * plus the follow-up question. Same grounding rules as the JSON variant.
  */
-function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null, reServed = false, centreCity = null }) {
+function buildStreamedNarrationMessages({ query, places = [], langName = 'English', timeNote = null, history = [], localFacts = [], preferences = null, askedCount = null, reServed = false, centreCity = null, modeNote = null }) {
     const facts = places.map((p, i) => `${i}. ${placeFactLine(p).slice(2)}`).join('\n');
     return [
         {
@@ -562,6 +565,9 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + NO_REMEMBERED_EVENTS
               + (centreCity
                   ? `Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say it as "from the centre of ${centreCity}" (e.g. "0.9 km from the centre of ${centreCity}").\n`
+                  : '')
+              + (modeNote
+                  ? `Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote}, which is not where they are — so this answer covers ${modeNote} instead. Say that plainly in ONE short clause at the start, as something you did, and never imply these places are near them.\n`
                   : '')
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation. '
