@@ -167,30 +167,31 @@ async function resolveDestination({
             // Ararat Province, and every card then read "46 km away" from a
             // traveler who could walk to them (live 2026-08-24). A country
             // centroid is a worse centre than the street you are standing on.
-            if (currentRegion && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city))) {
-                console.log(`[destination] "${name}" is where we already are — keeping the current centre`);
-                // REMEMBER it anyway. Naming where you already are still moves
-                // the conversation there, and returning remember:null meant it
-                // did not stick: "find events in yerevan armenia" answered
-                // about Yerevan, then "another ones" fell back to the saved
-                // Dubai and replied "every upcoming event I have in Dubai"
-                // (live 2026-08-24: "armenia braked also"). What is remembered
-                // is the CURRENT position, never the country centroid — that is
-                // the whole reason this branch exists.
-                return {
-                    center: gpsCenter,
-                    source: 'here',
-                    scale: scaleOf(geo),
-                    population: geo.population || 0,
-                    city: currentRegion.city || geo.name,
-                    remember: gpsCenter ? {
-                        name: currentRegion.city || geo.name,
-                        latitude: gpsCenter.lat, longitude: gpsCenter.lng,
-                        placeId: null, updatedAt: new Date(),
-                    } : null,
-                };
-            }
+            // ── A NAMED PLACE ALWAYS WINS, even the one you are standing in
+            //    (Arsen's rule, 2026-09-01): "asking something in dilijan
+            //    should work correctly, asking in moscow should work
+            //    correctly, asking in yerevan also can consider yerevan
+            //    without taking my coordinates."
+            //
+            // There used to be a 'here' branch here that kept the traveler's
+            // GPS whenever they named the city or country they were already
+            // in. It existed to paper over a DIFFERENT bug (2026-08-24):
+            // "Armenia" geocoded to the country's CENTROID in Ararat Province,
+            // so cards read "46 km away" to someone who could have walked to
+            // them. The gazetteer fixed that at the source — a country now
+            // resolves to its capital and carries its own scale — so the
+            // workaround only did harm: naming Yerevan searched from wherever
+            // you happened to stand, which is how a district ("Avan") became
+            // the search centre and how "hotels in yerevan" needed a special
+            // radius cap of its own.
+            //
+            // Naming a place still MOVES the conversation there (the Dubai
+            // bug, 2026-08-24: "another ones" fell back to the saved
+            // destination), which the `remember` below has always handled.
+            // `currentRegion` is kept in the signature — callers pass it and
+            // the route still labels the traveler's own position with it.
             const scale = scaleOf(geo);
+
             return {
                 center: { lat: geo.lat, lng: geo.lng },
                 source: 'named',

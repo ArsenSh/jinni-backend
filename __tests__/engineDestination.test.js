@@ -106,12 +106,16 @@ describe('resolveDestination', () => {
     });
 });
 
-// ── Naming where you already are is not a move (Arsen 2026-08-24) ────────────
-// "ok, find in armenia, but other events" from Yerevan re-centred on the
-// country's centroid in Ararat Province, and every card then read "46 km away"
-// from a traveler who could have walked to them.
-describe('resolveDestination: "here"', () => {
+// ── A NAMED PLACE ALWAYS WINS (Arsen's rule, 2026-09-01) ────────────────────
+// "asking something in dilijan should work correctly, asking in moscow should
+// work correctly, asking in yerevan also can consider yerevan without taking
+// my coordinates." The old 'here' branch kept the traveler's GPS whenever they
+// named the place they were in — a workaround for the country-CENTROID bug
+// (2026-08-24, cards reading "46 km away"), which the gazetteer fixed at the
+// source. Naming a place now centres on that place, wherever you are standing.
+describe('resolveDestination: a named place always wins', () => {
     const geo = (rows) => ({
+        gazetteer: null,                      // force the Google path in these cases
         findPlaces: async (q) => {
             const hit = rows[q];
             return hit ? [{ name: hit.name, geometry: { location: { lat: hit.lat, lng: hit.lng } }, types: hit.types }] : [];
@@ -119,37 +123,36 @@ describe('resolveDestination: "here"', () => {
     });
     const HERE = { city: 'Yerevan', country: 'Armenia' };
 
-    test('naming the country you are in keeps the street you are on', async () => {
-        const d = await resolveDestination(
-            { placeNames: ['Armenia'], gps: YEREVAN, currentRegion: HERE },
-            geo({ Armenia: { name: 'Armenia', lat: 40.069, lng: 45.038, types: ['country'] } }));
-        expect(d.center).toEqual(YEREVAN);          // not the centroid
-        expect(d.source).toBe('here');
-        // It DOES remember — this expectation used to be toBeNull(), and that
-        // was the bug: "find events in yerevan armenia" answered about Yerevan,
-        // then "another ones" fell back to the saved Dubai and said "every
-        // upcoming event I have in Dubai" (live 2026-08-24). Naming where you
-        // already are still moves the conversation there. What is stored is the
-        // CURRENT position, never the country centroid.
-        expect(d.remember).toMatchObject({ name: 'Yerevan', latitude: YEREVAN.lat, longitude: YEREVAN.lng });
-    });
-
-    test('naming the city you are in also keeps precise coordinates', async () => {
+    test('naming the CITY you are in centres on the city, not on your GPS', async () => {
         const d = await resolveDestination(
             { placeNames: ['Yerevan'], gps: YEREVAN, currentRegion: HERE },
             geo({ Yerevan: { name: 'Yerevan', lat: 40.1772, lng: 44.5035, types: ['locality'] } }));
-        expect(d.center).toEqual(YEREVAN);
-        expect(d.source).toBe('here');
+        expect(d.source).toBe('named');
+        expect(d.center).toEqual({ lat: 40.1772, lng: 44.5035 });
+        expect(d.scale).toBe('town');
+        // Still moves the conversation there — the Dubai bug stays fixed.
+        expect(d.remember).toMatchObject({ name: 'Yerevan' });
     });
 
-    test('spelling and accents do not defeat it', async () => {
+    test('naming the COUNTRY you are in is a country-scale ask, not a local one', async () => {
         const d = await resolveDestination(
-            { placeNames: ['tbilisi'], gps: { lat: 41.7, lng: 44.8 }, currentRegion: { city: "T'bilisi", country: 'Georgia' } },
-            geo({ tbilisi: { name: 'Tbilisi', lat: 41.69, lng: 44.80, types: ['locality'] } }));
-        expect(d.source).toBe('here');
+            { placeNames: ['Armenia'], gps: YEREVAN, currentRegion: HERE },
+            geo({ Armenia: { name: 'Armenia', lat: 40.1772, lng: 44.5035, types: ['country'] } }));
+        expect(d.source).toBe('named');
+        expect(d.scale).toBe('country');
+        // A country must never be treated as one named town.
+        expect(d.remember.singleTown).toBe(false);
     });
 
-    test('a DIFFERENT country still re-centres — that is a real move', async () => {
+    test('a far city works the same way — Moscow from Yerevan', async () => {
+        const d = await resolveDestination(
+            { placeNames: ['Moscow'], gps: YEREVAN, currentRegion: HERE },
+            geo({ Moscow: { name: 'Moscow', lat: 55.75, lng: 37.61, types: ['locality'] } }));
+        expect(d.center).toEqual({ lat: 55.75, lng: 37.61 });
+        expect(d.remember.singleTown).toBe(true);
+    });
+
+    test('a DIFFERENT country re-centres, as it always did', async () => {
         const d = await resolveDestination(
             { placeNames: ['Georgia'], gps: YEREVAN, currentRegion: HERE },
             geo({ Georgia: { name: 'Georgia', lat: 42.31, lng: 43.35, types: ['country'] } }));
@@ -157,11 +160,14 @@ describe('resolveDestination: "here"', () => {
         expect(d.center).toEqual({ lat: 42.31, lng: 43.35 });
     });
 
-    test('with no idea where we are, the old behaviour stands', async () => {
-        const d = await resolveDestination(
-            { placeNames: ['Armenia'], gps: YEREVAN },
-            geo({ Armenia: { name: 'Armenia', lat: 40.069, lng: 45.038, types: ['country'] } }));
-        expect(d.source).toBe('named');
+    test('naming NOTHING falls back to the destination, then to GPS', async () => {
+        const none = { gazetteer: null, findPlaces: async () => [] };
+        const withDest = await resolveDestination(
+            { placeNames: [], gps: YEREVAN, sessionDestination: SESSION_PAPHOS }, none);
+        expect(withDest.source).toBe('session');
+        const withGps = await resolveDestination({ placeNames: [], gps: YEREVAN }, none);
+        expect(withGps.source).toBe('gps');
+        expect(withGps.center).toEqual(YEREVAN);
     });
 });
 

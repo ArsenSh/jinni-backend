@@ -1057,7 +1057,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // (~17k) and far too tight for a metro like Dubai. Only applies
             // to a town named THIS turn — everything else keeps the old path.
             if ((meta.destScale || 'town') === 'town' && meta.destPopulation > 0
-                && (meta.centreSource === 'named' || meta.centreSource === 'here')
+                && meta.centreSource === 'named'
                 && (intent.placeNames || []).length === 1) {
                 const { radiusForPopulation } = require('../engine/geo/gazetteer');
                 radiusKm = Math.min(radiusKm, radiusForPopulation(meta.destPopulation));
@@ -1067,12 +1067,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // small circle of countryside (analysis 2026-09-01).
             if ((meta.destScale || 'town') === 'town' && radiusKm > 15 && (
                 (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
-                // 'here' too (live 2026-09-01): "hotels in yerevan" from
-                // Yerevan kept centre=here and the default 50km — Tsaghkadzor
-                // Marriott (38km) seated in a deck the user scoped BY NAME to
-                // Yerevan. Naming the city you are in scopes like naming any
-                // other town.
-                || (meta.centreSource === 'here' && (intent.placeNames || []).length === 1)
                 || (refillActive && meta.centreSource === 'session'
                     && sessionPeek?.activeDestination?.singleTown === true)
             )) {
