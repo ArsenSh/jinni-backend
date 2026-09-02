@@ -46,7 +46,7 @@ const PLACE_FIELDS = [
     'interests', 'priceLevel', 'imagesStored', 'nameAskPending', 'askedByNameCount',
     'aiBlocked', 'explore.status', 'country', 'city', 'rating', 'likes', 'dislikes',
     'useCount', 'fetchCount', 'lastFetched', 'lastUsed',
-    'details.formatted_address', 'details.geometry.location', 'photos.width',
+    'details.formatted_address', 'details.geometry.location',
 ].join(' ');
 
 const DEST_FIELDS = [
@@ -76,14 +76,28 @@ async function dump(label, Model, fields, shape = (d) => d) {
     console.log(`[export] connected · out=${OUT_DIR}${ONLY.length ? ` · only=${ONLY.join(',')}` : ''}`);
 
     if (want('placecache')) {
-        // Photos are projected down to their width alone, so a row can still
-        // say HOW MANY photos it claims without carrying a byte of them — the
-        // gap that matters, since `imagesStored: true` with no readable bytes
-        // is exactly what carded a dead image (live 2026-09-03).
-        await dump('placecache', require('../models/PlaceCache'), PLACE_FIELDS, (d) => {
-            const { photos, ...rest } = d;
-            return { ...rest, photoCount: Array.isArray(photos) ? photos.length : 0 };
-        });
+        // Photo COUNTS are computed inside Mongo, never shipped. A first
+        // attempt projected `photos.width` and mapped the array length in JS:
+        // the key did not survive the projection at all, every row came out
+        // with photoCount 0, and it read as "1563 rows claim images they do
+        // not have" (2026-09-03). $size cannot be wrong that way, and
+        // photosWithBytes counts the photos that actually carry data — the
+        // gap that cards a dead image.
+        const PlaceCache = require('../models/PlaceCache');
+        const counts = new Map();
+        for (const c of await PlaceCache.aggregate([{ $project: {
+            placeId: 1,
+            photoCount: { $size: { $ifNull: ['$photos', []] } },
+            withBytes: { $size: { $filter: {
+                input: { $ifNull: ['$photos', []] }, as: 'p',
+                cond: { $ne: [{ $ifNull: ['$$p.imageData', null] }, null] },
+            } } },
+        } }])) counts.set(c.placeId, c);
+        await dump('placecache', PlaceCache, PLACE_FIELDS, (d) => ({
+            ...d,
+            photoCount: counts.get(d.placeId)?.photoCount ?? 0,
+            photosWithBytes: counts.get(d.placeId)?.withBytes ?? 0,
+        }));
     }
     if (want('destinations')) {
         await dump('destinations', require('../models/Destination'), DEST_FIELDS, (d) => {
