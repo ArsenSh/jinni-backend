@@ -699,7 +699,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // is a Dilijan ask, and a named place always wins — and only when a
             // position was actually reported this turn, because nearby without
             // GPS has nothing to be near. Turn-local, like the other direction.
-            if (!effectiveNearbyMode && gpsCenter
+            // …and not when the message NAMES the place to look near. intent
+            // never puts a landmark in placeNames, so "near Khor Virap" looked
+            // identical to "near me" until parseAtLocation was asked (live
+            // 2026-09-03).
+            const statedName = parseAtLocation(message);
+            if (!effectiveNearbyMode && gpsCenter && !statedName
                 && isNearbyAsk(message) && !(intent.placeNames || []).length) {
                 effectiveNearbyMode = true;
                 meta.modeSwitched = 'nearby';
@@ -724,7 +729,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
             if (intent._preferences) intent._preferences._here = hereLabel || null;
 
-            const statedName = parseAtLocation(message);
             if (statedName) {
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,

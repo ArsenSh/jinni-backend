@@ -343,3 +343,26 @@ describe('detectRegion — gazetteer first, Google as the fallback, cached eithe
         expect(detectUserRegion).not.toHaveBeenCalled();
     });
 });
+
+// ── "near <Place>" names a place; "near me" does not (live 2026-09-03) ──
+// "what other results you can suggest near Khor Virap" matched isNearbyAsk on
+// the bare word "near", switched to nearby mode, and answered from the
+// traveler's GPS 40 km away — Yerevan cocktail bars, presented as "your
+// immediate surroundings".
+describe('near <place> vs near me', () => {
+    const { parseAtLocation, isNearbyAsk } = require('../engine/retrieval/tuning');
+
+    test('a named place after "near" is a stated position', () => {
+        expect(parseAtLocation('what other results can you suggest near Khor Virap')).toBe('Khor Virap');
+        expect(parseAtLocation('anything around Sevanavank?')).toBe('Sevanavank');
+        expect(parseAtLocation('a hotel close to Republic Square')).toBe('Republic Square');
+    });
+
+    test('a pronoun after "near" is still an around-me ask', () => {
+        for (const m of ['restaurants near me', 'restaurants near my location',
+            'what can I visit around here', 'anything close to me?']) {
+            expect(parseAtLocation(m)).toBeNull();
+            expect(isNearbyAsk(m)).toBe(true);      // the switch still fires
+        }
+    });
+});

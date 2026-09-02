@@ -152,6 +152,13 @@ const AT_LOCATION_RES = [
     /\b(?:i(?:'m|’m| am)|we(?:'re|’re| are))\s+(?:currently\s+|now\s+)?(?:at|in|near|by|around)\s+(?:the\s+)?(.{2,48})/i,
     /\b(?:currently|right now)\s+(?:at|in)\s+(?:the\s+)?(.{2,48})/i,
     /\b(?:standing|staying|sitting)\s+(?:at|in|near)\s+(?:the\s+)?(.{2,48})/i,
+    // "…near Khor Virap" NAMES a place (live 2026-09-03: "what other results
+    // you can suggest near Khor Virap" matched isNearbyAsk on the bare word
+    // "near", switched to nearby mode, and answered from the traveler's GPS
+    // 40 km away — cocktail bars in Yerevan, described as "your immediate
+    // surroundings"). A pronoun after "near" is still an around-me ask and is
+    // rejected by the junk filter below.
+    /\b(?:near|around|close to|next to|beside)\s+(?:the\s+)?(.{2,48})/i,
     /(?:я|мы)\s+(?:сейчас\s+)?(?:в|на|у|около)\s+(.{2,48})/i,
 ];
 const _AT_STOP_RE = /\s+(?:and|but|so|what|where|which|can|could|should|would|now|please|я|и|а|что|где)\b|[.,;!?—–]/i;
@@ -163,7 +170,7 @@ function parseAtLocation(message) {
         let name = String(hit[1] || '').split(_AT_STOP_RE)[0].trim();
         name = name.replace(/["'’`]+$/g, '').trim();
         // A bare pronoun or a single short filler word is not a place.
-        if (name.length < 3 || /^(me|us|here|there|home|town|city)$/i.test(name)) continue;
+        if (name.length < 3 || /^(me|us|here|there|home|town|city|my location|my position|our location|current location)$/i.test(name)) continue;
         return name;
     }
     return null;

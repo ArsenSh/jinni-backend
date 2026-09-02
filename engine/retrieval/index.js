@@ -326,7 +326,30 @@ async function findPlaces(params = {}, deps = {}) {
         }
     }
 
-    const places = ordered.slice(0, effectiveWanted);
+    // ── OUR OWN DATA ALWAYS GETS A SEAT (2026-09-03) ──
+    // Live: "I'm at Khor Virap. What should I visit next?" ranked seven
+    // candidates and served six. The one cut was Noah's Garden — the founder's
+    // OWN curated destination, 1.5 km away — because a staff-entered row
+    // carries no Google rating, so the quality prior that lifts a cache row
+    // scores it zero. Six strangers outranked the one place we actually know.
+    //
+    // The moat is the data, so a curated row that passed every gate is never
+    // the row that falls off the end: it takes the last slot instead. One
+    // seat, not a takeover — it still has to earn the rest on score.
+    let places = ordered.slice(0, effectiveWanted);
+    const OWNED = new Set(['destination', 'business']);
+    if (places.length >= effectiveWanted && effectiveWanted > 1) {
+        const shown = new Set(places.map(p => p && (p.placeId || p.name)));
+        const ownedInPool = ordered.find(c => c && OWNED.has(c.source)
+            && !shown.has(c.placeId || c.name));
+        if (ownedInPool && !places.some(p => p && OWNED.has(p.source))) {
+            const droppedName = places[places.length - 1]?.name;
+            places = [...places.slice(0, effectiveWanted - 1), ownedInPool];
+            provenance.ownedSeat = ownedInPool.name;
+            console.log(`[retrieval] curated seat: "${ownedInPool.name}" (${ownedInPool.source}) `
+                + `takes the last slot from "${droppedName}" — our own data outranks a stranger`);
+        }
+    }
     return { places, degraded: false, provenance };
 }
 
