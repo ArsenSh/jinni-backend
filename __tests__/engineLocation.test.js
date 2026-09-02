@@ -54,9 +54,9 @@ describe('closest is a SORT, nearby is a LIMIT', () => {
 describe('parseCorridorAsk', () => {
     test('needs a route shape AND two resolved endpoints', () => {
         expect(parseCorridorAsk('Give me places between Yerevan and Dilijan.', ['Yerevan', 'Dilijan']))
-            .toEqual({ from: 'Yerevan', to: 'Dilijan' });
+            .toMatchObject({ from: 'Yerevan', to: 'Dilijan' });
         expect(parseCorridorAsk("What's worth stopping at on the way from Yerevan to Tatev?", ['Yerevan', 'Tatev']))
-            .toEqual({ from: 'Yerevan', to: 'Tatev' });
+            .toMatchObject({ from: 'Yerevan', to: 'Tatev' });
     });
     test('one place, or no route shape, is not a corridor', () => {
         expect(parseCorridorAsk('hotels in Dilijan', ['Dilijan'])).toBeNull();
@@ -256,5 +256,31 @@ describe('corridor routing provider', () => {
         );
         expect(centres.map(c => c.source)).toEqual(['line', 'line', 'line']);
         expect(centres.map(c => c.lng)).toEqual([1, 2, 3]);
+    });
+});
+
+// ── A follow-up must not lose the road (live 2026-09-02) ──
+// "…from Yerevan to Tatev?" → "other ones?" ran as a plain hotels ask, bought
+// a paid Google search for the raw question, and answered with Yerevan hotels.
+describe('parseCorridorAsk on a follow-up', () => {
+    const { parseCorridorAsk } = require('../engine/retrieval/tuning');
+
+    test('intent place names win when it has them', () => {
+        expect(parseCorridorAsk('places between Yerevan and Dilijan', ['Yerevan', 'Dilijan']))
+            .toEqual({ from: 'Yerevan', to: 'Dilijan', source: 'intent' });
+    });
+
+    test('the sentence stands in when the follow-up carries no names', () => {
+        expect(parseCorridorAsk("What's worth stopping at on the way from Yerevan to Tatev? other ones?", []))
+            .toEqual({ from: 'Yerevan', to: 'Tatev', source: 'text' });
+    });
+
+    test('a follow-up alone is not a corridor', () => {
+        expect(parseCorridorAsk('other ones?', [])).toBeNull();
+    });
+
+    test('pronoun endpoints are not places', () => {
+        expect(parseCorridorAsk('take me from here to there', [])).toBeNull();
+        expect(parseCorridorAsk('from it to me', [])).toBeNull();
     });
 });

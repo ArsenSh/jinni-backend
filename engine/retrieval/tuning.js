@@ -205,14 +205,28 @@ const CORRIDOR_RES = [
     /(?:между)\s+(.{2,40}?)\s+и\s+(.{2,40}?)(?:[.,;!?]|$)/i,
     /(?:по пути|по дороге)\s+(?:из|от)\s+(.{2,40}?)\s+(?:в|до)\s+(.{2,40}?)(?:[.,;!?]|$)/i,
 ];
+const _CORRIDOR_JUNK_RE = /^(here|there|home|it|them|us|me|you|this|that|the\s+\w+)$/i;
+function _cleanEnd(raw) {
+    const name = String(raw || '').replace(/^(?:the|a)\s+/i, '').replace(/["'’`.,]+$/g, '').trim();
+    if (name.length < 3 || _CORRIDOR_JUNK_RE.test(name)) return null;
+    return name;
+}
 function parseCorridorAsk(message, placeNames = []) {
     const names = (placeNames || []).filter(Boolean);
-    if (names.length < 2) return null;                 // needs two real endpoints
     const m = String(message || '');
-    if (!CORRIDOR_RES.some(re => re.test(m))) return null;
-    // Trust intent's geocodable names over the raw capture — it has already
-    // transliterated and validated them.
-    return { from: names[0], to: names[1] };
+    const hit = CORRIDOR_RES.map(re => re.exec(m)).find(Boolean);
+    if (!hit) return null;
+    // Intent's geocodable names win — it has already transliterated and
+    // validated them. But a FOLLOW-UP ("other ones?") has no place names of
+    // its own, and without a fallback the corridor was lost: live 2026-09-02
+    // the Yerevan→Tatev follow-up ran as a plain hotels ask and bought a paid
+    // Google search for the raw question, answering with Yerevan hotels. The
+    // sentence still says where the road runs, so its own capture stands in.
+    if (names.length >= 2) return { from: names[0], to: names[1], source: 'intent' };
+    const from = _cleanEnd(hit[1]);
+    const to = _cleanEnd(hit[2]);
+    // Unresolvable ends simply produce no corridor — geocoding is the gate.
+    return (from && to) ? { from, to, source: 'text' } : null;
 }
 
 const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;

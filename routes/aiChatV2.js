@@ -1202,7 +1202,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // drive — because resolveDestination returns on the FIRST name it
             // resolves. Search several points along the real road instead.
             let corridorCentresList = null;
-            const corridor = parseCorridorAsk(message, intent.placeNames || []);
+            // geoAsk, not message: a follow-up continues the route it was asked
+            // about, and that also keeps the corridor's no-paid-search rule.
+            const corridor = parseCorridorAsk(geoAsk, intent.placeNames || []);
             if (corridor) {
                 try {
                     const gz = require('../engine/geo/gazetteer');
