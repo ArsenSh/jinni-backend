@@ -181,3 +181,80 @@ describe('the precedence chain', () => {
         expect(d.source).toBe('session');
     });
 });
+
+// ── A follow-up keeps the deck it continues (live 2026-09-02) ──
+// "What is the closest monastery?" → "other ones?" served restaurants, bars
+// and a shopping centre: the follow-up's three words carry no category, and
+// the display label ("Place of worship") maps back to no action at all.
+describe('lastDeckAction — the action the newest deck actually ran under', () => {
+    const { lastDeckAction } = require('../engine/context/session');
+
+    const deck = recs => ([
+        { sender: 'user', text: 'What is the closest monastery?' },
+        { sender: 'ai', text: 'here', recommendations: recs },
+    ]);
+
+    test('majority _action wins', () => {
+        expect(lastDeckAction(deck([
+            { name: 'Mekhitarist', _action: 'historical' },
+            { name: 'Arnjo Vank', _action: 'historical' },
+            { name: 'Some cafe', _action: 'restaurants' },
+        ]))).toBe('historical');
+    });
+
+    test("'general' is not an answer", () => {
+        expect(lastDeckAction(deck([{ name: 'X', _action: 'general' }]))).toBeNull();
+    });
+
+    test('older cards without _action degrade to null, never throw', () => {
+        expect(lastDeckAction(deck([{ name: 'X' }]))).toBeNull();
+        expect(lastDeckAction([])).toBeNull();
+        expect(lastDeckAction(null)).toBeNull();
+    });
+
+    test('reads the NEWEST deck, not the first one found', () => {
+        const messages = [
+            ...deck([{ name: 'Hotel', _action: 'hotels' }]),
+            { sender: 'user', text: 'and monasteries?' },
+            { sender: 'ai', text: 'here', recommendations: [{ name: 'Vank', _action: 'historical' }] },
+        ];
+        expect(lastDeckAction(messages)).toBe('historical');
+    });
+});
+
+// ── The corridor asked OSRM for a profile it does not name ──
+// osrmBaseFor speaks ORS profile names ('driving-car'); 'driving' returned
+// null, the URL became "null/route/v1/…", and every "between A and B" since
+// silently sampled the straight line instead of the road.
+describe('corridor routing provider', () => {
+    const { osrmBaseFor } = require('../engine/travel/osrm');
+
+    test("osrmBaseFor answers 'driving-car', not 'driving'", () => {
+        const env = { OSRM_CAR_URL: 'http://osrm:5000' };
+        expect(osrmBaseFor('driving-car', env)).toBe('http://osrm:5000');
+        expect(osrmBaseFor('driving', env)).toBeNull();
+    });
+
+    test('an injected route is sampled along the road, endpoints excluded', async () => {
+        const { corridorCentres } = require('../engine/geo/corridor');
+        // A dog-leg: the straight line from (0,0) to (0,2) never passes lng 1.
+        const road = [[0, 0], [1, 0.5], [1, 1], [1, 1.5], [0, 2]];
+        const centres = await corridorCentres(
+            { from: { lat: 0, lng: 0 }, to: { lat: 2, lng: 0 }, samples: 3 },
+            { fetchRoute: async () => road },
+        );
+        expect(centres).toHaveLength(3);
+        expect(centres.every(c => c.source === 'route')).toBe(true);
+        expect(centres.some(c => c.lng === 1)).toBe(true);
+    });
+
+    test('no routing service → the straight line, never a thrown turn', async () => {
+        const { corridorCentres } = require('../engine/geo/corridor');
+        const centres = await corridorCentres(
+            { from: { lat: 0, lng: 0 }, to: { lat: 0, lng: 4 }, samples: 3 },
+            { fetchRoute: async () => [] },
+        );
+        expect(centres.map(c => c.source)).toEqual(['line', 'line', 'line']);
+        expect(centres.map(c => c.lng)).toEqual([1, 2, 3]);
+    });
+});

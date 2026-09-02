@@ -28,7 +28,7 @@ const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, narrowingMatches } = require('../engine/context/session');
+const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, lastDeckAction, narrowingMatches } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
@@ -660,6 +660,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    destination → Settings destination → GPS. Question/settings
         //    turns skip ALL of it (see questionTurn above) — their branches
         //    take resolveAskedRegion instead. ──
+        // ── A FOLLOW-UP CONTINUES THE PREVIOUS ASK'S GEOGRAPHY (2026-09-02) ──
+        // Live: "What is the closest monastery?" → "other ones?" came back
+        // with restaurants, bars and a shopping centre. Three words say
+        // nothing about monasteries, closeness or distance — the ask being
+        // continued does. Both are read here, above the centre rules, so
+        // "closest" and "within 10 km" survive the follow-up.
+        const followUpAsk = (parseRefillAsk(message).isRefill && sessionCards.length)
+            ? lastCardAsk(sessionPeek?.messages) : null;
+        const geoAsk = followUpAsk ? `${followUpAsk} ${message}` : message;
+        // Declared at handler scope: the retrieval call far below ranks by
+        // them, and a `const` inside the try block is invisible there.
+        let hereRegion = null;
+        let statedPosition = null;
+        const closestAsk = isClosestAsk(geoAsk) && !(intent.placeNames || []).length;
+
         try {
             // Resolved once and reused: the destination rules need it, and the
             // prompt needs to NAME it. Telling the model it can see a position
@@ -693,9 +708,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // (live 2026-09-02: "the closest monastery" was answered from a
             // Gyumri left over from an earlier question, and only looked right
             // because that happened to be where they were).
-            const closestAsk = isClosestAsk(message) && !(intent.placeNames || []).length;
+            // Resolved BEFORE the rules that read it: as a `const` below the
+            // closest-ask branch it threw "Cannot access 'hereRegion' before
+            // initialization" and the whole centre fell back to raw GPS
+            // (live 2026-09-02, "other ones?").
+            hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
+            const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
+            if (intent._preferences) intent._preferences._here = hereLabel || null;
 
-            let statedPosition = null;
             const statedName = parseAtLocation(message);
             if (statedName) {
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
@@ -714,9 +734,6 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 statedPosition = { lat: gpsCenter.lat, lng: gpsCenter.lng, name: hereRegion?.city || null, source: 'gps' };
                 console.log('[destination] closest-ask -> centred on the traveler');
             }
-            const hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
-            const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
-            if (intent._preferences) intent._preferences._here = hereLabel || null;
             if (!questionTurn) {
             const dest = await resolveDestination({
                 placeNames: intent.placeNames || [],
@@ -815,6 +832,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // deck was — their majority label, mapped back through the ONE
             // category list, restores the action when this turn's own intent
             // is generic.
+            if ((intent.actionType || 'general') === 'general') {
+                // What the deck WAS, straight from the cards: every rec carries
+                // the action it was produced under (_action, persisted with the
+                // session). The display label below is the older, lossier path
+                // — a monastery cards as "Place of worship", which maps back to
+                // no category at all, so "other ones?" after "the closest
+                // monastery" ran as a generic browse (live 2026-09-02).
+                const deckAction = lastDeckAction(sessionPeek?.messages);
+                if (deckAction) intent.actionType = deckAction;
+            }
             if ((intent.actionType || 'general') === 'general') {
                 const labels = lastDeckLabels(sessionPeek?.messages);
                 if (labels.length) {
@@ -1151,7 +1178,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // "What can I do within 10 km?" ran at 50 km and seated Talin at
             // 45, which the narrator then had to apologise for. Applied last,
             // so it beats population sizing, the town cap and the mode default.
-            const askedRadiusKm = parseRadiusKm(message);
+            const askedRadiusKm = parseRadiusKm(geoAsk);
             if (askedRadiusKm) {
                 radiusKm = askedRadiusKm;
                 meta.radiusAsked = askedRadiusKm;
@@ -1481,7 +1508,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // asks never trigger: no retrieved name appears in the message,
                 // and geo tokens alone never count (messageNamesPlace).
                 {
-                    const namedHits = (result.places || []).filter(p => messageNamesPlace(msgLower, p.name, geoTokens));
+                    // …but the place they said they are STANDING at is not the
+                    // subject of the question (live 2026-09-02: "I'm at Khor
+                    // Virap. What should I visit next?" answered with Khor
+                    // Virap alone and threw away the six historical sites
+                    // around it). The stated position names the centre, so it
+                    // can never be the name-ask.
+                    const statedLower = String(meta.statedAt || '').toLowerCase();
+                    const namedHits = (result.places || []).filter(p =>
+                        messageNamesPlace(msgLower, p.name, geoTokens)
+                        && !(statedLower && messageNamesPlace(statedLower, p.name, geoTokens)));
                     if (namedHits.length && namedHits.length < result.places.length) {
                         console.log(`[v2] name-ask: serving ${namedHits.length}/${result.places.length} — the message names them`);
                         result.places = namedHits;

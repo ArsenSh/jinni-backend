@@ -38,6 +38,35 @@ function sampleRouteCentres(coordinates = [], samples = 4, radiusKm = 15) {
     });
 }
 
+/** The road between two points, as [lng,lat] pairs — or [] when no routing
+ *  service is configured. OSRM first (self-hosted, free per request), then the
+ *  ORS key the maps already fall back to. Never throws.
+ *
+ *  osrmBaseFor's profile names are ORS's ('driving-car'), not OSRM's: asking
+ *  it for 'driving' returned null, buildOsrmRouteUrl made "null/route/v1/…",
+ *  and every corridor since silently degraded to the straight line (live
+ *  2026-09-02: "[corridor] route lookup failed: Invalid URL"). Yerevan→Dilijan
+ *  runs around the Sevan basin, so the line and the road are not the same
+ *  places. */
+async function _fetchRouteCoords(a, b) {
+    const axios = require('axios');
+    const { osrmBaseFor, buildOsrmRouteUrl } = require('../travel/osrm');
+    const base = osrmBaseFor('driving-car');
+    if (base) {
+        const res = await axios.get(buildOsrmRouteUrl(base, [a, b]), { timeout: 6000 });
+        const coords = res.data?.routes?.[0]?.geometry?.coordinates || [];
+        if (coords.length) return coords;
+    }
+    const apiKey = process.env.ORS_API_KEY;
+    if (!apiKey) return [];
+    const res = await axios.post(
+        'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+        { coordinates: [[a.lng, a.lat], [b.lng, b.lat]], instructions: false },
+        { headers: { 'Content-Type': 'application/json', Authorization: apiKey }, timeout: 8000 },
+    );
+    return res.data?.features?.[0]?.geometry?.coordinates || [];
+}
+
 /**
  * @param {object} args  { from:{lat,lng}, to:{lat,lng}, samples?, radiusKm? }
  * @param {object} deps  { fetchRoute?: (from,to) => coordinates[] }
@@ -46,16 +75,10 @@ function sampleRouteCentres(coordinates = [], samples = 4, radiusKm = 15) {
 async function corridorCentres({ from, to, samples = 4, radiusKm = 15 } = {}, deps = {}) {
     if (!from || !to || !Number.isFinite(from.lat) || !Number.isFinite(to.lat)) return [];
     try {
-        const fetchRoute = deps.fetchRoute || (async (a, b) => {
-            const axios = require('axios');
-            const { osrmBaseFor, buildOsrmRouteUrl } = require('../travel/osrm');
-            const url = buildOsrmRouteUrl(osrmBaseFor('driving'), [a, b]);
-            const res = await axios.get(url, { timeout: 6000 });
-            return res.data?.routes?.[0]?.geometry?.coordinates || [];
-        });
-        const coords = await fetchRoute(from, to);
+        const coords = await (deps.fetchRoute || _fetchRouteCoords)(from, to);
         const onRoute = sampleRouteCentres(coords, samples, radiusKm);
         if (onRoute.length) return onRoute;
+        console.log('[corridor] no routing service answered — sampling the straight line');
     } catch (err) {
         console.warn(`[corridor] route lookup failed: ${err.message} — using the straight line`);
     }

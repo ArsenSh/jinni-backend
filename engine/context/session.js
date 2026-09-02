@@ -87,6 +87,32 @@ function lastCardAsk(messages) {
  *  refill's category memory. "Give me 10 examples" continued the ASK's words
  *  but ran cat=free and served horseriding for a hotels deck (live
  *  2026-08-30); the cards themselves say what the deck was. */
+/**
+ * The ACTION the newest deck was produced under — 'restaurants', 'historical',
+ * … — read from the cards themselves (`_action`, set by the card builder and
+ * persisted with the session). Majority wins; 'general' does not count as an
+ * answer. Used when a follow-up ("other ones?") carries no category of its
+ * own: the display label is lossy (a monastery reads "Place of worship" and
+ * maps back to nothing), while _action is what retrieval actually ran.
+ * Pure.
+ */
+function lastDeckAction(messages) {
+    const list = messages || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        if (!m || m.sender !== 'ai' || !(m.recommendations || []).length) continue;
+        const tally = {};
+        for (const r of m.recommendations) {
+            const a = r && r._action;
+            if (!a || a === 'general') continue;
+            tally[a] = (tally[a] || 0) + 1;
+        }
+        const top = Object.entries(tally).sort((x, y) => y[1] - x[1])[0];
+        return top ? top[0] : null;
+    }
+    return null;
+}
+
 function lastDeckLabels(messages) {
     const list = messages || [];
     for (let i = list.length - 1; i >= 0; i--) {
@@ -127,4 +153,5 @@ function narrowingMatches(message, shownNames = [], { excludeTokens = [] } = {})
     return [...new Set(toks.filter(t => names.some(n => n.includes(t))))];
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, narrowingMatches };
+module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels,
+    lastDeckAction, narrowingMatches };
