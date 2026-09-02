@@ -521,3 +521,47 @@ describe('styleVerdict', () => {
         expect(styleVerdict(null, 'luxury')).toBeNull();
     });
 });
+
+// ── Hide means hidden everywhere, including when Google re-sells it ──
+// Founder, 2026-09-03: "i have set hide from admin page some locations in
+// placecache but it shows". buildCacheQuery honoured explore.status, so the
+// cache tier dropped the row — and the paid fallback then bought the same
+// place back and carded it. Proof in that turn's own log: "[images] … is
+// hidden — downloaded photos NOT stored", then that place in the pool as
+// source 'google'.
+describe('googleFallback respects the staff hide', () => {
+    const { googleFallback } = require('../engine/places/canonicalStore');
+    const CENTRE = { lat: 39.878, lng: 44.576 };
+    const found = [
+        { place_id: 'p_hidden', name: 'Virap View Point', geometry: { location: { lat: 39.8784, lng: 44.5762 } } },
+        { place_id: 'p_ok', name: 'Artashat site', geometry: { location: { lat: 39.879, lng: 44.577 } } },
+    ];
+    const deps = (hiddenIds) => ({
+        coverage: async () => true,
+        findPlaces: async () => found,
+        resolveDetails: async (id) => ({ name: id, types: ['tourist_attraction'], primaryType: 'tourist_attraction',
+            photos: [{ url: 'x' }], details: { formatted_address: 'a' }, formatted_address: 'a',
+            geometry: { location: { lat: 39.879, lng: 44.577 } } }),
+        typeGate: () => true,
+        hiddenIds,
+    });
+
+    test('a hidden place is not re-bought', async () => {
+        const out = await googleFallback({ query: 'historical', category: 'historical', center: CENTRE,
+            radiusKm: 15, needed: 5 }, deps(async () => [{ placeId: 'p_hidden', name: 'Virap View Point' }]));
+        expect(out.map(p => p.placeId)).not.toContain('p_hidden');
+        expect(out.map(p => p.placeId)).toContain('p_ok');
+    });
+
+    test('nothing hidden → both survive', async () => {
+        const out = await googleFallback({ query: 'historical', category: 'historical', center: CENTRE,
+            radiusKm: 15, needed: 5 }, deps(async () => []));
+        expect(out).toHaveLength(2);
+    });
+
+    test('a failed lookup never blocks the turn', async () => {
+        const out = await googleFallback({ query: 'historical', category: 'historical', center: CENTRE,
+            radiusKm: 15, needed: 5 }, deps(async () => { throw new Error('mongo down'); }));
+        expect(out).toHaveLength(2);
+    });
+});

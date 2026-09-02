@@ -327,29 +327,31 @@ async function findPlaces(params = {}, deps = {}) {
     }
 
     // ── OUR OWN DATA ALWAYS GETS A SEAT (2026-09-03) ──
-    // Live: "I'm at Khor Virap. What should I visit next?" ranked seven
-    // candidates and served six. The one cut was Noah's Garden — the founder's
-    // OWN curated destination, 1.5 km away — because a staff-entered row
-    // carries no Google rating, so the quality prior that lifts a cache row
-    // scores it zero. Six strangers outranked the one place we actually know.
+    // Live: "I'm at Khor Virap. What should I visit next?" ranked Noah's
+    // Garden — the founder's own curated destination, 1.5 km away — LAST of
+    // six, because a staff-entered row carries no Google rating and the
+    // quality prior that lifts a cache row scores it zero.
     //
-    // The moat is the data, so a curated row that passed every gate is never
-    // the row that falls off the end: it takes the last slot instead. One
-    // seat, not a takeover — it still has to earn the rest on score.
-    let places = ordered.slice(0, effectiveWanted);
+    // The first attempt at this rewrote the final slice, and never fired: the
+    // deck is cut again downstream, so protecting the last slot here protects
+    // nothing. Hoisting into the top THREE is cut-proof — three is the
+    // smallest deck the adaptive shrink ever produces, so a seat there
+    // survives every later trim. One seat, not a takeover.
     const OWNED = new Set(['destination', 'business']);
-    if (places.length >= effectiveWanted && effectiveWanted > 1) {
-        const shown = new Set(places.map(p => p && (p.placeId || p.name)));
-        const ownedInPool = ordered.find(c => c && OWNED.has(c.source)
-            && !shown.has(c.placeId || c.name));
-        if (ownedInPool && !places.some(p => p && OWNED.has(p.source))) {
-            const droppedName = places[places.length - 1]?.name;
-            places = [...places.slice(0, effectiveWanted - 1), ownedInPool];
-            provenance.ownedSeat = ownedInPool.name;
-            console.log(`[retrieval] curated seat: "${ownedInPool.name}" (${ownedInPool.source}) `
-                + `takes the last slot from "${droppedName}" — our own data outranks a stranger`);
+    const SAFE_SEAT = 3;
+    if (ordered.length > SAFE_SEAT && !ordered.slice(0, SAFE_SEAT).some(c => c && OWNED.has(c.source))) {
+        const i = ordered.findIndex(c => c && OWNED.has(c.source));
+        if (i >= SAFE_SEAT) {
+            const owned = ordered[i];
+            ordered = [...ordered.slice(0, SAFE_SEAT - 1), owned,
+                ...ordered.slice(SAFE_SEAT - 1).filter(c => c !== owned)];
+            provenance.ownedSeat = owned.name;
+            console.log(`[retrieval] curated seat: "${owned.name}" (${owned.source}) hoisted `
+                + `from #${i + 1} to #${SAFE_SEAT} — our own data is not the row that falls off`);
         }
     }
+
+    const places = ordered.slice(0, effectiveWanted);
     return { places, degraded: false, provenance };
 }
 

@@ -817,10 +817,46 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         try { return require('../../services/googleService').placeMatchesActionType(action, st, types, pt); }
         catch { return true; /* gate unavailable → lenient, never drop the turn */ }
     });
+    // ── A HIDDEN PLACE STAYS HIDDEN, INCLUDING WHEN GOOGLE RE-SELLS IT ──
+    // Founder, 2026-09-03: "i have set hide from admin page some locations in
+    // placecache but it shows". buildCacheQuery honours `explore.status` and
+    // `aiBlocked`, so the CACHE tier dropped the row correctly — and then this
+    // fallback bought the same place back from Google and carded it, because
+    // nothing here ever consulted the staff verdict. Live proof in the same
+    // turn: "[images] ChIJoZkc… is hidden — downloaded photos NOT stored",
+    // immediately followed by that place in the pool as source 'google'.
+    // Hide means gone from EVERY surface (CLAUDE.md invariant); one indexed
+    // query over the ids we just fetched enforces it.
+    let suppressed = new Set();
+    try {
+        const ids = found.map(p => p?.place_id).filter(Boolean);
+        // Injectable, and skipped entirely when Mongo is not connected — an
+        // unconnected mongoose BUFFERS for 10s before throwing, which would
+        // park the turn rather than fail it (the lesson gazetteer._ready records).
+        const hiddenLookup = deps.hiddenIds || (async (idList) => {
+            const mongoose = require('mongoose');
+            if (mongoose.connection?.readyState !== 1) return [];
+            return require('../../models/PlaceCache').find({
+                placeId: { $in: idList },
+                $or: [{ 'explore.status': 'hidden' }, { aiBlocked: true }],
+            }).select('placeId name').lean();
+        });
+        if (ids.length) {
+            const rows = (await hiddenLookup(ids)) || [];
+            suppressed = new Set(rows.map(r => r.placeId));
+            if (suppressed.size) {
+                console.log(`[canonicalStore] staff-hidden, not re-bought: ${rows.map(r => r.name).join(', ')}`);
+            }
+        }
+    } catch (err) {
+        console.warn(`[canonicalStore] hidden-check failed: ${err.message} — serving without it`);
+    }
+
     const out = [];
     for (const p of found) {
         if (out.length >= needed) break;
         if (!p?.place_id || !p?.name) continue;
+        if (suppressed.has(p.place_id)) continue;      // staff said no, everywhere
         const lat = p.geometry?.location?.lat, lng = p.geometry?.location?.lng;
         if (lat == null || lng == null) continue;
         const distanceKm = haversineKm(center.lat, center.lng, lat, lng);
