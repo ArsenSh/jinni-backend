@@ -689,6 +689,14 @@ async function loadCandidates(params = {}, deps = {}) {
             console.warn(`[canonicalStore] google fallback failed: ${err.message} — serving owned data only`);
         }
     }
+    // WHAT reached the ranker (2026-09-03). "Noah's Garden should have
+    // appeared" is unanswerable from the summary line alone: `3/7 candidates`
+    // says how many were cut, never which — so a curated row that arrived and
+    // lost on score looks identical to one that never arrived at all.
+    if (merged.length) {
+        const names = merged.slice(0, 12).map(c => `${c.name}(${c.source || '?'})`).join(' · ');
+        console.log(`[canonicalStore] pool: ${names}${merged.length > 12 ? ` …+${merged.length - 12}` : ''}`);
+    }
     return merged;
 }
 

@@ -514,8 +514,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // that is a request for new cards, whatever card names are on screen
         // (live 2026-08-30: a count+place hotels ask fell into the tool loop
         // and answered with one hostel's phone number).
+        // A REFILL is a deck ask too (live 2026-09-03): "other results?" after
+        // "I'm at Khor Virap. What should I visit next?" carried no count and
+        // no place of its own, so it fell through to the bridge, which took
+        // the PREVIOUS turn's place and answered from the tool loop — prose
+        // naming Areni-1 and Noravank out of the model's memory, with no cards
+        // and no retrieval behind them. Asking for more results is asking for
+        // more CARDS, and only a deck can honestly answer it.
         const deckAsk = intent.isTravel && !intent.infoAsk
             && (!!intent.count
+                || (parseRefillAsk(message).isRefill && sessionCards.length > 0)
                 || (intent.actionType && intent.actionType !== 'general' && (intent.placeNames || []).length > 0));
         // MOST-SPECIFIC match wins — the city-token disease's FOURTH home
         // (live 2026-08-31: "how to get to DilijanInn Hotel and Restaurant?"
