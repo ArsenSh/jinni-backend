@@ -480,15 +480,22 @@ async function loadCandidates(params = {}, deps = {}) {
             ? params.alsoTypes.some(t => placeMatches(t, sub, types, primaryType))
             : placeMatches(action, sub, types, primaryType);
 
+    // Why did the cache tier come back empty? (2026-09-03) Live, "I'm at Khor
+    // Virap. What should I visit next?" reported `owned had 0` and paid Google,
+    // while four rows a few hundred metres away carried `historical`, real
+    // photo bytes and passing types — every gate we could inspect from outside
+    // said they should have been served. The DB query and the JS loop are two
+    // different filters; only the loop can say which of its own rules fired.
+    const dropped = { coords: 0, photos: 0, distance: 0, votes: 0, subtype: 0, types: 0, tier: 0 };
     const scoredCache = [];
     for (const d of cacheDocs) {
         const lat = d?.details?.geometry?.location?.lat;
         const lng = d?.details?.geometry?.location?.lng;
-        if (lat == null || lng == null) continue;
-        if (!d.photos || !d.photos[0]) continue;        // must render a card
+        if (lat == null || lng == null) { dropped.coords++; continue; }
+        if (!d.photos || !d.photos[0]) { dropped.photos++; continue; }   // must render a card
         const distanceKm = haversineKm(center.lat, center.lng, lat, lng);
-        if (distanceKm > radiusKm) continue;            // exact circular cap
-        if (isCommunityRejected(d.likes, d.dislikes)) continue;
+        if (distanceKm > radiusKm) { dropped.distance++; continue; }     // exact circular cap
+        if (isCommunityRejected(d.likes, d.dislikes)) { dropped.votes++; continue; }
         if (category) {
             // v1's sub-type + landmark/type gates, verbatim semantics.
             if (subType) {
@@ -496,15 +503,20 @@ async function loadCandidates(params = {}, deps = {}) {
                 if (rowSubTags.length) {
                     if (!rowSubTags.includes(subType)) continue;
                 } else if (!placeMatches(category, subType, d.types, d.primaryType)) {
-                    continue;
+                    dropped.subtype++; continue;
                 }
             } else if (!matchesAnyType(category, null, d.types, d.primaryType)) {
-                continue;
+                dropped.types++; continue;
             }
             const dTier = isPriceAction(category) ? priceTier(d.types, d.primaryType, d.priceLevel).tier : null;
-            if (isPriceAction(category) && tierMismatch(dTier, preferences.travelStyle)) continue;
+            if (isPriceAction(category) && tierMismatch(dTier, preferences.travelStyle)) { dropped.tier++; continue; }
         }
         scoredCache.push({ d, distanceKm, score: scoreCachedDoc(d, distanceKm, radiusKm, category, preferences) });
+    }
+    // Only when it matters: a full pool needs no explanation, an empty one does.
+    if (!scoredCache.length && cacheDocs.length) {
+        const why = Object.entries(dropped).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(', ');
+        console.log(`[canonicalStore] cache tier: ${cacheDocs.length} row(s) matched the query, 0 survived — dropped by ${why || 'nothing (check the query itself)'}`);
     }
     scoredCache.sort((a, b) => b.score - a.score);
     const cacheCandidates = scoredCache.slice(0, 40).map(({ d }) => cacheDocToCandidate(d, center));
