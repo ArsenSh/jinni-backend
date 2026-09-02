@@ -268,7 +268,14 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         //console.log(`Proximity search: action = ${actionType}, radius = ${radiusKm}km, interests = [${userInterests.join(',')}], style = ${userStyle}`);
 
         if (!userRegion) {
-            try { userRegion = await googleService.detectUserRegion(userLocation, requestId) } 
+            // Gazetteer first, then Google — and cached on a ~1 km grid either
+            // way (founder 2026-09-03: "are we using the github tool
+            // correctly?"). detectUserRegion has no cache, so this line was a
+            // live paid Geocoding request on EVERY search: one per deck turn,
+            // and four on a corridor turn, because loadCandidates recurses per
+            // segment. Same return shape, Google unchanged as the fallback, so
+            // v1 cannot tell the difference. See engine/context/region.js.
+            try { userRegion = await require('../engine/context/region').detectRegion(userLocation, requestId) }
             catch (error) { console.warn('Region detection failed, using global search') }
         } else {
             //console.log('✅ Using pre-detected region (no API call)');

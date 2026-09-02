@@ -284,3 +284,62 @@ describe('parseCorridorAsk on a follow-up', () => {
         expect(parseCorridorAsk('from it to me', [])).toBeNull();
     });
 });
+
+// ── The paid reverse geocode on every search (live 2026-09-03) ──
+// proximityService called googleService.detectUserRegion directly, and that
+// function has no cache: one live Geocoding request per deck turn, four on a
+// corridor turn. The gazetteer answers it for free.
+describe('detectRegion — gazetteer first, Google as the fallback, cached either way', () => {
+    const { detectRegion, _CACHE } = require('../engine/context/region');
+    const YEREVAN = { lat: 40.1866, lng: 44.5157 };
+
+    beforeEach(() => _CACHE.clear());
+
+    test('the gazetteer answers in detectUserRegion\'s shape, no API call', async () => {
+        const detectUserRegion = jest.fn(async () => { throw new Error('must not be reached'); });
+        const gazetteer = { regionAt: async () => ({ city: 'Yerevan', region: 'Yerevan', country: 'Armenia' }) };
+        const r = await detectRegion(YEREVAN, null, { gazetteer, detectUserRegion });
+        expect(r).toMatchObject({ city: 'Yerevan', region: 'Yerevan', country: 'Armenia', source: 'gazetteer' });
+        expect(r.formatted).toBe('Yerevan, Yerevan, Armenia');
+        expect(detectUserRegion).not.toHaveBeenCalled();
+    });
+
+    test('a coordinate the gazetteer cannot place still goes to Google, unchanged', async () => {
+        const detectUserRegion = jest.fn(async () => ({ country: 'Armenia', region: 'Kotayk Province', city: 'Ptghni', formatted: 'Ptghni, Kotayk Province, Armenia' }));
+        const gazetteer = { regionAt: async () => null };
+        const r = await detectRegion({ lat: 40.3, lng: 44.6 }, null, { gazetteer, detectUserRegion });
+        expect(r).toMatchObject({ city: 'Ptghni', region: 'Kotayk Province', source: 'google' });
+        expect(detectUserRegion).toHaveBeenCalledTimes(1);
+    });
+
+    test('the ~1km grid answers the second call for free — the corridor bought four', async () => {
+        const detectUserRegion = jest.fn(async () => ({ country: 'Armenia', region: null, city: 'Ptghni' }));
+        const deps = { gazetteer: { regionAt: async () => null }, detectUserRegion };
+        await detectRegion({ lat: 40.3000, lng: 44.6000 }, null, deps);
+        await detectRegion({ lat: 40.3009, lng: 44.6004 }, null, deps);
+        expect(detectUserRegion).toHaveBeenCalledTimes(1);
+    });
+
+    test('a broken gazetteer falls through rather than failing the search', async () => {
+        const detectUserRegion = jest.fn(async () => ({ country: 'Armenia', city: 'Yerevan' }));
+        const gazetteer = { regionAt: async () => { throw new Error('mongo down'); } };
+        const r = await detectRegion(YEREVAN, null, { gazetteer, detectUserRegion });
+        expect(r).toMatchObject({ city: 'Yerevan', source: 'google' });
+    });
+
+    test('a transient Google failure is not cached', async () => {
+        const detectUserRegion = jest.fn()
+            .mockRejectedValueOnce(new Error('ETIMEDOUT'))
+            .mockResolvedValueOnce({ country: 'Armenia', city: 'Yerevan' });
+        const deps = { gazetteer: { regionAt: async () => null }, detectUserRegion };
+        expect(await detectRegion(YEREVAN, null, deps)).toBeNull();
+        expect(await detectRegion(YEREVAN, null, deps)).toMatchObject({ city: 'Yerevan' });
+    });
+
+    test('junk coordinates cost nothing', async () => {
+        const detectUserRegion = jest.fn();
+        expect(await detectRegion(null, null, { detectUserRegion })).toBeNull();
+        expect(await detectRegion({ lat: 'x', lng: 2 }, null, { detectUserRegion })).toBeNull();
+        expect(detectUserRegion).not.toHaveBeenCalled();
+    });
+});

@@ -14,6 +14,7 @@ const fakeModel = (rows, capture = {}) => ({
             if (q.names && !(r.names || []).includes(q.names)) return false;
             if (typeof q.kind === 'string' && r.kind !== q.kind) return false;
             if (q.countryCode && r.countryCode !== q.countryCode) return false;
+            if (q.admin1 && r.admin1 !== q.admin1) return false;
             if (q.population?.$gte != null && (r.population || 0) < q.population.$gte) return false;
             if (q.featureCode?.$nin && q.featureCode.$nin.includes(r.featureCode)) return false;
             return true;
@@ -26,6 +27,11 @@ const fakeModel = (rows, capture = {}) => ({
         return this;
     },
     limit(n) { capture.limit = n; this._sel = this._sel.slice(0, n); return this; },
+    findOne(q) {
+        this.find(q);
+        const first = this._sel[0] || null;
+        return { select: () => ({ lean: async () => first }), lean: async () => first };
+    },
     async lean() { return this._sel; },
     async estimatedDocumentCount() { return rows.length; },
 });
@@ -465,4 +471,75 @@ describe('narration prompts carry BOTH switch directions', () => {
             expect(none).not.toMatch(/search mode was set/);
         });
     }
+});
+
+// ── Villages and landmarks (2026-09-03) ──
+// cities1000 carries settlements of 1000+ people and no landmarks at all, so
+// "on the way from Yerevan to Tatev" paid Google to place a village of 768,
+// and Khor Virap resolved only because it sat in PlaceCache. --deep seeds the
+// per-country dump; these lock in how the new rows are allowed to behave.
+describe('gazetteer: landmarks', () => {
+    const KHOR_VIRAP = {
+        geonameId: 174876, kind: 'landmark', scale: 'town', name: 'Khor Virap',
+        names: ['khor virap'], countryCode: 'AM', countryName: 'Armenia',
+        featureCode: 'MSTY', population: 0, lat: 39.8784, lng: 44.5761,
+    };
+    const TATEV_VILLAGE = {
+        geonameId: 616100, kind: 'city', scale: 'town', name: 'Tatev',
+        names: ['tatev'], countryCode: 'AM', countryName: 'Armenia',
+        featureCode: 'PPL', population: 768, lat: 39.3789, lng: 46.2494,
+    };
+    const TATEV_MONASTERY = {
+        geonameId: 616101, kind: 'landmark', scale: 'town', name: 'Tatev Monastery',
+        names: ['tatev'], countryCode: 'AM', countryName: 'Armenia',
+        featureCode: 'MSTY', population: 0, lat: 39.3806, lng: 46.2494,
+    };
+
+    test('a monastery resolves for free instead of buying a Google search', async () => {
+        const geo = await gz.lookupPlace('Khor Virap', {}, { model: fakeModel([KHOR_VIRAP]) });
+        expect(geo).toMatchObject({ lat: 39.8784, lng: 44.5761, source: 'gazetteer', scale: 'town' });
+    });
+
+    test('a settlement of the same name wins — the town is what people mean', async () => {
+        const geo = await gz.lookupPlace('Tatev', {}, { model: fakeModel([TATEV_MONASTERY, TATEV_VILLAGE]) });
+        expect(geo.name).toBe('Tatev');
+    });
+
+    test('a landmark is NOT a geographic destination, so it cannot hijack the centre', async () => {
+        const geo = await gz.lookupPlace('Khor Virap', {}, { model: fakeModel([KHOR_VIRAP]) });
+        // isGeographic() in context/destination.js gates the named-destination
+        // path; keeping landmarks out of it is what makes seeding them safe.
+        expect(geo.types).toEqual(['point_of_interest']);
+    });
+
+    test('a monastery is never the answer to "which city am I in"', async () => {
+        const cap = {};
+        await gz.regionAt({ lat: 39.8784, lng: 44.5761 }, {}, { model: fakeModel([KHOR_VIRAP], cap) });
+        expect(cap.queries[0].kind).toBe('city');
+    });
+});
+
+describe('gazetteer: regionAt names the province', () => {
+    // proximityService filters owned rows on location.region, so dropping the
+    // province would narrow the query it runs (2026-09-03).
+    const PTGHNI = {
+        geonameId: 1, kind: 'city', scale: 'town', name: 'Ptghni', names: ['ptghni'],
+        countryCode: 'AM', countryName: 'Armenia', admin1: '11', population: 2000,
+        lat: 40.25, lng: 44.62,
+    };
+    const KOTAYK = {
+        geonameId: 2, kind: 'region', scale: 'region', name: 'Kotayk', names: ['kotayk'],
+        countryCode: 'AM', countryName: 'Armenia', admin1: '11', population: 0,
+        lat: 40.25, lng: 44.62,
+    };
+
+    test('the admin1 row supplies it', async () => {
+        const r = await gz.regionAt({ lat: 40.25, lng: 44.62 }, {}, { model: fakeModel([PTGHNI, KOTAYK]) });
+        expect(r).toMatchObject({ city: 'Ptghni', region: 'Kotayk', country: 'Armenia' });
+    });
+
+    test('no admin1 row is not a failure — the province is optional', async () => {
+        const r = await gz.regionAt({ lat: 40.25, lng: 44.62 }, {}, { model: fakeModel([PTGHNI]) });
+        expect(r).toMatchObject({ city: 'Ptghni', region: null });
+    });
 });

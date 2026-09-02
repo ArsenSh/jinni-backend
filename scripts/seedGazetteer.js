@@ -6,6 +6,16 @@
 //   node scripts/seedGazetteer.js --apply --countries=AM,GE,AE
 //   node scripts/seedGazetteer.js --apply --alt             # + alternate names (ru/hy/ar…)
 //   node scripts/seedGazetteer.js --apply --file=/tmp/cities1000.txt
+//   node scripts/seedGazetteer.js --apply --deep=AM,GE            # ← villages + landmarks
+//
+// --deep reads the PER-COUNTRY dumps (AM.zip …) instead of cities1000, which
+// carries only settlements of 1000+ people and no landmarks whatsoever. That
+// is why "on the way from Yerevan to Tatev" bought a Google Text Search to
+// place a village of ~500, and why Khor Virap resolved only because it
+// happened to sit in PlaceCache (founder, 2026-09-03). A country file holds
+// every populated place plus monasteries, peaks, lakes and ruins; AM is ~34k
+// rows before filtering. Given --deep without --countries, ONLY those
+// countries are seeded and cities1000 is not downloaded at all.
 //
 // ⚠ RUN THIS ON THE SERVER, not locally — the Atlas IP whitelist blocks local
 //   connections (the same lesson scripts/embedPlaceCache.js records).
@@ -39,7 +49,23 @@ const WITH_ALT = process.argv.includes('--alt');
 const ONLY = (ARG('countries') || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 const MIN_POP = Number(ARG('min-pop', '0')) || 0;
 const LOCAL_FILE = ARG('file');
+const DEEP = (ARG('deep') || '').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
 const BATCH = 1000;
+
+// Which of a country dump's non-settlement rows are worth carrying. GeoNames
+// feature codes; everything else (post offices, farms, wells, bus stops —
+// most of the file) is noise a traveler will never name.
+const LANDMARK_CODES = new Set([
+    // S — buildings and sites
+    'MSTY', 'CH', 'TMPL', 'MNMT', 'MUS', 'CSTL', 'RUIN', 'ANS', 'HSTS',
+    'FT', 'PAL', 'TOWR', 'THTR', 'AMTH', 'ZOO', 'OBPT',
+    // T — terrain
+    'MT', 'PK', 'VAL', 'CNYN', 'CAVE', 'CLF', 'PASS',
+    // H — water
+    'LK', 'FLLS', 'SPNG', 'RSV',
+    // L / V — areas
+    'PRK', 'RESN', 'FRST',
+]);
 
 const BASE = 'https://download.geonames.org/export/dump';
 
@@ -68,7 +94,10 @@ function unzipFirstTxt(buf) {
         const localOff = buf.readUInt32LE(p + 42);
         const entryName = buf.toString('utf8', p + 46, p + 46 + nameLen);
         p += 46 + nameLen + extraLen + commentLen;
+        // A country archive holds TWO .txt entries — AM.txt and readme.txt —
+        // and the central directory does not promise an order.
         if (!entryName.toLowerCase().endsWith('.txt')) continue;
+        if (entryName.toLowerCase().includes('readme')) continue;
         const lNameLen = buf.readUInt16LE(localOff + 26);
         const lExtraLen = buf.readUInt16LE(localOff + 28);
         const start = localOff + 30 + lNameLen + lExtraLen;
@@ -93,16 +122,24 @@ const rows = (text) => text.split('\n')
 
 // ── Build ────────────────────────────────────────────────────────────────────
 (async () => {
+    // --deep alone scopes the whole run to those countries: their own dumps
+    // are a superset of what cities1000 holds for them.
+    if (DEEP.length && !ONLY.length) ONLY.push(...DEEP);
+    const skipCities1000 = DEEP.length > 0 && !LOCAL_FILE && ONLY.every(c => DEEP.includes(c));
+
     console.log(`[gazetteer] ${APPLY ? 'APPLY' : 'DRY-RUN (use --apply to write)'}`
         + `${ONLY.length ? ` · countries=${ONLY.join(',')}` : ' · ALL countries'}`
+        + `${DEEP.length ? ` · deep=${DEEP.join(',')} (villages + landmarks)` : ''}`
         + `${WITH_ALT ? ' · with alternate names' : ''}`
         + `${MIN_POP ? ` · min-pop=${MIN_POP}` : ''}`);
 
     console.log('[gazetteer] downloading dumps…');
-    const [citiesTxt, countryTxt, admin1Txt] = await Promise.all([
-        LOCAL_FILE ? Promise.resolve(fs.readFileSync(LOCAL_FILE, 'utf8')) : fetchZipText(`${BASE}/cities1000.zip`),
+    const [citiesTxt, countryTxt, admin1Txt, ...deepTxts] = await Promise.all([
+        skipCities1000 ? Promise.resolve('')
+            : (LOCAL_FILE ? Promise.resolve(fs.readFileSync(LOCAL_FILE, 'utf8')) : fetchZipText(`${BASE}/cities1000.zip`)),
         fetchText(`${BASE}/countryInfo.txt`),
         fetchText(`${BASE}/admin1CodesASCII.txt`),
+        ...DEEP.map(iso => fetchZipText(`${BASE}/${iso}.zip`)),
     ]);
 
     // countryInfo.txt: 0 ISO · 4 Country · 5 Capital · 16 geonameid
@@ -119,22 +156,36 @@ const rows = (text) => text.split('\n')
     // cities1000.txt: 0 id · 1 name · 2 ascii · 3 alternates · 4 lat · 5 lng
     //                 6 class · 7 code · 8 country · 10 admin1 · 14 population
     const cities = [];
-    for (const r of rows(citiesTxt)) {
+    const landmarks = [];
+    const seenId = new Set();               // a country dump repeats cities1000's rows
+    const readRow = (r) => {
         const cc = r[8];
-        if (!cc || (ONLY.length && !ONLY.includes(cc))) continue;
-        if (r[6] !== 'P') continue;                       // populated places only
-        const population = Number(r[14]) || 0;
-        if (population < MIN_POP) continue;
+        if (!cc || (ONLY.length && !ONLY.includes(cc))) return;
         const lat = Number(r[4]), lng = Number(r[5]);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        cities.push({
-            geonameId: Number(r[0]), name: r[1], asciiName: r[2] || null,
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+        const id = Number(r[0]);
+        if (!id || seenId.has(id)) return;
+        const isCity = r[6] === 'P';
+        const isLandmark = LANDMARK_CODES.has(r[7]);
+        if (!isCity && !isLandmark) return;
+        const population = Number(r[14]) || 0;
+        // MIN_POP is about SETTLEMENTS. A monastery has no population and must
+        // not be filtered out by one.
+        if (isCity && population < MIN_POP) return;
+        seenId.add(id);
+        (isCity ? cities : landmarks).push({
+            geonameId: id, name: r[1], asciiName: r[2] || null,
             alternates: WITH_ALT ? String(r[3] || '').split(',').filter(Boolean).slice(0, 8) : [],
             lat, lng, featureCode: r[7] || null, countryCode: cc,
             admin1: r[10] || null, population,
         });
-    }
-    console.log(`[gazetteer] parsed ${cities.length} cities across ${countries.size} country record(s)`);
+    };
+    // Country dumps first: their rows are the richer ones, and seenId then
+    // stops cities1000 from re-adding the same settlement.
+    for (const txt of deepTxts) for (const r of rows(txt)) readRow(r);
+    for (const r of rows(citiesTxt)) readRow(r);
+    console.log(`[gazetteer] parsed ${cities.length} cities and ${landmarks.length} landmark(s) `
+        + `across ${countries.size} country record(s)`);
 
     // Biggest city per country and per region — the coordinates a country or a
     // region entry gets. A country's geometric CENTROID is a field in the
@@ -161,6 +212,18 @@ const rows = (text) => text.split('\n')
             admin1: c.admin1, featureCode: c.featureCode, population: c.population,
             lat: c.lat, lng: c.lng,
             location: { type: 'Point', coordinates: [c.lng, c.lat] },
+        });
+    }
+
+    for (const l of landmarks) {
+        docs.push({
+            geonameId: l.geonameId, kind: 'landmark', scale: 'town',
+            name: l.name, asciiName: l.asciiName,
+            names: keysFor(l.name, l.asciiName, l.alternates),
+            countryCode: l.countryCode, countryName: countries.get(l.countryCode)?.name || null,
+            admin1: l.admin1, featureCode: l.featureCode, population: 0,
+            lat: l.lat, lng: l.lng,
+            location: { type: 'Point', coordinates: [l.lng, l.lat] },
         });
     }
 
@@ -199,7 +262,7 @@ const rows = (text) => text.split('\n')
     console.log(`[gazetteer] built ${docs.length} entries — ${JSON.stringify(tally)}`);
 
     if (!APPLY) {
-        for (const sample of ['country', 'region', 'city']) {
+        for (const sample of ['country', 'region', 'city', 'landmark']) {
             const d = docs.find(x => x.kind === sample);
             if (d) console.log(`  would write [${sample}] ${d.name} (${d.countryCode}) `
                 + `pop=${d.population} @ ${d.lat.toFixed(3)},${d.lng.toFixed(3)} keys=${d.names.slice(0, 4).join('|')}`);

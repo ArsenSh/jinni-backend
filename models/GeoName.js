@@ -25,7 +25,13 @@ const GeoNameSchema = new mongoose.Schema({
     // What the entry IS. `scale` is the field the radius logic reads; `kind`
     // stays separate because a future admin2/village split would change kind
     // without changing how wide we search.
-    kind:  { type: String, enum: ['country', 'region', 'city'], required: true },
+    // 'landmark' (2026-09-03) is a monastery, peak, lake or ruin — the things
+    // cities1000 does not carry at all, so "on the way to Tatev" bought a
+    // Google Text Search to find a village of 500, and Khor Virap only
+    // resolved because it happened to sit in PlaceCache. Seeded from the
+    // per-country dumps (--deep), and deliberately NOT a 'city': regionAt must
+    // never answer "which city am I in" with a monastery.
+    kind:  { type: String, enum: ['country', 'region', 'city', 'landmark'], required: true },
     scale: { type: String, enum: ['country', 'region', 'town'], required: true },
 
     name: { type: String, required: true },

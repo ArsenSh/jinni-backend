@@ -175,7 +175,7 @@ describe('sync + lookup: owned, ranked, and refused when stale', () => {
         _CACHE.clear();
         const detectUserRegion = jest.fn(async () => ({ city: 'Yerevan', country: 'Armenia' }));
         const a = await resolveRegion({ center: { lat: 40.1866, lng: 44.5157 } }, { detectUserRegion });
-        expect(a).toEqual({ city: 'Yerevan', country: 'Armenia', place: null });
+        expect(a).toEqual({ city: 'Yerevan', region: null, country: 'Armenia', place: null });
         // Same ~1 km cell → served from cache. (Points either side of a cell
         // boundary do pay a second lookup; that is the cost of a simple grid
         // and it is one geocode, not a per-turn charge.)

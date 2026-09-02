@@ -57,6 +57,13 @@ const TYPES_BY_KIND = {
     country: ['country', 'political'],
     region:  ['administrative_area_level_1', 'political'],
     city:    ['locality', 'political'],
+    // Deliberately NOT a geographic type: isGeographic() in context/
+    // destination.js is what stops a venue named in passing from hijacking the
+    // search centre, and a monastery is a venue by that rule. The paths that
+    // legitimately centre on one — a corridor endpoint, "I'm at Khor Virap" —
+    // call lookupPlace directly and never consult it, so seeding landmarks
+    // buys those their free hit without touching how destinations resolve.
+    landmark: ['point_of_interest'],
 };
 
 /** Search keys are matched exactly, so both sides must normalize the same way:
@@ -175,6 +182,13 @@ async function lookupPlace(name, { near = null } = {}, deps = {}) {
             return _toGeo(best);
         }
 
+        // …then a LANDMARK, above regions: "Tatev" is a monastery to every
+        // traveler who says it, and admin regions routinely share a name with
+        // something more specific. Seeded only where --deep has run.
+        const asLandmark = await _guard(Model.find({ names: key, kind: 'landmark' })
+            .sort({ population: -1 }).limit(1).lean());
+        if (asLandmark && asLandmark[0]) return _toGeo(asLandmark[0]);
+
         const asRegion = await _guard(Model.find({ names: key, kind: 'region' }).limit(1).lean());
         return (asRegion && asRegion[0]) ? _toGeo(asRegion[0]) : null;
     } catch (err) {
@@ -184,15 +198,17 @@ async function lookupPlace(name, { near = null } = {}, deps = {}) {
 }
 
 /**
- * Reverse lookup: a coordinate → the city and country it sits in.
- * Shape matches what googleService.detectUserRegion returns, minus `region`,
- * which nothing in the v2 path reads.
+ * Reverse lookup: a coordinate → the city, province and country it sits in.
+ * Shape matches what googleService.detectUserRegion returns, so it can stand
+ * in for that paid call (see engine/geo/regionOf.js). The province comes from
+ * the admin1 row we already seed — proximityService filters owned rows on
+ * `location.region`, so dropping it would narrow the query.
  *
  * `maxKm` guards the open sea and the empty desert: the nearest settlement to
  * a mid-ocean coordinate can be hundreds of km away, and naming it would be a
  * confident lie. Past the limit we return null and Google gets the call.
  *
- * @returns {Promise<{city, country, countryCode, distanceKm}|null>}
+ * @returns {Promise<{city, region, country, countryCode, distanceKm}|null>}
  */
 async function regionAt({ lat, lng } = {}, { maxKm = 30, mergeKm = 12 } = {}, deps = {}) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -225,8 +241,21 @@ async function regionAt({ lat, lng } = {}, { maxKm = 30, mergeKm = 12 } = {}, de
             if (_km(lat, lng, r.lat, r.lng) <= mergeKm
                 && (r.population || 0) > (near.population || 0)) near = r;
         }
+        // The province, from the admin1 row seeded alongside the cities. One
+        // extra index-served lookup on a per-country handful of rows; a miss
+        // is fine (the field is optional to every reader).
+        let region = null;
+        if (near.countryCode && near.admin1) {
+            try {
+                const adm = await _guard(Model.findOne({
+                    kind: 'region', countryCode: near.countryCode, admin1: near.admin1,
+                }).select({ name: 1 }).lean());
+                region = adm?.name || null;
+            } catch { /* the province is optional — never fail the lookup for it */ }
+        }
         return {
             city: near.name,
+            region,
             country: near.countryName || null,
             countryCode: near.countryCode || null,
             distanceKm: near.lat != null ? _km(lat, lng, near.lat, near.lng) : null,
