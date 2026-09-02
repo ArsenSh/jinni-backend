@@ -1159,12 +1159,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Live 2026-09-01: Yerevan (pop 1.14M) sized to 20 km and was then
             // immediately re-capped to 15 by this rule. A place we know the size
             // of has already been sized; this is only for places we do not.
+            // A STATED POSITION is a person standing on a spot, so it is a
+            // boundary too — and it was the one centre this cap never covered
+            // (live 2026-09-03: "I'm at Khor Virap. What should I visit next?"
+            // answered well in nearby mode and awfully in discovery, because
+            // discovery's default radius is 50 km. From Khor Virap that circle
+            // swallows Yerevan, 30 km away, and the deck came back full of the
+            // capital while the traveler stood in a field in Ararat).
             if (!sizedByPopulation && (meta.destScale || 'town') === 'town' && radiusKm > 15 && (
                 (meta.centreSource === 'named' && (intent.placeNames || []).length === 1)
+                || meta.centreSource === 'stated'
                 || (refillActive && meta.centreSource === 'session'
                     && sessionPeek?.activeDestination?.singleTown === true)
             )) {
                 radiusKm = 15;
+                if (meta.centreSource === 'stated') {
+                    console.log(`[v2] stated position -> ${radiusKm}km (a spot you stand on is not a 50km sweep)`);
+                }
             }
             // Events: the asked PERIOD rules the window ("upcoming weekend"
             // ⇒ Sat–Sun, "tonight" ⇒ rest of today — Arsen 2026-08-22; the
