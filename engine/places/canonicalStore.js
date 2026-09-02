@@ -109,6 +109,25 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
     return query;
 }
 
+/**
+ * The validator's style verdict on a row: true = staff said it fits, false =
+ * staff said the opposite, null = staff said nothing (caller decides).
+ *
+ * The traveler's OWN tag is checked FIRST. A row carrying BOTH `luxury` and
+ * `budget` serves both audiences — the validator's chip grid lets staff tick
+ * both, and it is legitimate data — but testing the opposite first threw such
+ * a row away for everyone (live 2026-09-03: a curated restaurant near Khor
+ * Virap, tagged luxury AND budget, was invisible to a luxury traveler).
+ * Pure; exported for tests. proximityService's Mongo clause mirrors this.
+ */
+function styleVerdict(interests = [], style = null) {
+    if (!['luxury', 'budget'].includes(style)) return null;
+    const ints = (interests || []).map(s => String(s).toLowerCase());
+    if (ints.includes(style)) return true;
+    if (ints.includes(style === 'luxury' ? 'budget' : 'luxury')) return false;
+    return null;
+}
+
 // ── Community feedback, BOUNDED (2026-08-26) ─────────────────────────────────
 //
 // v1 scored this `net >= 0 ? 3*net : 8*net` — unbounded, and the only term in
@@ -561,9 +580,8 @@ async function loadCandidates(params = {}, deps = {}) {
     const styleGate = (c) => {
         if (!['luxury', 'budget'].includes(rawStyleG)) return true;
         const ints = (c.interests || []).map(s2 => String(s2).toLowerCase());
-        const oppG = rawStyleG === 'luxury' ? 'budget' : 'luxury';
-        if (ints.includes(oppG)) return false;                    // staff said the opposite
-        if (ints.includes(rawStyleG)) return true;                // staff said it fits
+        const verdict = styleVerdict(ints, rawStyleG);
+        if (verdict !== null) return verdict;
         if (rawStyleG === 'luxury' && isPriceAction(category)) {
             const t = priceTier(c.types, c.primaryType, c.priceLevel).tier;
             if (t === 'budget') return false;
@@ -835,6 +853,7 @@ module.exports = {
     googleFallback,
     uncoveredQueryTokens,
     buildCacheQuery,
+    styleVerdict,
     cacheDocToCandidate,
     dbDocToCandidate,
     scoreCachedDoc,

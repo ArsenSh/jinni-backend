@@ -488,3 +488,36 @@ describe('broad-ask widening', () => {
         expect(narrow.actions).toBe('historical');
     });
 });
+
+// ── A row tagged with BOTH styles serves both audiences (live 2026-09-03) ──
+// A curated restaurant near Khor Virap carried `luxury` AND `budget` — the
+// validator's chip grid lets staff tick both — and the style verdict, which
+// tested the OPPOSITE tag first, hid it from every luxury traveler.
+describe('styleVerdict', () => {
+    const { styleVerdict } = require('../engine/places/canonicalStore');
+
+    test('both tags → the traveler\'s own style wins, the row is kept', () => {
+        expect(styleVerdict(['luxury', 'budget'], 'luxury')).toBe(true);
+        expect(styleVerdict(['budget', 'luxury'], 'budget')).toBe(true);
+    });
+
+    test('the opposite tag alone is still a staff verdict', () => {
+        expect(styleVerdict(['budget'], 'luxury')).toBe(false);
+        expect(styleVerdict(['luxury'], 'budget')).toBe(false);
+    });
+
+    test('no style tag → no verdict, the caller decides', () => {
+        expect(styleVerdict(['romantic', 'nature'], 'luxury')).toBeNull();
+        expect(styleVerdict([], 'luxury')).toBeNull();
+    });
+
+    test('no style preference → never a verdict', () => {
+        expect(styleVerdict(['budget'], null)).toBeNull();
+        expect(styleVerdict(['budget'], 'mid')).toBeNull();
+    });
+
+    test('case and junk are folded, never thrown', () => {
+        expect(styleVerdict(['LUXURY', 'Budget'], 'luxury')).toBe(true);
+        expect(styleVerdict(null, 'luxury')).toBeNull();
+    });
+});

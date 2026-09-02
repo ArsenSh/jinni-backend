@@ -407,9 +407,15 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // a doc tagged with the OPPOSITE style is a staff verdict — exclude it.
         // On an array field, $ne excludes docs whose type array contains the
         // value, and it composes with the $all/$in gates set above.
+        // A row tagged with BOTH styles serves both audiences — it is not a
+        // verdict against either (live 2026-09-03: a curated restaurant carried
+        // `luxury` AND `budget`, and a bare $ne hid it from every luxury user.
+        // The validator's chip grid lets staff tick both, so this is data staff
+        // can legitimately enter). Exclude only when the OPPOSITE tag is there
+        // and the traveler's own is not.
         if (userStyle) {
             const oppositeStyle = userStyle === 'luxury' ? 'budget' : 'luxury';
-            destinationQuery.type = { ...(destinationQuery.type || {}), $ne: oppositeStyle };
+            destinationQuery.$and.push({ $or: [{ type: userStyle }, { type: { $ne: oppositeStyle } }] });
         }
         // ── Budget gates destinations too ─────────────────────────────────────
         // Destination.pricing mirrors Business.pricing (validator-entered entry
