@@ -1559,6 +1559,27 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         if (quarantine) console.log(`[v2] name-ask quarantine: "${p.name}" pending staff verdict`);
                     }
                 }
+                // ── TAG WHAT WE SHOWED WITH THE ACTION IT ANSWERED ──
+                // Founder, 2026-09-03: "those examples came from cache? or every
+                // time it makes google call?" — every time. v1 has always done
+                // this ($addToSet in aiRoutes); v2 never did, in two weeks as
+                // the default engine. buildCacheQuery gates a categorised ask on
+                // `actions`, so a place v2 BOUGHT from Google was stored without
+                // the category it was bought for and could never be found again:
+                // "I'm at Khor Virap. What should I visit next?" reported
+                // `owned had 0` and paid for a fresh Text Search twice in 90
+                // minutes, re-buying rows already sitting in PlaceCache.
+                //
+                // Same rule as v1: never overwrite a staff-curated action set.
+                if (category && result.places?.length) {
+                    const shownIds = result.places.map(p => p.placeId).filter(Boolean);
+                    if (shownIds.length) {
+                        require('../models/PlaceCache').updateMany(
+                            { placeId: { $in: shownIds }, actionsCurated: { $ne: true } },
+                            { $addToSet: { actions: category } },
+                        ).catch(err => console.warn(`[v2] action tagging failed: ${err.message}`));
+                    }
+                }
                 const promptArgs = {
                     query: retrievalQuery, places: result.places, langName, timeNote,
                     // Distances honesty: with a NAMED centre the km figures are
