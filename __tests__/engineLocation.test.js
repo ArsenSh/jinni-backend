@@ -366,3 +366,25 @@ describe('near <place> vs near me', () => {
         }
     });
 });
+
+// ── A capture must read ONE sentence (live 2026-09-03) ──
+// The follow-up carries the previous ask's geography, and for TOKEN tests
+// ("closest", "within 10 km") concatenating the two is safe. For a CAPTURE it
+// is corrosive: "…between Yerevan and Dilijan" + "other results please" made
+// the endpoint "Dilijan other results please", which geocoded to nothing,
+// dropped the corridor, and spent a Google search proving it.
+describe('corridor endpoints survive a follow-up', () => {
+    const { parseCorridorAsk } = require('../engine/retrieval/tuning');
+
+    test('the continued ask alone yields clean endpoints', () => {
+        expect(parseCorridorAsk('Give me places between Yerevan and Dilijan', []))
+            .toMatchObject({ from: 'Yerevan', to: 'Dilijan' });
+    });
+
+    test('concatenating the follow-up is what corrupted it', () => {
+        // Documented, not desired: this is why the route passes the continued
+        // ask by itself rather than geoAsk.
+        expect(parseCorridorAsk('Give me places between Yerevan and Dilijan other results please', []))
+            .toMatchObject({ to: 'Dilijan other results please' });
+    });
+});

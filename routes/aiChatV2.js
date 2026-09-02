@@ -1227,9 +1227,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // drive — because resolveDestination returns on the FIRST name it
             // resolves. Search several points along the real road instead.
             let corridorCentresList = null;
-            // geoAsk, not message: a follow-up continues the route it was asked
-            // about, and that also keeps the corridor's no-paid-search rule.
-            const corridor = parseCorridorAsk(geoAsk, intent.placeNames || []);
+            // The CONTINUED ask alone — never the concatenation. geoAsk is
+            // safe for token tests ("closest", "within 10 km") but corrosive
+            // to a capture: "…between Yerevan and Dilijan" + "other results
+            // please" made the endpoint "Dilijan other results please", which
+            // geocoded to nothing, dropped the corridor, and spent a Google
+            // search proving it (live 2026-09-03).
+            const corridor = parseCorridorAsk(followUpAsk || message, intent.placeNames || []);
             if (corridor) {
                 try {
                     const gz = require('../engine/geo/gazetteer');
@@ -1279,7 +1283,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // Clean intent query only — drives the fallback's "demanded term
                 // with zero owned matches" check (the Uzbek lesson); enriched
                 // chat tokens must never trigger paid searches.
-                coreQuery: intent.searchQuery || '',
+                // A refill inherits the previous ASK, which is a sentence —
+                // and coreQuery is what the paid search sends verbatim ("Give
+                // me places between Yerevan and Dilijan" went to Google as
+                // typed, live 2026-09-03). The retrieval query is the same ask
+                // already reduced to its content words, which is what a search
+                // engine can actually use.
+                coreQuery: (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery) || '',
                 category,
                 subType: intent.subType || null,
                 center,
