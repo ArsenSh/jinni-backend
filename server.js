@@ -591,6 +591,17 @@ app.use(errorHandler);
 // =============================================
 const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
+    // WHICH BUILD IS THIS? (2026-09-03) Half an hour went into "the fix didn't
+    // fire" versus "the fix isn't deployed yet", with no way to tell them
+    // apart from the logs. The commit comes from whatever the platform exports;
+    // the mtime of this very file is the reliable fallback — it is the moment
+    // the image was built, which is exactly the question being asked.
+    const _sha = process.env.SOURCE_COMMIT || process.env.COOLIFY_COMMIT
+        || process.env.GIT_COMMIT || process.env.GIT_SHA || null;
+    let _built = 'unknown';
+    try { _built = require('fs').statSync(__filename).mtime.toISOString().replace('T', ' ').slice(0, 19); }
+    catch { /* a read-only or exotic FS — the commit line below still helps */ }
+    logger.info(`🏗️  Build: ${_sha ? _sha.slice(0, 7) : 'commit unknown'} · files built ${_built} UTC`);
     logger.info(`🚀 Server running on port ${PORT}`);
     logger.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
     logger.info(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
