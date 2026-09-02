@@ -345,6 +345,39 @@ async function loadCandidates(params = {}, deps = {}) {
         category = null, subType = null, center = null,
         radiusKm = 50, preferences = {}, excludes = {}, requestId = null,
     } = params;
+
+    // ── CORRIDOR: several centres along a route (2026-09-02) ──
+    // "on the way from Yerevan to Tatev" returned six Yerevan nightclubs,
+    // because resolveDestination returns on the FIRST name it resolves. A
+    // corridor is answered by searching SEVERAL points along the real road and
+    // merging — and the cleanest way to do that is to recurse, so every gate
+    // above (actions, freshness, community hide, style, price tier) applies to
+    // each segment exactly as it does to a single-centre search.
+    //
+    // Each segment is capped so the biggest city cannot flood the deck, and the
+    // Google fallback is DISABLED for corridor turns: four segments would mean
+    // up to four paid Text Searches per question. Owned data answers, or the
+    // narrator says plainly there is nothing along that route.
+    if (Array.isArray(params.centres) && params.centres.length) {
+        const wantTotal = Math.min(Math.max(Number(params.count) || 8, 1), 20);
+        const perSegment = Math.max(2, Math.ceil(wantTotal / params.centres.length) + 1);
+        const lists = [];
+        for (const c of params.centres) {
+            if (!Number.isFinite(c?.lat) || !Number.isFinite(c?.lng)) continue;
+            const seg = await loadCandidates({
+                ...params,
+                centres: null,                       // stop the recursion
+                corridor: true,                      // no paid fallback per segment
+                center: { lat: c.lat, lng: c.lng },
+                radiusKm: c.radiusKm || radiusKm,
+            }, deps).catch(() => []);
+            if (seg.length) lists.push(seg.slice(0, perSegment));
+        }
+        const merged = mergeAndDedupe(...lists);
+        console.log(`[canonicalStore] corridor: ${params.centres.length} segment(s) → ${merged.length} candidate(s)`);
+        return merged;
+    }
+
     if (!center || center.lat == null || center.lng == null) return [];
     // Events are never served from the place cache (a cached venue is not a
     // dated event) — the OWNED events tier serves them instead: validator
@@ -568,7 +601,7 @@ async function loadCandidates(params = {}, deps = {}) {
     const missing = uncoveredQueryTokens(params.coreQuery, merged)
         .filter(t => !geoTokens.has(t))
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
-    if ((merged.length < wantedFresh || missing.length) && (params.query || category)) {
+    if (!params.corridor && (merged.length < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
             let extra = await googleFallback({

@@ -20,7 +20,8 @@ const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isClosestAsk,
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -681,6 +682,38 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 meta.modeSwitched = 'nearby';
                 console.log('[destination] discovery -> nearby: they asked for what is around them');
             }
+            // ── "I'm at Khor Virap" (2026-09-02) ──
+            // The traveler STATING their position. intentService never puts a
+            // landmark in placeNames (the rule that stops a restaurant
+            // hijacking the centre), so it is parsed here and resolved from the
+            // cheapest source that knows it — usually this very conversation.
+            // "Closest / nearest X" — a SORT by distance from the traveler, not
+            // a 5km limit. It re-centres on their GPS through the same rung the
+            // stated position uses, so a stale session centre cannot answer it
+            // (live 2026-09-02: "the closest monastery" was answered from a
+            // Gyumri left over from an earlier question, and only looked right
+            // because that happened to be where they were).
+            const closestAsk = isClosestAsk(message) && !(intent.placeNames || []).length;
+
+            let statedPosition = null;
+            const statedName = parseAtLocation(message);
+            if (statedName) {
+                statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
+                    statedName,
+                    { sessionCards, near: gpsCenter },
+                    { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) },
+                ).catch(() => null);
+                if (statedPosition) {
+                    meta.statedAt = statedPosition.name;
+                    console.log(`[destination] stated position "${statedPosition.name}" via ${statedPosition.source}`);
+                } else {
+                    console.log(`[destination] could not place "${statedName}" — keeping the usual centre`);
+                }
+            }
+            if (!statedPosition && closestAsk && gpsCenter) {
+                statedPosition = { lat: gpsCenter.lat, lng: gpsCenter.lng, name: hereRegion?.city || null, source: 'gps' };
+                console.log('[destination] closest-ask -> centred on the traveler');
+            }
             const hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
             const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
             if (intent._preferences) intent._preferences._here = hereLabel || null;
@@ -700,6 +733,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // than as a move to its centroid. Same 1km grid cache the
                 // search region uses a moment later, so it costs nothing.
                 currentRegion: hereRegion,
+                // Parsed from "I'm at X" a few lines up. Beaten only by a place
+                // named as a destination in the same message.
+                statedPosition,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             meta.centreSource = dest.source;
             // How big the named place IS — country / region / town. The named-
@@ -1111,6 +1147,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // follow-ups); eventStore.windowFromPeriod does the clamped date
             // math. The regex parser remains the LLM-timeout fallback, with
             // refill turns inheriting the previous ask's words.
+            // ── An EXPLICIT radius always wins (2026-09-02) ──
+            // "What can I do within 10 km?" ran at 50 km and seated Talin at
+            // 45, which the narrator then had to apologise for. Applied last,
+            // so it beats population sizing, the town cap and the mode default.
+            const askedRadiusKm = parseRadiusKm(message);
+            if (askedRadiusKm) {
+                radiusKm = askedRadiusKm;
+                meta.radiusAsked = askedRadiusKm;
+                console.log(`[v2] explicit radius: ${askedRadiusKm}km`);
+            }
+
             const _ev = require('../engine/places/eventStore');
             const eventWindow = category === 'events'
                 ? (_ev.windowFromPeriod(intent.period)
@@ -1122,6 +1169,36 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // the events it already held — so a city with no events could never
             // be hunted, and Dubai returned "no listings" in 1.7s without ever
             // looking (live 2026-08-24). Reverse-geocoded once, ~1km grid cache.
+            // ── CORRIDOR (2026-09-02) ──
+            // "between Yerevan and Dilijan" / "on the way from Yerevan to
+            // Tatev" returned central Yerevan — six nightclubs for the Tatev
+            // drive — because resolveDestination returns on the FIRST name it
+            // resolves. Search several points along the real road instead.
+            let corridorCentresList = null;
+            const corridor = parseCorridorAsk(message, intent.placeNames || []);
+            if (corridor) {
+                try {
+                    const gz = require('../engine/geo/gazetteer');
+                    const gp = (q) => require('../services/googleService').findPlaces(q, gpsCenter || null);
+                    const ends = await Promise.all([corridor.from, corridor.to].map(async (n) => {
+                        const local = await gz.lookupPlace(n, { near: gpsCenter });
+                        if (local) return { lat: local.lat, lng: local.lng, name: local.name };
+                        const g = (await gp(n).catch(() => []))[0]?.geometry?.location;
+                        return g ? { lat: g.lat, lng: g.lng, name: n } : null;
+                    }));
+                    if (ends[0] && ends[1]) {
+                        corridorCentresList = await require('../engine/geo/corridor')
+                            .corridorCentres({ from: ends[0], to: ends[1], samples: 4, radiusKm: 15 });
+                        if (corridorCentresList.length) {
+                            meta.corridor = { from: ends[0].name, to: ends[1].name, segments: corridorCentresList.length };
+                            console.log(`[v2] corridor ${ends[0].name} → ${ends[1].name}: ${corridorCentresList.length} segment(s)`);
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[v2] corridor failed: ${err.message} — answering from the named centre`);
+                }
+            }
+
             const searchRegion = await resolveRegion({ center, placeNames: intent.placeNames });
             const findArgs = {
                 // Retrieval sees the query WITHOUT the destination name; the
@@ -1167,6 +1244,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // adaptive deck shrink to 3 the way "sushi" rightly does
                 // ("hotels in Dilijan" came back 3 cards, 2026-08-30).
                 geoTokens: Array.from(geoTokens),
+                // Several centres along a route, when the ask is a corridor.
+                centres: corridorCentresList,
                 // A COUNTRY ask is scoped BY COUNTRY, not by any circle
                 // (Arsen 2026-09-01). Falls back to the resolved place name
                 // when the gazetteer had no country name to give.
@@ -1181,7 +1260,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 enforceOpenNow: rightNow,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
-                weights: rankingWeights({ rightNow, nearbyMode: effectiveNearbyMode, message,
+                weights: rankingWeights({ rightNow, message,
+                    // "closest/nearest" is a SORT, not a limit — it ranks by
+                    // distance from the traveler without shrinking the radius,
+                    // so the one real monastery at 9.4km is not thrown away.
+                    nearbyMode: effectiveNearbyMode || closestAsk,
                     countryScope: meta.destScale === 'country' }),
                 // "Any cheaper ones?" beats the saved luxury style FOR THIS
                 // TURN only — the ask outranks the profile without rewriting

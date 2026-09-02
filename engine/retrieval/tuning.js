@@ -34,6 +34,10 @@ const CHAT_STOPWORDS = new Set([
     'best', 'great', 'meet', 'with', 'that', 'this', 'have', 'what', 'where',
     'when', 'which', 'like', 'would', 'could', 'should', 'there', 'here',
     'place', 'places', 'around', 'near', 'nearby',
+    // Distance phrasing describes the RADIUS, not a venue (live 2026-09-02:
+    // "What can I do within 10 km?" left q="within" after everything else was
+    // stripped, and BM25 scored the whole corpus against one filler word).
+    'within', 'inside', 'radius', 'closest', 'nearest', 'kilometers', 'kilometres',
 ]);
 
 function buildRetrievalQuery(searchQuery, rawMessage, maxTokens = 8) {
@@ -121,6 +125,96 @@ function isNearbyAsk(message) {
     return NEARBY_LATIN_RE.test(m) || NEARBY_NONLATIN_RE.test(m);
 }
 
+/* 3c-bis. "CLOSEST" IS A SORT, NOT A LIMIT (2026-09-02).
+ * Folding closest/nearest into isNearbyAsk would force nearby's 5 km — and in
+ * the live Gyumri test the only real monastery (Marmashen) sits at 9.4 km, so
+ * the honest answer would have been thrown away. A superlative asks us to RANK
+ * by distance from the traveler, not to draw a boundary: the centre moves to
+ * their GPS and proximity weight goes to 1.0, while the radius is left alone. */
+const CLOSEST_LATIN_RE = /\b(closest|nearest|next nearest|le plus proche|la plus proche)\b/i;
+const CLOSEST_NONLATIN_RE = /(ближайш\w*|ближе всего|ամենամոտ|最近的|离我最近|الأقرب)/i;
+function isClosestAsk(message) {
+    const m = String(message || '');
+    return CLOSEST_LATIN_RE.test(m) || CLOSEST_NONLATIN_RE.test(m);
+}
+
+/* 3d. "I'm at X" — the traveler STATING where they are (live 2026-09-02:
+ * "I'm at Khor Virap. What should I visit next?" was answered about Gyumri,
+ * 200 km away, with cards labelled "just 1 km away"). intentService cannot
+ * help here: its rules forbid putting a landmark in place_names, precisely so
+ * a restaurant cannot hijack the centre. So the position is parsed in code and
+ * resolved separately (engine/geo/whereAmI.js).
+ *
+ * The capture stops at punctuation or a joining word, so "I'm at Khor Virap
+ * and want food" yields "Khor Virap" rather than the rest of the sentence.
+ * Pure — returns the raw name string, never coordinates. */
+const AT_LOCATION_RES = [
+    /\b(?:i(?:'m|’m| am)|we(?:'re|’re| are))\s+(?:currently\s+|now\s+)?(?:at|in|near|by|around)\s+(?:the\s+)?(.{2,48})/i,
+    /\b(?:currently|right now)\s+(?:at|in)\s+(?:the\s+)?(.{2,48})/i,
+    /\b(?:standing|staying|sitting)\s+(?:at|in|near)\s+(?:the\s+)?(.{2,48})/i,
+    /(?:я|мы)\s+(?:сейчас\s+)?(?:в|на|у|около)\s+(.{2,48})/i,
+];
+const _AT_STOP_RE = /\s+(?:and|but|so|what|where|which|can|could|should|would|now|please|я|и|а|что|где)\b|[.,;!?—–]/i;
+function parseAtLocation(message) {
+    const m = String(message || '');
+    for (const re of AT_LOCATION_RES) {
+        const hit = re.exec(m);
+        if (!hit) continue;
+        let name = String(hit[1] || '').split(_AT_STOP_RE)[0].trim();
+        name = name.replace(/["'’`]+$/g, '').trim();
+        // A bare pronoun or a single short filler word is not a place.
+        if (name.length < 3 || /^(me|us|here|there|home|town|city)$/i.test(name)) continue;
+        return name;
+    }
+    return null;
+}
+
+/* 3e. An EXPLICIT radius always wins (live 2026-09-02: "What can I do within
+ * 10 km?" ran at r=50km and seated Talin at 45 km, which the narrator then had
+ * to apologise for). Miles are converted; the result is clamped so a typo
+ * cannot turn a walk into a country-wide sweep. Pure. */
+const RADIUS_RES = [
+    /\b(?:within|under|less than|no more than|inside|in a|max(?:imum)?)\s+(\d{1,3})\s*(km|kilomet(?:er|re)s?|mi|miles?)\b/i,
+    /\b(\d{1,3})\s*(km|kilomet(?:er|re)s?|mi|miles?)\s*(?:radius|around|away|from me|of me)\b/i,
+    /(?:в радиусе|не дальше|не более|в пределах)\s+(\d{1,3})\s*(км|километ\w*)/i,
+    /(\d{1,3})\s*(կմ|կիլոմետր\w*)/i,
+];
+function parseRadiusKm(message) {
+    const m = String(message || '');
+    for (const re of RADIUS_RES) {
+        const hit = re.exec(m);
+        if (!hit) continue;
+        const n = Number(hit[1]);
+        if (!Number.isFinite(n) || n <= 0) continue;
+        const unit = String(hit[2] || '').toLowerCase();
+        const km = /^mi/.test(unit) ? n * 1.609 : n;
+        return Math.min(100, Math.max(1, Math.round(km)));
+    }
+    return null;
+}
+
+/* 3f. A CORRIDOR ask names two places and wants what lies BETWEEN them (live
+ * 2026-09-02: "on the way from Yerevan to Tatev" returned six Yerevan
+ * nightclubs, because resolveDestination returns on the FIRST name it
+ * resolves). Needs both endpoints, so it only fires when intent found two.
+ * Pure — returns {from, to} or null; the route does the geometry. */
+const CORRIDOR_RES = [
+    /\bbetween\s+(.{2,40}?)\s+and\s+(.{2,40}?)(?:[.,;!?]|$)/i,
+    /\b(?:on the way|en route|stops?|stopping)\b[^]*?\bfrom\s+(.{2,40}?)\s+to\s+(.{2,40}?)(?:[.,;!?]|$)/i,
+    /\bfrom\s+(.{2,40}?)\s+to\s+(.{2,40}?)(?:[.,;!?]|$)/i,
+    /(?:между)\s+(.{2,40}?)\s+и\s+(.{2,40}?)(?:[.,;!?]|$)/i,
+    /(?:по пути|по дороге)\s+(?:из|от)\s+(.{2,40}?)\s+(?:в|до)\s+(.{2,40}?)(?:[.,;!?]|$)/i,
+];
+function parseCorridorAsk(message, placeNames = []) {
+    const names = (placeNames || []).filter(Boolean);
+    if (names.length < 2) return null;                 // needs two real endpoints
+    const m = String(message || '');
+    if (!CORRIDOR_RES.some(re => re.test(m))) return null;
+    // Trust intent's geocodable names over the raw capture — it has already
+    // transliterated and validated them.
+    return { from: names[0], to: names[1] };
+}
+
 const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;
 const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի|更多|其他|别的|另外|再来|再推荐|المزيد|أخرى|غيرها|أكثر|اقتراحات جديدة)/i;
 function parseRefillAsk(message) {
@@ -163,4 +257,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, isNearbyAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, isNearbyAsk, isClosestAsk,
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

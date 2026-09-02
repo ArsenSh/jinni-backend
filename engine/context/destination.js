@@ -145,55 +145,20 @@ function _samePlace(a, b) {
  */
 async function resolveDestination({
     placeNames = [], gps = null, sessionDestination = null, savedDestination = null,
-    nearbyMode = false, currentRegion = null,
+    nearbyMode = false, currentRegion = null, statedPosition = null,
 } = {}, deps = {}) {
     const gpsCenter = (gps && gps.lat != null && gps.lng != null) ? { lat: gps.lat, lng: gps.lng } : null;
 
-    // 1. "near me" is not ambiguous — UNLESS they named somewhere else.
+    // ── ONE PRECEDENCE CHAIN (2026-09-02) ──
+    // named-in-this-message > stated position > nearby/GPS > session > saved > GPS
     //
-    // Live 2026-09-01: in nearby mode, "suggest 3 good locations in Dilijan"
-    // returned at this very line, so "Dilijan" was never geocoded at all. The
-    // search ran 5 km around the traveler's GPS in Yerevan and the narrator
-    // then described Yerevan places as being in Dilijan — In Tempo Mega Mall,
-    // whose own card reads "16 Gai Ave, Yerevan".
-    //
-    // Arsen's rule: "if user is nearby mode and asks for dilijan ai can switch
-    // to discovery mode ... then make search." Naming a place you are NOT in is
-    // a request to go there, and no 5 km circle around you can answer it. But
-    // naming the country or region you are standing in is not a request to
-    // travel ("in Armenia" while in Armenia), so that keeps nearby.
-    if (nearbyMode) {
-        if ((placeNames || []).length && typeof deps.findPlaces === 'function') {
-            for (const name of (placeNames || []).slice(0, 3)) {
-                if (!name) continue;
-                const geo = await _geocode(name, gpsCenter, deps);
-                if (!geo || !isGeographic(geo)) continue;
-                const containsUs = currentRegion
-                    && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city));
-                if (containsUs) break;                 // already here -> stay nearby
-                const scale = scaleOf(geo);
-                console.log(`[destination] nearby -> discovery: "${geo.name}" is not where you are`);
-                return {
-                    center: { lat: geo.lat, lng: geo.lng },
-                    source: 'named',
-                    scale,
-                    population: geo.population || 0,
-                    countryName: geo.countryName || null,
-                    city: geo.name,
-                    // The caller flips the turn out of nearby mode and says so.
-                    switchedFromNearby: true,
-                    remember: {
-                        name: geo.name, latitude: geo.lat, longitude: geo.lng, placeId: geo.placeId,
-                        singleTown: scale === 'town' && (placeNames || []).filter(Boolean).length === 1,
-                        scale, updatedAt: new Date(),
-                    },
-                };
-            }
-        }
-        return { center: gpsCenter, source: gpsCenter ? 'nearby' : 'none', city: null, remember: null };
-    }
+    // Nearby used to short-circuit at the top, which meant three different
+    // questions ("what is the closest monastery", "what can I do within 10 km",
+    // "I'm at Khor Virap") were all answered from whatever the SESSION centre
+    // happened to be — in the live test, a Gyumri left over from an earlier
+    // ask, 200 km from where the traveler said they were standing.
 
-    // 2. A city named in THIS message wins, and is remembered.
+    // 1. A city named in THIS message wins, in every mode.
     if (typeof deps.findPlaces === 'function') {
         for (const name of (placeNames || []).slice(0, 3)) {
             if (!name) continue;
@@ -202,6 +167,13 @@ async function resolveDestination({
             if (!isGeographic(geo)) {
                 console.log(`[destination] "${name}" resolved to a venue ("${geo.name}") — not re-centring`);
                 continue;
+            }
+            // In NEARBY mode, naming the country or region you are standing in
+            // is not a request to travel — that keeps "in Armenia" local while
+            // "Dilijan" still switches the turn to discovery.
+            if (nearbyMode && currentRegion
+                && (_samePlace(geo.name, currentRegion.country) || _samePlace(geo.name, currentRegion.city))) {
+                break;
             }
             // Naming the place you are ALREADY in is not a move. "find in
             // armenia" from Yerevan re-centred on the country's centroid in
@@ -233,9 +205,12 @@ async function resolveDestination({
             // the route still labels the traveler's own position with it.
             const scale = scaleOf(geo);
 
+            if (nearbyMode) console.log(`[destination] nearby -> discovery: "${geo.name}" is not where you are`);
             return {
                 center: { lat: geo.lat, lng: geo.lng },
                 source: 'named',
+                // The caller flips the turn out of nearby mode and says so.
+                ...(nearbyMode ? { switchedFromNearby: true } : {}),
                 scale,
                 population: geo.population || 0,
                 countryName: geo.countryName || null,
@@ -261,6 +236,29 @@ async function resolveDestination({
 
     // 3. The destination this conversation already chose — ABOVE GPS, which is
     //    the whole point of choosing one.
+    // 2. They TOLD us where they are ("I'm at Khor Virap"). Beaten only by a
+    //    place named as a destination in the same message, so "I'm at Khor
+    //    Virap, what about Dilijan?" still goes to Dilijan. Remembered, so the
+    //    next "what else?" continues from there instead of snapping back.
+    if (statedPosition && Number.isFinite(statedPosition.lat) && Number.isFinite(statedPosition.lng)) {
+        return {
+            center: { lat: statedPosition.lat, lng: statedPosition.lng },
+            source: 'stated',
+            scale: 'town',
+            population: 0,
+            city: statedPosition.name || null,
+            remember: {
+                name: statedPosition.name || null,
+                latitude: statedPosition.lat, longitude: statedPosition.lng,
+                placeId: null, singleTown: true, scale: 'town', updatedAt: new Date(),
+            },
+        };
+    }
+
+    // 3. "Around me" means GPS, and nothing else.
+    if (nearbyMode) return { center: gpsCenter, source: gpsCenter ? 'nearby' : 'none', city: null, remember: null };
+
+    // 4. The session's chosen destination.
     if (sessionDestination && sessionDestination.latitude != null && sessionDestination.longitude != null) {
         return {
             center: { lat: sessionDestination.latitude, lng: sessionDestination.longitude },
