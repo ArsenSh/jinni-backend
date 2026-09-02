@@ -501,8 +501,10 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               + (centreCity
                   ? `- Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say "from the centre of ${centreCity}".\n`
                   : '')
-              + (modeNote
-                  ? `- Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote}, which is not where they are — so this answer covers ${modeNote} instead. Say that plainly in ONE short clause at the start of the intro, as something you did, and never imply these places are near them.\n`
+              + (modeNote?.to === 'discovery'
+                  ? `- Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote.place}, which is not where they are — so this answer covers ${modeNote.place} instead. Say that plainly in ONE short clause at the start of the intro, as something you did, and never imply these places are near them.\n`
+                  : modeNote?.to === 'nearby'
+                  ? '- Their search mode was set to "discovery" (a wide search), but they asked for places NEAR THEM — so this answer covers only their immediate surroundings. Say that plainly in ONE short clause at the start of the intro, as something you did.\n'
                   : '')
               + '- If nothing genuinely fits, say so honestly in intro and return "cards": [].',
         },
@@ -566,8 +568,10 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + (centreCity
                   ? `Distances in the facts are measured from the centre of ${centreCity} — the traveler is NOT necessarily there. Never phrase a distance as "from you"; say it as "from the centre of ${centreCity}" (e.g. "0.9 km from the centre of ${centreCity}").\n`
                   : '')
-              + (modeNote
-                  ? `Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote}, which is not where they are — so this answer covers ${modeNote} instead. Say that plainly in ONE short clause at the start, as something you did, and never imply these places are near them.\n`
+              + (modeNote?.to === 'discovery'
+                  ? `Their search mode was set to "nearby" (around their own position), but they asked about ${modeNote.place}, which is not where they are — so this answer covers ${modeNote.place} instead. Say that plainly in ONE short clause at the start, as something you did, and never imply these places are near them.\n`
+                  : modeNote?.to === 'nearby'
+                  ? 'Their search mode was set to "discovery" (a wide search), but they asked for places NEAR THEM — so this answer covers only their immediate surroundings. Say that plainly in ONE short clause at the start, as something you did.\n'
                   : '')
               + `FIRST write 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. `
               + 'NEVER mention a place not on the list — including ones from earlier in the conversation. '

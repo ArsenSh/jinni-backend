@@ -108,6 +108,19 @@ function rankingWeights({ rightNow = false, nearbyMode = false, message = '', co
 //    with everything already shown excluded. Latin \b + non-Latin without
 //    (the Cyrillic \b lesson). Count: a bare 2-12 in a refill ask is the
 //    requested deck size ("10 other results" → 10). ──
+/* 3c. "Near me" — the DISCOVERY → NEARBY switch (Arsen's rule; live
+ * 2026-09-01: "what restaurant you can find near me?" ran in discovery at
+ * r=15km and seated a restaurant 6.9 km out, which nearby's 5 km would have
+ * excluded). This is proximity to the TRAVELER, not a time word, so it is
+ * separate from isRightNowAsk. Latin terms take word boundaries; non-Latin
+ * scripts go boundary-free (the Cyrillic lesson). Pure. */
+const NEARBY_LATIN_RE = /\b(near(by| me| here| my location)?|close (by|to me)|around (me|here)|next to me|walking distance|within walking|a few (steps|minutes) (away|from)|pr(e|è)s de moi|(a|à) proximit(e|é)|autour de moi)\b/i;
+const NEARBY_NONLATIN_RE = /(рядом со мной|рядом|поблизости|недалеко|около меня|вблизи|неподалеку|неподалёку|մոտակա|մոտակայք|իմ մոտ|մոտս|附近|离我近|我附近|周边|قريب مني|بالقرب مني|القريبة مني)/i;
+function isNearbyAsk(message) {
+    const m = String(message || '');
+    return NEARBY_LATIN_RE.test(m) || NEARBY_NONLATIN_RE.test(m);
+}
+
 const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;
 const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի|更多|其他|别的|另外|再来|再推荐|المزيد|أخرى|غيرها|أكثر|اقتراحات جديدة)/i;
 function parseRefillAsk(message) {
@@ -150,4 +163,4 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, isNearbyAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

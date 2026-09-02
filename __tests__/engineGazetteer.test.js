@@ -430,3 +430,39 @@ describe('regionAt: a ring of closer villages must not hide the city', () => {
         expect(r.city).toBe('Yerevan');
     });
 });
+
+// ── DISCOVERY → NEARBY (Arsen's rule; live 2026-09-01) ──────────────────────
+// "what restaurant you can find near me?" ran in discovery at r=15km from the
+// session centre and seated a restaurant 6.9 km out.
+describe('isNearbyAsk', () => {
+    const { isNearbyAsk } = require('../engine/retrieval/tuning');
+    test('catches proximity phrasing in several languages', () => {
+        for (const m of ['what restaurant you can find near me?', 'restaurants nearby',
+                         'places around me', 'somewhere close by', 'within walking distance',
+                         'рядом со мной кафе', 'près de moi', '附近的餐厅'])
+            expect(isNearbyAsk(m)).toBe(true);
+    });
+    test('an ordinary place ask is NOT a proximity ask', () => {
+        for (const m of ['sushi in dilijan', 'best places to visit in Armenia',
+                         'hotels in Dilijan', ''])
+            expect(isNearbyAsk(m)).toBe(false);
+    });
+    test('"business" does not trip the word "near"', () => {
+        expect(isNearbyAsk('business centre')).toBe(false);
+    });
+});
+
+describe('narration prompts carry BOTH switch directions', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    for (const fn of ['buildStreamedNarrationMessages', 'buildNarrationJson']) {
+        test(`${fn}: says which way it switched, and nothing when it did not`, () => {
+            const toDiscovery = g[fn]({ query: 'q', places: [], modeNote: { to: 'discovery', place: 'Dilijan' } })[0].content;
+            expect(toDiscovery).toMatch(/Dilijan/);
+            const toNearby = g[fn]({ query: 'q', places: [], modeNote: { to: 'nearby' } })[0].content;
+            expect(toNearby).toMatch(/immediate surroundings/);
+            expect(toNearby).not.toMatch(/undefined/);
+            const none = g[fn]({ query: 'q', places: [] })[0].content;
+            expect(none).not.toMatch(/search mode was set/);
+        });
+    }
+});

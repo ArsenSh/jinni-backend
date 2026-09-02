@@ -20,7 +20,7 @@ const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
+const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -664,6 +664,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // prompt needs to NAME it. Telling the model it can see a position
             // without saying which one is what produced "your location is Dubai
             // right now" while the traveler stood in Yerevan (live 2026-08-24).
+            // ── DISCOVERY → NEARBY, when they ask for what is around THEM ──
+            // The mirror of the nearby→discovery switch below (Arsen's rule:
+            // "if user is in discovery and want nearby locations it can switch
+            // nearby automatically then make request"). Live 2026-09-01: "what
+            // restaurant you can find near me?" ran in discovery at r=15km from
+            // the session centre and seated a place 6.9 km out.
+            //
+            // Only when they named NO place — "restaurants near me in Dilijan"
+            // is a Dilijan ask, and a named place always wins — and only when a
+            // position was actually reported this turn, because nearby without
+            // GPS has nothing to be near. Turn-local, like the other direction.
+            if (!effectiveNearbyMode && gpsCenter
+                && isNearbyAsk(message) && !(intent.placeNames || []).length) {
+                effectiveNearbyMode = true;
+                meta.modeSwitched = 'nearby';
+                console.log('[destination] discovery -> nearby: they asked for what is around them');
+            }
             const hereRegion = gpsCenter ? await resolveRegion({ center: gpsCenter }) : null;
             const hereLabel = [hereRegion?.city, hereRegion?.country].filter(Boolean).join(', ');
             if (intent._preferences) intent._preferences._here = hereLabel || null;
@@ -1417,7 +1434,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     // be in another city — live 2026-08-31, Yerevan user told
                     // "2.5 km from you" about Tsaghkadzor).
                     centreCity: meta.centreSource === 'named' ? (meta.searchCity || null) : null,
-                    modeNote: meta.modeSwitched ? (meta.modeSwitchedTo || meta.searchCity || null) : null,
+                    modeNote: meta.modeSwitched
+                        ? { to: meta.modeSwitched, place: meta.modeSwitchedTo || meta.searchCity || null }
+                        : null,
                     history: recentTurns, localFacts: placeFacts, preferences: intent._preferences,
                     // Honest max: CODE knows the promise fell short ("I want 10
                     // hotels" → 3 new cards, live 2026-08-30); the prompt tells
