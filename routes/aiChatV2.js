@@ -21,7 +21,7 @@ const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isClosestAsk,
-    parseAtLocation, parseRadiusKm, parseCorridorAsk, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -1189,6 +1189,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // "What can I do within 10 km?" ran at 50 km and seated Talin at
             // 45, which the narrator then had to apologise for. Applied last,
             // so it beats population sizing, the town cap and the mode default.
+            const alsoTypes = alsoTypesFor(category, message);
+            if (alsoTypes) console.log(`[v2] broad ask -> also ${alsoTypes.slice(1).join(', ')}`);
             const askedRadiusKm = parseRadiusKm(geoAsk);
             if (askedRadiusKm) {
                 radiusKm = askedRadiusKm;
@@ -1286,6 +1288,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 geoTokens: Array.from(geoTokens),
                 // Several centres along a route, when the ask is a corridor.
                 centres: corridorCentresList,
+                // ── BROAD ASK (founder design; live 2026-09-03) ──
+                // "I'm at Khor Virap. What should I visit next?" read as
+                // `historical`, and every gate — cache actions, Destination
+                // type, Business type, the Google type check — then discarded
+                // the traveler's OWN restaurant and hidden gem a few km away,
+                // and paid Google to replace them with strangers. The category
+                // still LEADS; it just stops being an exclusion when the
+                // message named no venue type at all.
+                alsoTypes,
                 // A COUNTRY ask is scoped BY COUNTRY, not by any circle
                 // (Arsen 2026-09-01). Falls back to the resolved place name
                 // when the gazetteer had no country name to give.

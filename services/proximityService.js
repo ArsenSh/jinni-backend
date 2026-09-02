@@ -218,7 +218,12 @@ function budgetMatchClause(budget, rates = null) {
  *        returns only jewelry-tagged listings. Ignored for every other action.
  * @returns {Promise<Object>} { businesses: Array, destinations: Array, metadata: Object }
  */
-async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null, seenPenalty = null) {
+// `opts.alsoTypes` (2026-09-03, v2 only) widens the CATEGORY gate without
+// changing anything else: on a broad ask ("what should I visit next") the
+// neighbouring sightseeing tags are admissible alongside the leading one, so a
+// traveler's own hidden gem is not thrown away because intent guessed
+// 'historical'. Omitted = the strict behaviour v1 has always had.
+async function findSmartProximityPlaces(userLocation, preferences, actionType, radiusKm = 50, maxResults = 10, userRegion = null, requestId = null, subType = null, seenPenalty = null, opts = {}) {
     // Novelty bias: `seenPenalty` is a Map (identity → penalty) the caller
     // precomputes from the user's PlaceView history. A place already seen loses
     // a little score so fresh ones rise — SOFT (subtracted before the top-N cut,
@@ -289,12 +294,16 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         // rather than overwrite so the budget/region clauses below still
         // layer cleanly on top.
         const discFilter = discoverabilityFilter();
+        // The widened set still has to satisfy the style tag, so the style
+        // clause moves into $and rather than sharing one $all with the category.
+        const wideTypes = Array.isArray(opts.alsoTypes) && opts.alsoTypes.length ? opts.alsoTypes : null;
         const baseQuery = {
             isActive: true,
-            type: userStyle ? { $all: [effectiveTag, userStyle] } : { $all: [effectiveTag] },
+            type: wideTypes ? { $in: wideTypes } : (userStyle ? { $all: [effectiveTag, userStyle] } : { $all: [effectiveTag] }),
             status: discFilter.status,
             $and: [...discFilter.$and]
         };
+        if (wideTypes && userStyle) baseQuery.$and.push({ type: userStyle });
         if (shouldFilterBudget && normalizedBudget) {
             // Derives one representative price from whatever pricing fields are
             // filled in, so a listing carrying only a minimum ("from $12") is
@@ -375,6 +384,10 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         const destinationQuery = { isActive: true, $and: [eventFreshnessClause()] };
         if (actionType === 'general') {
             destinationQuery.type = { $in: GENERAL_DEST_TAGS };
+        } else if (wideTypes) {
+            // Broad ask: the leading category still ranks first, but a
+            // neighbouring sightseeing tag is not a reason to discard a row.
+            destinationQuery.type = { $in: wideTypes };
         } else if (destinationActionFirstClass.includes(actionType)) {
             // First-class action types are real destination tags → match strictly.
             // For shopping this is the chosen sub-type (effectiveTag), e.g. a
@@ -424,7 +437,8 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         ]);
         const destFilterMode = actionType === 'general'
             ? 'general-visitworthy-$in'
-            : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only');
+            : (wideTypes ? `broad-ask-$in(${wideTypes.join('|')})`
+                : (destinationActionFirstClass.includes(actionType) ? 'action-strict' : 'region-only'));
         console.log(`Proximity DB query: action=${actionType}${effectiveTag !== actionType ? ' subType='+effectiveTag : ''}, style=${userStyle || 'none'}${shouldFilterBudget ? ' budget=on(dest too)' : ''} → ${candidateBusinesses.length} businesses, ${candidateDestinations.length} destinations (destination filter: ${destFilterMode})`);
 
         function hasValidCoords(place) { return place.location?.coordinates?.lat && place.location?.coordinates?.lng; }

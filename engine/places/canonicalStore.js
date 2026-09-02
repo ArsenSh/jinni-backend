@@ -74,7 +74,7 @@ function _prefFitScore(types, primaryType, preferences) {
 /** The indexed bounding-box prefilter — v1's query shape, category optional. */
 const _rxEscape = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = [], countryScope = null }) {
+function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = [], countryScope = null, alsoTypes = null }) {
     const freshnessCutoff = new Date(Date.now() - CACHE_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
     const latDelta = radiusKm / 111.32;
     const lngDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(center.lat * Math.PI / 180)));
@@ -100,7 +100,11 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
         query['details.geometry.location.lat'] = { $gte: center.lat - latDelta, $lte: center.lat + latDelta };
         query['details.geometry.location.lng'] = { $gte: center.lng - lngDelta, $lte: center.lng + lngDelta };
     }
-    if (category) query.actions = category;            // ground-truth category match
+    // Ground-truth category match — widened on a broad ask (2026-09-03), where
+    // the traveler named no venue type and intent's single guess must not
+    // exclude the neighbouring sightseeing tags.
+    if (alsoTypes && alsoTypes.length) query.actions = { $in: alsoTypes };
+    else if (category) query.actions = category;
     if (excludePlaceIds.length) query.placeId = { $nin: excludePlaceIds };
     return query;
 }
@@ -431,7 +435,8 @@ async function loadCandidates(params = {}, deps = {}) {
     let cacheDocs = [];
     try {
         const query = buildCacheQuery({ center, radiusKm, category,
-            excludePlaceIds: excludes.placeIds || [], countryScope: params.countryScope || null });
+            excludePlaceIds: excludes.placeIds || [], countryScope: params.countryScope || null,
+            alsoTypes: params.alsoTypes || null });
         if (deps.cacheFind) {
             cacheDocs = await deps.cacheFind(query);
         } else {
@@ -450,6 +455,11 @@ async function loadCandidates(params = {}, deps = {}) {
         try { return require('../../services/googleService').placeMatchesActionType(action, sub, types, primaryType); }
         catch { return true; }                          // comparator unavailable → lenient
     });
+    // On a broad ask any of the admissible sightseeing tags counts as a match.
+    const matchesAnyType = (action, sub, types, primaryType) =>
+        (params.alsoTypes && params.alsoTypes.length)
+            ? params.alsoTypes.some(t => placeMatches(t, sub, types, primaryType))
+            : placeMatches(action, sub, types, primaryType);
 
     const scoredCache = [];
     for (const d of cacheDocs) {
@@ -469,7 +479,7 @@ async function loadCandidates(params = {}, deps = {}) {
                 } else if (!placeMatches(category, subType, d.types, d.primaryType)) {
                     continue;
                 }
-            } else if (!placeMatches(category, null, d.types, d.primaryType)) {
+            } else if (!matchesAnyType(category, null, d.types, d.primaryType)) {
                 continue;
             }
             const dTier = isPriceAction(category) ? priceTier(d.types, d.primaryType, d.priceLevel).tier : null;
@@ -484,7 +494,7 @@ async function loadCandidates(params = {}, deps = {}) {
     let destinations = [], businesses = [];
     try {
         const proximity = deps.proximity || require('../../services/proximityService').findSmartProximityPlaces;
-        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType);
+        const res = await proximity(center, preferences, category || 'general', radiusKm, 12, null, requestId, subType, null, { alsoTypes: params.alsoTypes || null });
         destinations = (res?.destinations || []).map(d => dbDocToCandidate(d, 'destination', center)).filter(Boolean);
         businesses = (res?.businesses || []).map(b => dbDocToCandidate(b, 'business', center)).filter(Boolean);
     } catch (err) {
@@ -598,15 +608,22 @@ async function loadCandidates(params = {}, deps = {}) {
     // coordinates. findPlaces has excluded geo tokens from the adaptive deck
     // since the tuning round; the paid path was simply never given the list.
     const geoTokens = new Set((params.geoTokens || []).map(t => String(t).toLowerCase()));
+    // Nor does a FILLER word (live 2026-09-03: "What is the closest monastery?"
+    // bought a Text Search reporting `uncovered: closest,monastery` — "closest"
+    // is stripped from BM25 precisely because it describes no venue, yet it was
+    // still counted as unmet demand on the paid path). One stoplist, both uses.
+    let chatStop = new Set();
+    try { chatStop = require('../retrieval/tuning').CHAT_STOPWORDS || new Set(); } catch { /* keep the old behaviour */ }
     const missing = uncoveredQueryTokens(params.coreQuery, merged)
         .filter(t => !geoTokens.has(t))
+        .filter(t => !chatStop.has(t))
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
     if (!params.corridor && (merged.length < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
             let extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
-                regionCity: params.regionCity || null,
+                regionCity: params.regionCity || null, alsoTypes: params.alsoTypes || null,
                 needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (suppress && extra.length) {
@@ -717,7 +734,7 @@ function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
 }
 
 /** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
-async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, regionCity = null, needed, requestId }, deps = {}) {
+async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, regionCity = null, needed, requestId, alsoTypes = null }, deps = {}) {
     const coverageAllowed = deps.coverage
         || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
     if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) {
@@ -783,8 +800,12 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         // The asked CATEGORY is a hard gate on paid rows: mixed text-search
         // results once carded a CAFE and a WINE BAR in a hotels chain (live
         // 2026-08-31). Unknown types stay lenient inside the gate itself.
-        if (category && !typeGate(category, subType, d.types, d.primaryType)) {
-            console.log(`[canonicalStore] fallback skip "${p.name}" — not ${category} (${d.primaryType || (d.types || []).slice(0, 2).join('/') || 'unknown types'})`);
+        // On a BROAD ask the admissible set is wider (live 2026-09-03: "what
+        // can I do within 10 km" dropped the Museum of Illusions and a park as
+        // "not activities", then reported the deck as thin).
+        const gateTypes = (alsoTypes && alsoTypes.length) ? alsoTypes : (category ? [category] : []);
+        if (gateTypes.length && !gateTypes.some(t => typeGate(t, subType, d.types, d.primaryType))) {
+            console.log(`[canonicalStore] fallback skip "${p.name}" — not ${gateTypes.join('/')} (${d.primaryType || (d.types || []).slice(0, 2).join('/') || 'unknown types'})`);
             continue;
         }
         out.push({

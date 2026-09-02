@@ -444,3 +444,47 @@ describe('cache style gate — interests verdict + luxury evidence', () => {
         expect(mk({}).interests).toEqual([]);
     });
 });
+
+// ── A BROAD ASK IS NOT A NARROW ONE (founder design; live 2026-09-03) ──
+// "I'm at Khor Virap. What should I visit next?" was read as `historical`, and
+// four separate gates — cache actions, Destination type, Business type, the
+// Google type check — then discarded the traveler's own restaurant and hidden
+// gem a few km away, and paid Google to replace them with strangers.
+describe('broad-ask widening', () => {
+    const { alsoTypesFor, namesVenueType } = require('../engine/retrieval/tuning');
+    const { buildCacheQuery } = require('../engine/places/canonicalStore');
+    const CENTRE = { lat: 39.878, lng: 44.576 };
+
+    test('widens only inside the sightseeing family', () => {
+        expect(alsoTypesFor('historical', 'What should I visit next?'))
+            .toEqual(['historical', 'activities', 'photo_spots', 'hidden_gems']);
+        expect(alsoTypesFor('activities', 'What can I do within 10 km?')[0]).toBe('activities');
+        // Food and lodging must never widen into museums.
+        expect(alsoTypesFor('restaurants', 'somewhere to eat')).toBeNull();
+        expect(alsoTypesFor('hotels', 'where should I stay')).toBeNull();
+        expect(alsoTypesFor('events', 'what is on')).toBeNull();
+        expect(alsoTypesFor(null, 'anything')).toBeNull();
+    });
+
+    test('a named venue type keeps the ask narrow', () => {
+        expect(alsoTypesFor('historical', 'What is the closest monastery?')).toBeNull();
+        expect(alsoTypesFor('activities', 'any good bars nearby?')).toBeNull();
+        expect(namesVenueType('ближайший монастырь')).toBe(true);
+        expect(namesVenueType('что посмотреть рядом')).toBe(false);
+    });
+
+    test('the leading category still comes first — it leads the deck', () => {
+        expect(alsoTypesFor('photo_spots', 'what should I see here')[0]).toBe('photo_spots');
+    });
+
+    test('the cache gate opens to the whole admissible set', () => {
+        const wide = buildCacheQuery({ center: CENTRE, radiusKm: 5, category: 'historical',
+            alsoTypes: ['historical', 'activities', 'photo_spots', 'hidden_gems'] });
+        expect(wide.actions).toEqual({ $in: ['historical', 'activities', 'photo_spots', 'hidden_gems'] });
+    });
+
+    test('without it the gate is exactly as strict as before', () => {
+        const narrow = buildCacheQuery({ center: CENTRE, radiusKm: 5, category: 'historical' });
+        expect(narrow.actions).toBe('historical');
+    });
+});

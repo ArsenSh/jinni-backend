@@ -229,6 +229,50 @@ function parseCorridorAsk(message, placeNames = []) {
     return (from && to) ? { from, to, source: 'text' } : null;
 }
 
+/* 3f. A BROAD ASK IS NOT A NARROW ONE (founder design, 2026-09-01; live
+ * 2026-09-03: "I'm at Khor Virap. What should I visit next?" read as
+ * `historical`, and the strict category gate then threw away the traveler's
+ * OWN restaurant and hidden gem sitting a few km away — and bought a Google
+ * search to replace them).
+ *
+ * The intent model must still answer with ONE category: it leads the deck, and
+ * "what can I do in Dilijan" should open with activities, not a monastery.
+ * What is wrong is treating that one guess as an exclusion. When the traveler
+ * named no venue type at all, the neighbouring sightseeing categories are
+ * admissible too — Arsen's rule: "activities are first but the historical
+ * places we can keep, or the national_park and so on".
+ *
+ * Deliberately narrow:
+ *  · only inside the SIGHTSEEING family — asking for food must never widen
+ *    into museums, and "hotels" must stay hotels;
+ *  · only when the message names no venue type of its own. "What is the
+ *    closest monastery?" is a narrow ask and stays narrow.
+ * Pure — returns an array (category first) or null. */
+const SIGHTSEEING_FAMILY = ['activities', 'historical', 'photo_spots', 'hidden_gems'];
+const VENUE_NOUN_RE = new RegExp([
+    'restaurant', 'cafe', 'coffee', 'bar', 'pub', 'diner', 'eatery', 'bistro', 'food',
+    'hotel', 'hostel', 'guesthouse', 'apartment', 'stay', 'lodging', 'resort',
+    'museum', 'monaster', 'vank', 'church', 'cathedral', 'temple', 'mosque', 'shrine',
+    'ruin', 'castle', 'fortress', 'monument', 'statue', 'memorial', 'archaeolog',
+    'market', 'bazaar', 'mall', 'shop', 'store', 'boutique',
+    'park', 'garden', 'lake', 'waterfall', 'canyon', 'cave', 'mountain', 'peak', 'trail',
+    'viewpoint', 'panorama', 'photo', 'event', 'festival', 'concert', 'show', 'exhibition',
+    'spa', 'club', 'casino', 'cinema', 'theatre', 'theater', 'zoo', 'winery', 'brewery',
+].join('|'), 'i');
+const VENUE_NOUN_NONLATIN_RE = /(ресторан|кафе|бар|отел|гостиниц|музе|монастыр|церк|храм|крепост|рынок|парк|озер|водопад|каньон|пещер|гор|смотровая|фестивал|концерт|выстав|спа|клуб|кино|театр|ռեստորան|սրճարան|հյուրանոց|թանգարան|վանք|եկեղեց|ամրոց|շուկա|այգի|լիճ|ջրվեժ|քարանձավ|լեռ|փառատոն|համերգ|թատրոն)/i;
+
+function namesVenueType(message) {
+    const m = String(message || '');
+    return VENUE_NOUN_RE.test(m) || VENUE_NOUN_NONLATIN_RE.test(m);
+}
+
+function alsoTypesFor(category, message) {
+    if (!category || !SIGHTSEEING_FAMILY.includes(category)) return null;
+    if (namesVenueType(message)) return null;
+    // Category first: it still leads the deck and the narration.
+    return [category, ...SIGHTSEEING_FAMILY.filter(t => t !== category)];
+}
+
 const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;
 const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի|更多|其他|别的|另外|再来|再推荐|المزيد|أخرى|غيرها|أكثر|اقتراحات جديدة)/i;
 function parseRefillAsk(message) {
@@ -271,5 +315,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isRightNowAsk, isTransportAsk, isNearbyAsk, isClosestAsk,
-    parseAtLocation, parseRadiusKm, parseCorridorAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isClosestAsk,
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
