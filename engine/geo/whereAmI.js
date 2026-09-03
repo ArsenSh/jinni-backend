@@ -15,6 +15,22 @@
 // returns null and the caller falls back to its normal centre.
 
 const { normalizePlaceName } = require('../places/matching');
+const { haversineKm } = require('../utils/geo');
+
+// A stated position resolving absurdly far from the traveler's GPS is almost
+// always the WRONG namesake, not a teleporting traveler ("Republic Square"
+// resolved to a Texan strip mall, live 2026-09-03). Not a hard block — they may
+// really be asking about another country — but it must be one grep away.
+const FAR_FROM_GPS_KM = 300;
+function _warnIfFar(result, near) {
+    if (result && near && Number.isFinite(near.lat) && Number.isFinite(near.lng)) {
+        const km = haversineKm(near.lat, near.lng, result.lat, result.lng);
+        if (km > FAR_FROM_GPS_KM) {
+            console.warn(`[whereAmI] stated "${result.name}" (${result.source}) resolved ${Math.round(km)}km from the traveler's GPS — namesake risk`);
+        }
+    }
+    return result;
+}
 
 const _sameName = (a, b) => {
     const x = normalizePlaceName(a), y = normalizePlaceName(b);
@@ -48,24 +64,40 @@ async function resolveStatedLocation(name, { sessionCards = [], near = null } = 
         const gz = deps.gazetteer === null ? null : (deps.gazetteer || require('./gazetteer'));
         if (gz) {
             const hit = await gz.lookupPlace(wanted, { near });
-            if (hit) return { lat: hit.lat, lng: hit.lng, name: hit.name, source: 'gazetteer' };
+            if (hit) return _warnIfFar({ lat: hit.lat, lng: hit.lng, name: hit.name, source: 'gazetteer' }, near);
         }
     } catch { /* fail-open to the next tier */ }
 
     // 3. Our own place corpus — free, and where landmarks actually live.
+    //    NEVER by name alone: the cache holds namesakes from every city a test
+    //    ever ran in, and findOne's natural order picked the Texan "Republic
+    //    Square" over the Yerevan one 500m away (live 2026-09-03). All matches
+    //    are fetched and the one nearest the traveler's GPS wins — the same
+    //    `near` the gazetteer and Google tiers already respect.
     try {
         const find = deps.placeCache || (async (n) => {
             const PlaceCache = require('../../models/PlaceCache');
             const esc = String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            return PlaceCache.findOne({
+            return PlaceCache.find({
                 $or: [{ searchName: String(n).toLowerCase() }, { name: new RegExp(`^${esc}$`, 'i') }],
                 'details.geometry.location.lat': { $ne: null },
-            }).select('name details.geometry.location').lean();
+            }).select('name details.geometry.location').limit(8).lean();
         });
-        const doc = await find(wanted);
-        const loc = doc?.details?.geometry?.location;
-        if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
-            return { lat: loc.lat, lng: loc.lng, name: doc.name || wanted, source: 'cache' };
+        const res = await find(wanted);
+        // Injected deps may still return a single doc — both shapes are fine.
+        const docs = (Array.isArray(res) ? res : [res]).filter(d => {
+            const loc = d?.details?.geometry?.location;
+            return loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng);
+        });
+        if (docs.length) {
+            const at = (d) => d.details.geometry.location;
+            const best = (near && Number.isFinite(near.lat) && Number.isFinite(near.lng))
+                ? docs.reduce((a, b) =>
+                    haversineKm(near.lat, near.lng, at(a).lat, at(a).lng)
+                        <= haversineKm(near.lat, near.lng, at(b).lat, at(b).lng) ? a : b)
+                : docs[0];
+            const loc = at(best);
+            return _warnIfFar({ lat: loc.lat, lng: loc.lng, name: best.name || wanted, source: 'cache' }, near);
         }
     } catch { /* fail-open to the next tier */ }
 
@@ -77,7 +109,7 @@ async function resolveStatedLocation(name, { sessionCards = [], near = null } = 
             const first = (found || [])[0];
             const loc = first?.geometry?.location;
             if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
-                return { lat: loc.lat, lng: loc.lng, name: first.name || wanted, source: 'google' };
+                return _warnIfFar({ lat: loc.lat, lng: loc.lng, name: first.name || wanted, source: 'google' }, near);
             }
         }
     } catch { /* fall through */ }

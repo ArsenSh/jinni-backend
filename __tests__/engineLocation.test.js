@@ -89,6 +89,23 @@ describe('whereAmI — cheapest source first', () => {
         });
         expect(r.source).toBe('google');
     });
+    test('namesakes: the cache row NEAREST the traveler wins, not natural order', async () => {
+        // Live 2026-09-03: "Armenian restaurant near Republic Square" centred on a
+        // Texan "Republic Square" strip mall because findOne returned it first.
+        const texas = { name: 'Republic Square', details: { geometry: { location: { lat: 30.6495, lng: -97.677 } } } };
+        const yerevan = { name: 'Republic Square', details: { geometry: { location: { lat: 40.1777, lng: 44.5127 } } } };
+        const r = await resolveStatedLocation('Republic Square',
+            { near: { lat: 40.2016, lng: 44.5321 } },            // traveler in Yerevan
+            { gazetteer: null, placeCache: async () => [texas, yerevan] });
+        expect(r).toMatchObject({ source: 'cache', lat: 40.1777 });
+    });
+    test('namesakes: without GPS the first match still resolves (no regression)', async () => {
+        const r = await resolveStatedLocation('Republic Square', {}, {
+            gazetteer: null,
+            placeCache: async () => [{ name: 'Republic Square', details: { geometry: { location: { lat: 30.6495, lng: -97.677 } } } }],
+        });
+        expect(r).toMatchObject({ source: 'cache', lat: 30.6495 });
+    });
     test('a broken tier never throws', async () => {
         const r = await resolveStatedLocation('X Place', {}, {
             gazetteer: { lookupPlace: async () => { throw new Error('db down'); } },

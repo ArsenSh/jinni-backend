@@ -1253,6 +1253,11 @@ router.get('/places', async (req, res) => {
             PlaceCache.find(query).sort(sortObj).skip(skip).limit(parseInt(limit)).select('placeId name rating details.formatted_address photos.url photos.width photos.height photos.contentType imagesStored hasDetailedInfo fetchCount useCount lastFetched lastUsed createdAt actions likes dislikes eventSchedule priceLevel types primaryType explore').lean(),
             PlaceCache.countDocuments(query),
             PlaceCache.aggregate([
+                // Project BEFORE sorting: these rows carry photo bytes in-document,
+                // and sorting full docs blew the 32MB sort memory limit
+                // (live 2026-09-03). Tiny projected docs sort in ~nothing.
+                { $project: { createdAt: 1, imagesStored: 1, hasDetailedInfo: 1,
+                              fetchCount: 1, useCount: 1, rating: 1, name: 1 } },
                 { $sort: { createdAt: 1 } },
                 { $group: {
                     _id: null,

@@ -141,6 +141,13 @@ PlaceCacheSchema.index({ searchName: 1 });
 PlaceCacheSchema.index({ 'details.geometry.location.lat': 1, 'details.geometry.location.lng': 1 });
 // Backfill filters by the quick-action category a place was shown under.
 PlaceCacheSchema.index({ actions: 1 });
+// The admin Places tab sorts on these; without indexes Mongo in-memory-sorts
+// FULL documents (photo bytes included) and dies at the 32MB sort limit once
+// the collection is big enough (live 2026-09-03, QueryExceededMemoryLimit).
+PlaceCacheSchema.index({ useCount: -1 });
+PlaceCacheSchema.index({ fetchCount: -1 });
+PlaceCacheSchema.index({ lastUsed: -1 });
+PlaceCacheSchema.index({ createdAt: -1 });
 // No TTL — cache expiry is managed manually via the Admin > Places Cache > Purge Stale button.
 
 module.exports = mongoose.model('PlaceCache', PlaceCacheSchema);
