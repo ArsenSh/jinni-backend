@@ -20,7 +20,7 @@ const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isClosestAsk,
+const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -1203,6 +1203,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // so it beats population sizing, the town cap and the mode default.
             const alsoTypes = alsoTypesFor(category, message);
             if (alsoTypes) console.log(`[v2] broad ask -> also ${alsoTypes.slice(1).join(', ')}`);
+            // "Walking distance." tightens the radius around the centre the
+            // conversation already has — it never re-centres (see tuning.js
+            // isWalkingAsk; live 2026-09-03). An explicit "within N km" below
+            // still outranks it.
+            if (isWalkingAsk(message)) {
+                radiusKm = Math.min(radiusKm, 2);
+                meta.walkingAsk = true;
+                console.log('[v2] walking-distance ask -> radius capped at 2km (a limit, not a re-centre)');
+            }
             const askedRadiusKm = parseRadiusKm(geoAsk);
             if (askedRadiusKm) {
                 radiusKm = askedRadiusKm;

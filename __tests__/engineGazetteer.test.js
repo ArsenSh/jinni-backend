@@ -444,9 +444,19 @@ describe('isNearbyAsk', () => {
     const { isNearbyAsk } = require('../engine/retrieval/tuning');
     test('catches proximity phrasing in several languages', () => {
         for (const m of ['what restaurant you can find near me?', 'restaurants nearby',
-                         'places around me', 'somewhere close by', 'within walking distance',
+                         'places around me', 'somewhere close by',
                          'рядом со мной кафе', 'près de moi', '附近的餐厅'])
             expect(isNearbyAsk(m)).toBe(true);
+    });
+    test('walking distance is a LIMIT, not a near-me re-centre (live 2026-09-03)', () => {
+        // "Walking distance." after "near Republic Square" must NOT teleport
+        // the centre to the traveler's GPS — it only tightens the radius.
+        const { isWalkingAsk } = require('../engine/retrieval/tuning');
+        for (const m of ['Walking distance.', 'within walking distance', 'a short walk', 'пешком дойти'])
+            expect(isNearbyAsk(m)).toBe(false);
+        for (const m of ['Walking distance.', 'within walking distance', 'a short walk', 'пешком'])
+            expect(isWalkingAsk(m)).toBe(true);
+        expect(isWalkingAsk('restaurants near me')).toBe(false);
     });
     test('an ordinary place ask is NOT a proximity ask', () => {
         for (const m of ['sushi in dilijan', 'best places to visit in Armenia',

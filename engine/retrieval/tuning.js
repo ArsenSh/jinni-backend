@@ -118,11 +118,24 @@ function rankingWeights({ rightNow = false, nearbyMode = false, message = '', co
  * excluded). This is proximity to the TRAVELER, not a time word, so it is
  * separate from isRightNowAsk. Latin terms take word boundaries; non-Latin
  * scripts go boundary-free (the Cyrillic lesson). Pure. */
-const NEARBY_LATIN_RE = /\b(near(by| me| here| my location)?|close (by|to me)|around (me|here)|next to me|walking distance|within walking|a few (steps|minutes) (away|from)|pr(e|è)s de moi|(a|à) proximit(e|é)|autour de moi)\b/i;
+const NEARBY_LATIN_RE = /\b(near(by| me| here| my location)?|close (by|to me)|around (me|here)|next to me|pr(e|è)s de moi|(a|à) proximit(e|é)|autour de moi)\b/i;
 const NEARBY_NONLATIN_RE = /(рядом со мной|рядом|поблизости|недалеко|около меня|вблизи|неподалеку|неподалёку|մոտակա|մոտակայք|իմ մոտ|մոտս|附近|离我近|我附近|周边|قريب مني|بالقرب مني|القريبة مني)/i;
 function isNearbyAsk(message) {
     const m = String(message || '');
     return NEARBY_LATIN_RE.test(m) || NEARBY_NONLATIN_RE.test(m);
+}
+
+/* "Walking distance" is a LIMIT, not a re-centre (live 2026-09-03). It used to
+ * live inside NEARBY_LATIN_RE, so "Walking distance." after "near Republic
+ * Square" flipped the mode to nearby, teleported the centre from the square to
+ * the traveler's GPS in Arinj, and every card distance measured from the wrong
+ * point. The phrase says HOW FAR, never FROM WHERE — the centre stays wherever
+ * the conversation put it and only the radius tightens (aiChatV2 caps it). */
+const WALKING_LATIN_RE = /\b(walking distance|within (a )?walk|within walking|a (few|couple) (steps|minutes|min)('|’)?s? (away|walk|from)|(a )?short walk)\b/i;
+const WALKING_NONLATIN_RE = /(пешком|пешей доступност\w*|ոտքով|徒歩)/i;
+function isWalkingAsk(message) {
+    const m = String(message || '');
+    return WALKING_LATIN_RE.test(m) || WALKING_NONLATIN_RE.test(m);
 }
 
 /* 3c-bis. "CLOSEST" IS A SORT, NOT A LIMIT (2026-09-02).
@@ -322,5 +335,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
