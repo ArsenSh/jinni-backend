@@ -168,11 +168,13 @@ async function findPlaces(params = {}, deps = {}) {
     // ── Session excludes + dislikes. verifiedId too: dislikes on partner/
     //    validator places are keyed by the stringified Business/Destination
     //    _id, not a Google placeId. ──
+    const _beforeExcludes = ordered.length;
     const exIds = new Set((excludes.placeIds || []).filter(Boolean));
     const exNames = new Set((excludes.names || []).map(n => normalizePlaceName(n)).filter(Boolean));
     ordered = ordered.filter(c =>
         !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
           && !exNames.has(normalizePlaceName(c.name || '')));
+    const _afterExcludes = ordered.length;
     // Emptied HERE = everything real was already shown — that, and only that,
     // is the "you've seen everything" case. (Dilijan 23:21 lesson, 2026-08-30:
     // the open-now drop below used to land in the same bucket, so a town whose
@@ -193,6 +195,7 @@ async function findPlaces(params = {}, deps = {}) {
             provenance.openNowDropped = before - ordered.length;
         }
     }
+    provenance.excluded = _beforeExcludes - _afterExcludes;
     if (!ordered.length) {
         // Everything that survived the excludes was dropped as KNOWN-closed —
         // the honest reply is "they're closed right now", never "seen it all".
@@ -352,6 +355,22 @@ async function findPlaces(params = {}, deps = {}) {
     }
 
     const places = ordered.slice(0, effectiveWanted);
+    // ── WHERE DID IT GO? (2026-09-03) ──
+    // "Noah's Garden is in the pool and not in the deck" was unanswerable
+    // three rounds running: the pool line says what ARRIVED, the summary says
+    // how many were SERVED, and nothing said which stage ate the difference.
+    // Every drop between the two is counted here, and the survivors are named
+    // when the deck is small enough to read.
+    if (places.length < provenance.candidateCount) {
+        const lost = [];
+        if (provenance.excluded) lost.push(`already-shown ${provenance.excluded}`);
+        if (provenance.openNowDropped) lost.push(`closed ${provenance.openNowDropped}`);
+        const cut = ordered.length - places.length;
+        if (cut > 0) lost.push(`cut ${cut} (deck ${effectiveWanted})`);
+        console.log(`[retrieval] ${provenance.candidateCount} candidate(s) → ${places.length} served`
+            + `${lost.length ? ` — lost to ${lost.join(', ')}` : ''}`
+            + `${places.length <= 8 ? ` | deck: ${places.map(p => `${p.name}(${p.source || '?'})`).join(' · ')}` : ''}`);
+    }
     return { places, degraded: false, provenance };
 }
 
