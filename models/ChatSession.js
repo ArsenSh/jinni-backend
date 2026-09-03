@@ -148,6 +148,10 @@ const chatSessionSchema = new mongoose.Schema({
     singleTown: Boolean,
     updatedAt: Date
   },
+  // The constraint ledger (engine/session/constraints.js): what the traveler
+  // currently wants — price, radius cap, party size, target time — merged by
+  // CODE each deck turn, reset on category change. QA §4, 2026-09-04.
+  constraints: { type: mongoose.Schema.Types.Mixed, default: null },
   messages: [messageSchema],
   isNearLimit: { type: Boolean, default: false },
   suggestedNewChat: { type: Boolean, default: false },

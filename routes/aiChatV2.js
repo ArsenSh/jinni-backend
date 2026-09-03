@@ -22,7 +22,8 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType } = require('../engine/retrieval/tuning');
+const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -59,7 +60,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, messages: { $slice: -30 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, messages: { $slice: -30 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
@@ -1162,7 +1163,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // distinctive words, and cap dining/shopping radius (local decisions).
             // Refill turns enrich from the PREVIOUS ask — "10 other results"
             // contributes nothing to relevance; "suggest historical places" does.
-            const retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
+            let retrievalQuery = buildRetrievalQuery(intent.searchQuery, refillActive ? (prevUserAsk || message) : message);
             // HOW FAR to look is the traveler's setting, not a constant. v2 hard-
             // coded 5/50 km, so the Preferences slider — and every radius Jinni
             // itself wrote — changed nothing at all: the reply said "I've widened
@@ -1258,6 +1259,54 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 console.log(`[v2] explicit radius: ${askedRadiusKm}km`);
             }
 
+            // ── CONSTRAINT LEDGER (QA §4, 2026-09-04) ──
+            // "For 4 people tonight at 8." ran at r=15km style=luxury: the
+            // walking cap and the `cheaper` from the two previous turns had
+            // evaporated, and "Actually make it 9." searched
+            // q="restaurant actually make". Constraints are DATA on the
+            // session now — each turn contributes only what it explicitly
+            // said, everything else carries until changed or the mission
+            // (category) changes. engine/session/constraints.js is pure and
+            // unit-tests the whole ChatGPT §4 chain.
+            const prevLedger = sessionPeek?.constraints || null;
+            const _delta = {};
+            if (intent.priceDirection) _delta.price = intent.priceDirection;
+            if (meta.walkingAsk) _delta.radiusCapKm = 2;
+            if (askedRadiusKm) _delta.radiusCapKm = askedRadiusKm;
+            const _party = parsePartySize(message);
+            if (_party) _delta.partySize = _party;
+            const _tt = parseTargetTime(message, {
+                prevTargetMin: prevLedger?.targetTime ?? null,
+                nowMinutes: timeContext.hour * 60 + timeContext.minute,
+            });
+            if (_tt != null) _delta.targetTime = _tt;
+            const { ledger, changed, reset: ledgerReset } = mergeConstraints(prevLedger, _delta, { category });
+            if (ledgerReset) console.log('[ledger] mission changed -> previous constraints cleared');
+            // An inherited constraint acts exactly as if said THIS turn.
+            if (!intent.priceDirection && ledger.price) {
+                intent.priceDirection = ledger.price;
+                console.log(`[ledger] price carried: ${ledger.price}`);
+            }
+            if (ledger.radiusCapKm) radiusKm = Math.min(radiusKm, ledger.radiusCapKm);
+            // A modifier-only turn changes ONE thing; the search is the SAME
+            // search. Reusing the stored query keeps armenian+republic-square
+            // alive through "make it 9".
+            const modifierTurn = !!(prevLedger && !ledgerReset && ledger.lastQuery
+                && changed.length && !refillActive
+                && !(intent.placeNames || []).length && !namesVenueType(message));
+            if (modifierTurn) {
+                retrievalQuery = ledger.lastQuery;
+                console.log(`[ledger] modifier turn -> reusing query "${String(ledger.lastQuery).slice(0, 50)}"`);
+            }
+            // "tonight at 8" = check hours AT 20:00 — same isOpenAt math the
+            // open-now filter uses, different clock. Narration context keeps
+            // the REAL timeContext; only retrieval shifts.
+            const openAtCtx = ledger.targetTime != null
+                ? { ...timeContext, hour: Math.floor(ledger.targetTime / 60), minute: ledger.targetTime % 60 }
+                : timeContext;
+            console.log(ledgerLine(ledger, changed)
+                + (ledger.targetTime != null ? ` — open-at check @ ${fmtTargetTime(ledger.targetTime)}` : ''));
+
             const _ev = require('../engine/places/eventStore');
             const eventWindow = category === 'events'
                 ? (_ev.windowFromPeriod(intent.period)
@@ -1337,7 +1386,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // typed, live 2026-09-03). The retrieval query is the same ask
                 // already reduced to its content words, which is what a search
                 // engine can actually use.
-                coreQuery: (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery) || '',
+                coreQuery: (modifierTurn
+                    ? (ledger.lastCore || intent.searchQuery)
+                    : (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery)) || '',
                 category,
                 subType: intent.subType || null,
                 center,
@@ -1372,13 +1423,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // when the gazetteer had no country name to give.
                 countryScope: meta.destScale === 'country'
                     ? (meta.destCountryName || meta.searchCity || null) : null,
-                timeContext,
+                timeContext: openAtCtx,
                 // Arsen's rules: right-now context → check hours; otherwise
                 // pass. And the AI decides — intent.when is the brain ('now' /
                 // 'planned' / 'unspecified'); nearby/late-night/now-words are
                 // the degradation path when it abstains. An explicit 'planned'
                 // ALWAYS skips the filter. Unknown hours survive regardless.
-                enforceOpenNow: rightNow,
+                enforceOpenNow: rightNow || ledger.targetTime != null,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
                 weights: rankingWeights({ rightNow, message,
@@ -1829,6 +1880,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     }
                 }
                 console.log(`[v2] q="${String(retrievalQuery).slice(0, 60)}" cat=${category || 'free'} r=${radiusKm}km style=${intent._preferences?.travelStyle || 'none'}${intent.priceDirection ? ` price=${intent.priceDirection}` : ''}${explicitCount ? ` count=${deckCount}` : ''} → ${result.places.length}/${result.provenance.candidateCount} narrated (${streamedOk ? 'streamed' : 'fallback'}, blurbs=${blurbs.filter(Boolean).length}/${recommendations.length || result.places.length}) + ${recommendations.length} card(s) in ${Date.now() - t0}ms lex=${result.provenance.lexical} vec=${result.provenance.vector} taste=${!!result.provenance.taste} cacheHit=${result.provenance.cacheHit} prov=${providerName}${webSearch ? '+hunt-ws' : ''}${eventWindow ? ` win=${eventWindow.label}` : ''}`);
+                // The ledger persists WITH the query that actually built this
+                // deck — the next modifier-only turn ("make it 9") reuses it
+                // verbatim instead of degrading to its own filler words.
+                if (sessionId && category) {
+                    require('../models/ChatSession').updateOne({ _id: sessionId }, {
+                        $set: { constraints: { ...ledger, lastQuery: retrievalQuery,
+                            lastCore: intent.searchQuery || ledger.lastCore || null, updatedAt: new Date() } },
+                    }).catch(() => {});
+                }
             }
         }
     } catch (err) {
