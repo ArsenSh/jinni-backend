@@ -1633,7 +1633,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 stage('writing', 'Almost there — putting it together…');
                 const weather = await weatherPromise;   // resolved long ago or null
                 const timeNote = [
-                    timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null,
+                    // A planned hour REPLACES the wall clock: for "tonight at 8"
+                    // the deck was hour-checked at 20:00, and prose that says
+                    // "open right now" at 01:45 contradicts the ask (live
+                    // 2026-09-04). Late-night colour only when no hour is asked.
+                    ledger.targetTime != null
+                        ? `the traveler is planning for ${fmtTargetTime(ledger.targetTime)} today — every open/closed fact in this deck was checked for ${fmtTargetTime(ledger.targetTime)}, so speak about that hour ("open at ${fmtTargetTime(ledger.targetTime)}"), and never say "open right now" or mention the current hour`
+                        : (timeContext.isLateNight ? `late night (${String(timeContext.hour).padStart(2, '0')}:00 local)` : null),
                     weatherNote(weather) || null,
                 ].filter(Boolean).join('; ') || null;
                 // ── TRUE-streamed narration: prose streams live to the user as
@@ -1890,9 +1896,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // deck — the next modifier-only turn ("make it 9") reuses it
                 // verbatim instead of degrading to its own filler words.
                 if (sessionId && category) {
+                    // A modifier turn contributed NO new query — persisting its
+                    // intent output made the stored query drift a word per turn
+                    // ("near" crept in and missed the search cache, one paid
+                    // POST, live 2026-09-04). The anchor query survives until a
+                    // turn actually searches for something new.
                     require('../models/ChatSession').updateOne({ _id: sessionId }, {
-                        $set: { constraints: { ...ledger, lastQuery: retrievalQuery,
-                            lastCore: intent.searchQuery || ledger.lastCore || null, updatedAt: new Date() } },
+                        $set: { constraints: { ...ledger,
+                            lastQuery: modifierTurn ? ledger.lastQuery : retrievalQuery,
+                            lastCore: modifierTurn ? (ledger.lastCore || null)
+                                : (intent.searchQuery || ledger.lastCore || null),
+                            updatedAt: new Date() } },
                     }).catch(() => {});
                 }
             }
