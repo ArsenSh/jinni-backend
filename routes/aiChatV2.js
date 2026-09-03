@@ -523,9 +523,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // naming Areni-1 and Noravank out of the model's memory, with no cards
         // and no retrieval behind them. Asking for more results is asking for
         // more CARDS, and only a deck can honestly answer it.
+        // Count/refill asks are UNAMBIGUOUSLY deck asks; the placeNames clause
+        // below is weaker — "Where is the Armenian Grand Canyon in Yerevan?"
+        // carries places=["Yerevan"] as a geo qualifier, and the entity-question
+        // overlay must not be blocked by it (live 2026-09-04: the canyon ask
+        // stayed on the deck path and padded 3 nightlife cards at 1 AM).
+        const countOrRefillAsk = !!intent.count
+            || (parseRefillAsk(message).isRefill && sessionCards.length > 0);
         const deckAsk = intent.isTravel && !intent.infoAsk
-            && (!!intent.count
-                || (parseRefillAsk(message).isRefill && sessionCards.length > 0)
+            && (countOrRefillAsk
                 || (intent.actionType && intent.actionType !== 'general' && (intent.placeNames || []).length > 0));
         // MOST-SPECIFIC match wins — the city-token disease's FOURTH home
         // (live 2026-08-31: "how to get to DilijanInn Hotel and Restaurant?"
@@ -658,7 +664,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    The same night's 'place'-labeled asks (Roman temple, Aragats
         //    museum, Eiffel Tower) were answered perfectly by the tool loop,
         //    premise rejection included. ──
-        if (!placeQuestion && !deckAsk && isEntityQuestion(message)) {
+        if (!placeQuestion && !countOrRefillAsk && isEntityQuestion(message)) {
             placeQuestion = true;
             console.log('[v2] entity question -> tool loop (deterministic shape match)');
         }

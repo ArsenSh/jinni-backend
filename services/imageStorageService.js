@@ -200,6 +200,24 @@ class ImageStorageService {
 
             if (!imageBuffer) {
                 console.error(`❌ No readable image for ${placeId} (requested index ${photoIndex}) — no photo has bytes`);
+                // ── DEAD-IMAGE FLIP (2026-09-04) ──
+                // Six rows 404'd on every home-screen render because their
+                // photos carry no bytes yet imagesStored stayed true, so cards
+                // kept pointing at this endpoint forever. Byte-less photos are
+                // useless (deep-heal re-resolves from Google, never from these
+                // rows) — clear them and flip the flag so the card path stops
+                // advertising an image the store cannot serve.
+                try {
+                    const mongoose = require('mongoose');
+                    if (mongoose.connection?.readyState === 1) {
+                        await require('../models/PlaceCache').updateOne(
+                            { placeId },
+                            { $set: { imagesStored: false, photos: [] } });
+                        console.log(`🧹 ${placeId}: imagesStored flipped to false (dead image purged)`);
+                    }
+                } catch (flipErr) {
+                    console.warn(`⚠️ dead-image flip failed for ${placeId}: ${flipErr.message}`);
+                }
                 throw new Error('Invalid image data format');
             }
             return { data: imageBuffer, contentType: photo.contentType || 'image/jpeg', fallback };
