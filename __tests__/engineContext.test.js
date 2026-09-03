@@ -158,17 +158,9 @@ describe('scheduleToPeriods (Business/Destination day-name hours → Google peri
 });
 
 describe('shouldDropWhenClosed (policy table, tightened 2026-08-22)', () => {
-    // Inverted to an allowlist 2026-09-03: the old "everything droppable"
-    // rule spent a whole night silently deleting the founder's own curated
-    // destination — the ONE row with honest staff-entered hours — while
-    // Google rows with no hours at all sailed through. Closed matters only
-    // where arriving at a closed door is the whole failure.
-    test('known-closed drops only doors-and-service categories', () => {
-        for (const cat of ['restaurants', 'shopping', 'activities']) {
+    test('everything droppable when KNOWN closed on a right-now ask — except hotels and events', () => {
+        for (const cat of ['restaurants', 'shopping', 'activities', 'photo_spots', 'historical', 'hidden_gems', 'general', null]) {
             expect(shouldDropWhenClosed(cat)).toBe(true);
-        }
-        for (const cat of ['photo_spots', 'historical', 'hidden_gems', 'general', null]) {
-            expect(shouldDropWhenClosed(cat)).toBe(false);
         }
         expect(shouldDropWhenClosed('hotels')).toBe(false);
         expect(shouldDropWhenClosed('events')).toBe(false);
