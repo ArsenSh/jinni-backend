@@ -39,6 +39,7 @@ const { SemanticCache } = require('./semanticCache');
 const { getEmbedder } = require('./embedder');
 const { annotateOpenNow, shouldDropWhenClosed } = require('../context/contextEngine');
 const { normalizePlaceName } = require('../places/matching');
+const { haversineKm } = require('../utils/geo');
 
 const _defaultCache = new SemanticCache({});
 
@@ -327,6 +328,43 @@ async function findPlaces(params = {}, deps = {}) {
             ordered = diversify(ordered, { want: effectiveWanted });
             provenance.diversified = ordered.slice(0, effectiveWanted).map(c => c && c.name).join('|') !== before;
         }
+    }
+
+    // ── ONE VENUE, ONE CARD (2026-09-04) ──
+    // Live: "For 4 people tonight at 8" carded Koyo TWICE — the founder's
+    // Destination row and the Google cache row for the same restaurant. The
+    // cache-twin suppression only runs inside the style verdict, so any deck
+    // assembled without a style decision could seat both twins. This dedupe is
+    // unconditional and runs last: same placeId, or same name (inclusion, the
+    // _sameName rule) within 150 m, is the same venue. The OWNED row
+    // (destination/business) always survives the fold — curated data outranks
+    // its bought twin — otherwise the higher-ranked one stays.
+    {
+        const OWNED_SRC = new Set(['destination', 'business']);
+        const _nrm = (n) => normalizePlaceName(n || '');
+        const _samePlace = (a, b) => {
+            if (a.placeId && b.placeId && a.placeId === b.placeId) return true;
+            const x = _nrm(a.name), y = _nrm(b.name);
+            if (!x || !y || x.length < 3 || y.length < 3) return false;
+            if (x !== y && !x.includes(y) && !y.includes(x)) return false;
+            const ag = a.geometry, bg = b.geometry;
+            if (!ag || !bg || ag.lat == null || bg.lat == null) return x === y;
+            return haversineKm(ag.lat, ag.lng, bg.lat, bg.lng) <= 0.15;
+        };
+        const kept = [];
+        for (const c of ordered) {
+            if (!c) continue;
+            const i = kept.findIndex(k => _samePlace(k, c));
+            if (i === -1) { kept.push(c); continue; }
+            // Duplicate: the owned row wins the seat the ranked one earned.
+            if (OWNED_SRC.has(c.source) && !OWNED_SRC.has(kept[i].source)) {
+                console.log(`[retrieval] dedupe: "${kept[i].name}"(${kept[i].source}) folded into "${c.name}"(${c.source})`);
+                kept[i] = c;
+            } else {
+                console.log(`[retrieval] dedupe: "${c.name}"(${c.source}) folded into "${kept[i].name}"(${kept[i].source})`);
+            }
+        }
+        ordered = kept;
     }
 
     // ── OUR OWN DATA ALWAYS GETS A SEAT (2026-09-03) ──

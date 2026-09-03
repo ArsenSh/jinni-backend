@@ -208,6 +208,81 @@ describe('intent info_ask: open vocabulary, safe folding', () => {
     });
 });
 
+describe('one venue, one card (live 2026-09-04: Koyo carded twice)', () => {
+    const koyoDest = { placeId: null, verifiedId: 'd1', name: 'Koyo', source: 'destination',
+        geometry: { lat: 40.18199, lng: 44.51519 }, text: 'koyo pan asian' };
+    const koyoCache = { placeId: 'ChIJgWtN', name: 'Koyo Restaurant', source: 'cache',
+        geometry: { lat: 40.18198, lng: 44.51520 }, rating: 4.5, text: 'koyo restaurant' };
+    const other = { placeId: 'x1', name: 'Tavern Yerevan', source: 'cache',
+        geometry: { lat: 40.176, lng: 44.510 }, text: 'tavern' };
+    test('a destination row and its bought twin fold into ONE card — the owned one', async () => {
+        const r = await findPlaces({ category: 'restaurants', count: 6 }, {
+            loadCandidates: async () => [koyoCache, other, koyoDest],
+            cache: new SemanticCache({}), embedder: null,
+        });
+        const koyos = r.places.filter(p => /koyo/i.test(p.name));
+        expect(koyos).toHaveLength(1);
+        expect(koyos[0].source).toBe('destination');
+        expect(r.places.some(p => p.name === 'Tavern Yerevan')).toBe(true);
+    });
+    test('same name far apart is a BRANCH, not a duplicate', async () => {
+        const teryan = { ...koyoCache, placeId: 'ChIJother', name: 'Koyo',
+            geometry: { lat: 40.19, lng: 44.53 } };            // ~1.6 km away
+        const r = await findPlaces({ category: 'restaurants', count: 6 }, {
+            loadCandidates: async () => [koyoDest, teryan],
+            cache: new SemanticCache({}), embedder: null,
+        });
+        expect(r.places.filter(p => /koyo/i.test(p.name))).toHaveLength(2);
+    });
+});
+
+describe('same Text Search is bought once (live 2026-09-03: 3 paid POSTs in 5 min)', () => {
+    const { googleFallback } = require('../engine/places/canonicalStore');
+    const gPlace = { place_id: 'ChIJnew', name: 'Fresh Find', types: ['restaurant'],
+        geometry: { location: { lat: 40.178, lng: 44.513 } } };
+    const mkDeps = (store) => {
+        let paid = 0;
+        return {
+            deps: {
+                coverage: async () => true,
+                findPlaces: async () => { paid++; return [gPlace]; },
+                resolveDetails: async () => ({ name: 'Fresh Find', types: ['restaurant'], rating: 4.4 }),
+                typeGate: () => true,
+                hiddenIds: async () => [],
+                searchCache: {
+                    get: async (k) => store.get(k) || null,
+                    set: async (k, v) => { store.set(k, v); },
+                },
+            },
+            paidCalls: () => paid,
+        };
+    };
+    const args = { query: 'armenian restaurant near Republic Square Yerevan',
+        coreQuery: 'armenian restaurant near Republic Square Yerevan',
+        category: 'restaurants', center: { lat: 40.17765, lng: 44.5126 },
+        radiusKm: 15, needed: 3, requestId: 't' };
+    test('second identical search hits the cache and pays nothing', async () => {
+        const store = new Map();
+        const a = mkDeps(store);
+        const r1 = await googleFallback(args, a.deps);
+        expect(r1).toHaveLength(1);
+        expect(a.paidCalls()).toBe(1);
+        const b = mkDeps(store);                       // fresh counter, shared store
+        const r2 = await googleFallback(args, b.deps);
+        expect(r2).toHaveLength(1);
+        expect(r2[0].placeId).toBe('ChIJnew');
+        expect(b.paidCalls()).toBe(0);                 // ← the whole point
+    });
+    test('a different centre is a different search — cache does not leak across towns', async () => {
+        const store = new Map();
+        const a = mkDeps(store);
+        await googleFallback(args, a.deps);
+        const b = mkDeps(store);
+        await googleFallback({ ...args, center: { lat: 40.74, lng: 44.86 } }, b.deps);
+        expect(b.paidCalls()).toBe(1);
+    });
+});
+
 describe('proximity-aware fusion', () => {
     test('a near candidate climbs past far higher-prior ones (no hard cutoff)', async () => {
         // 12 candidates: prior order c0..c11; c10 is 0.5 km away, everything else 30+ km.

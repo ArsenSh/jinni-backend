@@ -803,7 +803,61 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
     if (regionCity && !q.toLowerCase().includes(String(regionCity).toLowerCase())) {
         q = `${q} ${regionCity}`;
     }
-    const found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20) }) || [];
+    // ── SAME SEARCH, BOUGHT ONCE (2026-09-04) ──
+    // Live 2026-09-03: the restaurant QA chain POSTed the identical Text
+    // Search ("armenian restaurant near Republic Square Yerevan", same centre)
+    // three times in five minutes — the token-coverage check can never be
+    // satisfied by owned rows ("republic square" is nobody's NAME), so every
+    // follow-up turn re-bought the same shortlist. Memoised here by
+    // (normalised query, ~1km grid centre) in PlaceSearchCache, the same
+    // collection and TTL discipline the quick-action prefetch already uses.
+    // Only the shortlist is stored (ids + the fields the loop below reads);
+    // details still resolve through the ordinary owned-data path.
+    const SEARCH_TTL_MIN = 7 * 24 * 60;
+    const searchKey = `text:${q.toLowerCase().trim().replace(/\s+/g, ' ')}`
+        + `:${center.lat.toFixed(2)}:${center.lng.toFixed(2)}`;
+    const searchCache = deps.searchCache || {
+        get: async (key) => {
+            const mongoose = require('mongoose');
+            if (mongoose.connection?.readyState !== 1) return null;
+            const hit = await require('../../models/PlaceSearchCache')
+                .findOne({ key, expireAt: { $gt: new Date() } }).lean();
+            return hit?.candidates?.length ? hit.candidates : null;
+        },
+        set: async (key, candidates) => {
+            const mongoose = require('mongoose');
+            if (mongoose.connection?.readyState !== 1) return;
+            await require('../../models/PlaceSearchCache').updateOne(
+                { key },
+                { $set: { key, action: category || null, subType: subType || null, candidates,
+                          expireAt: new Date(Date.now() + SEARCH_TTL_MIN * 60 * 1000) } },
+                { upsert: true });
+        },
+    };
+    let found = null;
+    try {
+        const cached = await searchCache.get(searchKey);
+        if (cached) {
+            found = cached.map(c => ({
+                place_id: c.placeId, name: c.name, types: c.types || [],
+                primaryType: c.primaryType || null, rating: c.rating ?? null,
+                geometry: { location: { lat: c.lat, lng: c.lng } },
+            }));
+            console.log(`[canonicalStore] search-cache hit "${q}" — ${found.length} candidate(s), 0 paid`);
+        }
+    } catch (err) { console.warn(`[canonicalStore] search-cache read failed: ${err.message}`); }
+    if (!found) {
+        found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20) }) || [];
+        try {
+            if (found.length) {
+                await searchCache.set(searchKey, found.map(p => ({
+                    placeId: p.place_id, name: p.name,
+                    lat: p.geometry?.location?.lat ?? null, lng: p.geometry?.location?.lng ?? null,
+                    types: p.types || [], primaryType: p.primaryType || null, rating: p.rating ?? null,
+                })).filter(c => c.placeId && c.name));
+            }
+        } catch (err) { console.warn(`[canonicalStore] search-cache write failed: ${err.message}`); }
+    }
 
     // Resolve at most `needed` through v1's shared resolver — it caches details
     // AND stores images, so the card's place-image endpoint is valid and the

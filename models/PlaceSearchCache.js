@@ -25,6 +25,7 @@ const candidateSchema = new mongoose.Schema({
     lat:     { type: Number, default: null },
     lng:     { type: Number, default: null },
     types:   { type: [String], default: [] },
+    primaryType: { type: String, default: null },
     rating:  { type: Number, default: null },
 }, { _id: false });
 
