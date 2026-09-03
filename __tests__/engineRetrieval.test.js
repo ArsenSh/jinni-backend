@@ -283,6 +283,29 @@ describe('same Text Search is bought once (live 2026-09-03: 3 paid POSTs in 5 mi
     });
 });
 
+describe('a cached pool obeys THIS turn\'s radius (live 2026-09-04: пешком served 4.9km cards)', () => {
+    test('cache-hit rows beyond radiusKm are dropped; unknown distance survives', async () => {
+        const pool = [
+            { placeId: 'near', name: 'Near Spot', distanceKm: 0.8, text: 'cafe' },
+            { placeId: 'far', name: 'Far Spot', distanceKm: 4.9, text: 'cafe' },
+            { placeId: 'unk', name: 'No Distance', text: 'cafe' },
+        ];
+        const cache = new SemanticCache({});
+        // Prime the cache with a 5km pool, then ask again at 2km.
+        const args = { category: 'restaurants', query: 'cheap food', count: 6, radiusKm: 5 };
+        const deps = { loadCandidates: async () => pool, cache, embedder: null };
+        await findPlaces(args, deps);
+        const r2 = await findPlaces({ ...args, radiusKm: 2 }, {
+            ...deps, loadCandidates: async () => { throw new Error('must hit cache'); },
+        });
+        expect(r2.provenance.cacheHit).toBe(true);
+        const names = r2.places.map(p => p.name);
+        expect(names).toContain('Near Spot');
+        expect(names).toContain('No Distance');
+        expect(names).not.toContain('Far Spot');
+    });
+});
+
 describe('proximity-aware fusion', () => {
     test('a near candidate climbs past far higher-prior ones (no hard cutoff)', async () => {
         // 12 candidates: prior order c0..c11; c10 is 0.5 km away, everything else 30+ km.

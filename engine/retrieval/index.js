@@ -176,6 +176,21 @@ async function findPlaces(params = {}, deps = {}) {
         !exIds.has(c.placeId) && !exIds.has(c.verifiedId)
           && !exNames.has(normalizePlaceName(c.name || '')));
     const _afterExcludes = ordered.length;
+    // ── A CACHED POOL OBEYS THIS TURN'S RADIUS (2026-09-04) ──
+    // "пешком" capped the radius at 2km, but the semantic cache returned the
+    // previous turn's pool — built at 5km — and nothing re-checked distances:
+    // the walking deck carded places 4.5–4.9 km out (live, RU chain). Cached
+    // pools only: fresh loads already respect the radius at query time, and
+    // corridor pools measure distance against their own segment centres.
+    // Unknown distance is kept (the trust rule, same as unknown hours).
+    if (provenance.cacheHit && Number.isFinite(params.radiusKm)) {
+        const beforeR = ordered.length;
+        ordered = ordered.filter(c => !(Number.isFinite(c?.distanceKm) && c.distanceKm > params.radiusKm));
+        provenance.outsideRadius = beforeR - ordered.length;
+        if (provenance.outsideRadius) {
+            console.log(`[retrieval] cached pool re-checked against r=${params.radiusKm}km — ${provenance.outsideRadius} outside`);
+        }
+    }
     // Emptied HERE = everything real was already shown — that, and only that,
     // is the "you've seen everything" case. (Dilijan 23:21 lesson, 2026-08-30:
     // the open-now drop below used to land in the same bucket, so a town whose
@@ -403,6 +418,7 @@ async function findPlaces(params = {}, deps = {}) {
         const lost = [];
         if (provenance.excluded) lost.push(`already-shown ${provenance.excluded}`);
         if (provenance.openNowDropped) lost.push(`closed ${provenance.openNowDropped}`);
+        if (provenance.outsideRadius) lost.push(`outside-radius ${provenance.outsideRadius}`);
         const cut = ordered.length - places.length;
         if (cut > 0) lost.push(`cut ${cut} (deck ${effectiveWanted})`);
         console.log(`[retrieval] ${provenance.candidateCount} candidate(s) → ${places.length} served`
