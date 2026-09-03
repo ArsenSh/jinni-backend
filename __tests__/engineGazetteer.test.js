@@ -440,6 +440,31 @@ describe('regionAt: a ring of closer villages must not hide the city', () => {
 // ── DISCOVERY → NEARBY (Arsen's rule; live 2026-09-01) ──────────────────────
 // "what restaurant you can find near me?" ran in discovery at r=15km from the
 // session centre and seated a restaurant 6.9 km out.
+describe('entity questions & referent asks (QA 2026-09-04)', () => {
+    const { isEntityQuestion, parseReferentAsk } = require('../engine/retrieval/tuning');
+    test('a question about ONE claimed thing routes as an entity question', () => {
+        for (const m of ['Tell me about the medieval castle next to Republic Square.',
+                         'Where is the Armenian Grand Canyon in Yerevan?',
+                         'Tell me about Khor Virap.',
+                         'Где находится Гарни?'])
+            expect(isEntityQuestion(m)).toBe(true);
+    });
+    test('a browse stays a browse — best/near-me/plural never become entity questions', () => {
+        for (const m of ['What is the best restaurant?', 'restaurants near me',
+                         'What can I do in Dilijan for one day?', 'where is the nearest bar'])
+            expect(isEntityQuestion(m)).toBe(false);
+    });
+    test('a bare pronoun is a POINTER, not a search ("Is it worth it?" → coworking deck, live)', () => {
+        for (const m of ['Is it worth it?', 'Is it open?', 'How far is it?', 'take me to the best one'])
+            expect(parseReferentAsk(m)).toBe(true);
+    });
+    test('naming a venue noun or a place is NOT a bare referent', () => {
+        for (const m of ['Is this restaurant open right now?', 'Is Khor Virap open today?',
+                         'is the museum far from the opera house and worth combining'])
+            expect(parseReferentAsk(m)).toBe(false);
+    });
+});
+
 describe('isNearbyAsk', () => {
     const { isNearbyAsk } = require('../engine/retrieval/tuning');
     test('catches proximity phrasing in several languages', () => {

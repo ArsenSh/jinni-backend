@@ -21,7 +21,8 @@ const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isWalkingAsk, isClosestAsk,
-    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount } = require('../engine/retrieval/tuning');
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
+    isEntityQuestion, parseReferentAsk } = require('../engine/retrieval/tuning');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
 const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -584,6 +585,28 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 if (namedCard) console.log(`[v2] bridge follow-up: place carried from previous turn ("${namedCard.name}")`);
             }
         }
+        // ── "Is it worth it?" — a pronoun is a POINTER (QA §7, 2026-09-04) ──
+        // The deck path has no "I don't know what you mean" exit, so a bare
+        // referent ask was answered with a deck the engine picked itself
+        // (q="worth", lex=0, six cards incl. a coworking space). Resolve the
+        // pronoun to the most recent deck's TOP card — the pick the traveler
+        // just saw praised — and let the tool loop answer about THAT place.
+        // Nothing shown yet -> clarify in one sentence, never a deck.
+        let referentClarify = false;
+        if (!namedCard && parseReferentAsk(message)) {
+            let ref = null;
+            for (let i = (sessionPeek?.messages || []).length - 1; i >= 0 && !ref; i--) {
+                const recs = sessionPeek.messages[i]?.recommendations || [];
+                if (recs.length && recs[0]?.name) ref = recs[0];
+            }
+            if (ref) {
+                namedCard = ref;
+                console.log(`[v2] referent ask -> "${ref.name}" (last deck's top card)`);
+            } else {
+                referentClarify = true;
+                console.log('[v2] referent ask with nothing shown -> clarify, no deck');
+            }
+        }
         // A bare name as the whole message ("amar") right after a transport
         // exchange is the traveler ANSWERING "which place?" — it must not
         // fall to chit-chat (live 2026-09-01: intent even misread it as
@@ -626,7 +649,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // tonight?" fell to the deck path and got "you've seen everything",
         // live 2026-08-30) — get_place_details' Google name search resolves
         // typos on its own.
-        const placeQuestion = intent.infoAsk === 'place';
+        let placeQuestion = intent.infoAsk === 'place';
+        // ── Entity questions route by SHAPE, not by the intent model's mood
+        //    (QA §6, 2026-09-04): "tell me about the medieval castle next to
+        //    Republic Square" was classified as a historical BROWSE and the
+        //    deck path padded a false premise with squares and a monument.
+        //    The same night's 'place'-labeled asks (Roman temple, Aragats
+        //    museum, Eiffel Tower) were answered perfectly by the tool loop,
+        //    premise rejection included. ──
+        if (!placeQuestion && !deckAsk && isEntityQuestion(message)) {
+            placeQuestion = true;
+            console.log('[v2] entity question -> tool loop (deterministic shape match)');
+        }
         // Mirrors the branch chain below: turns that end at transport,
         // settings, place-question, info/chit-chat, or the no-web reply never
         // search places, so the session's centre and activeDestination are
@@ -947,7 +981,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     execute: makeExecutors({ center, requestId: `v2f-${Date.now()}` }),
                     maxTokens: 320,
                 }, { provider: deepseekProvider });
-                reply = loop.text || '';
+                reply = loop.text || 'I couldn\'t verify that just now — ask me again in a moment.';
                 toolCalls = loop.toolCalls.length;
                 addUsage(loop);
                 for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
@@ -1058,7 +1092,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
         } else if (namedCard || placeQuestion) {
             const loop = await runToolLoop({
-                messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
+                messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
+                    aboutPlace: (namedCard && namedCard.name) || null }),
                 tools: [PLACE_DETAILS_TOOL],
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                 maxTokens: 400,
@@ -1071,7 +1106,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
-        } else if (!intent.isTravel || intent.infoAsk === 'how_to') {
+        } else if (!intent.isTravel || intent.infoAsk === 'how_to' || referentClarify) {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same
             //    voice, same no-invented-venues rule. ──
@@ -1091,7 +1126,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (infoFacts.length) meta.localFacts = infoFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
             const chitGate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
             const out = await narrator.stream({
-                messages: buildChitchatMessages({ message, langName, history: recentTurns, localFacts: infoFacts, preferences: intent._preferences }),
+                messages: buildChitchatMessages({
+                    message: referentClarify
+                        ? message + '\n\n[the traveler said "it" but nothing has been shown or discussed yet — ask in ONE short sentence which place they mean; recommend nothing]'
+                        : message,
+                    langName, history: recentTurns, localFacts: infoFacts, preferences: intent._preferences }),
                 onToken: (c) => chitGate.feed(c),
                 maxTokens: 200,
                 realStream: true,

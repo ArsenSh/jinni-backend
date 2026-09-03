@@ -293,6 +293,47 @@ function alsoTypesFor(category, message) {
     return [category, ...SIGHTSEEING_FAMILY.filter(t => t !== category)];
 }
 
+/* ── ENTITY QUESTION (QA §6, 2026-09-04) ──
+ * "Tell me about the medieval castle next to Republic Square" is a question
+ * about ONE claimed thing, not a browse — but the intent model classified 2
+ * of 5 such asks as category searches, and the deck path answered a false
+ * premise with six unrelated cards (honest prose, dishonest deck). The turns
+ * it labeled 'place' were handled perfectly by the tool loop, premise
+ * rejection included. This deterministic overlay routes the SHAPE, so the
+ * router stops depending on the intent model's mood. Browse markers (best,
+ * nearest, plural asks…) keep ordinary discovery out of it. */
+const ENTITY_Q_RE = new RegExp('^\\s*(?:'
+    + "tell me about|what do you know about|where(?:'s|\u2019s| is)|what time|when (?:does|do|is)"
+    + '|how much (?:is|does|do)|is there (?:a|an))\\b', 'i');
+// \b is ASCII-only, so the non-latin prefixes get their own boundary-free
+// pattern (the NEARBY_*_RE pair set the precedent).
+const ENTITY_Q_NONLATIN_RE = /^\s*(?:расскажи(?:те)?(?: мне)? (?:о|про) |где (?:находится|расположен)|сколько стоит |во сколько |когда (?:открывается|закрывается)|պատմիր |որտեղ է )/i;
+const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places)\b/i;
+function isEntityQuestion(message) {
+    const m = String(message || '');
+    return (ENTITY_Q_RE.test(m) || ENTITY_Q_NONLATIN_RE.test(m)) && !BROWSE_MARK_RE.test(m);
+}
+
+/* ── REFERENT ASK (QA §7, 2026-09-04) ──
+ * "Is it worth it?" was answered "Yes — Victory Park is only 4.1 km away"
+ * about places the engine picked ITSELF: the deck path has no "I don't know
+ * what you mean" exit (q="worth", lex=0, deck served anyway). A pronoun is a
+ * POINTER — resolve it to the most recently shown card, or ask. Pure-pronoun
+ * shapes only: a sentence that names a venue noun ("is this restaurant
+ * open?") already flows through the named-card machinery. */
+const REFERENT_RE = new RegExp('^\\s*(?:'
+    + 'is (?:it|that|this)\\b[^.?!]{0,30}'
+    + '|how (?:far|much)[^.?!]{0,6}\\b(?:it|that|this)\\b[^.?!]{0,15}'
+    + '|(?:take me to |show me )?the best one'
+    + '|is it worth(?: it)?'
+    + '|это (?:далеко|дорого|того стоит|стоит того)|сколько это стоит|это открыто'
+    + '|արժե\\u055e?)[\\s.?!]*$', 'i');
+function parseReferentAsk(message) {
+    const m = String(message || '').trim();
+    if (!m || m.length > 48) return false;
+    return REFERENT_RE.test(m) && !namesVenueType(m);
+}
+
 const REFILL_LATIN_RE = /\b(more|other|others|another|different|new ones|something else|else|additional|encore|autres|davantage|nouveaux|nouvelles)\b|d['’]autres/i;
 const REFILL_NONLATIN_RE = /(ещё|еще|друг(ие|ое|их)|новые|больше|այլ|ուրիշ|էլի|更多|其他|别的|另外|再来|再推荐|المزيد|أخرى|غيرها|أكثر|اقتراحات جديدة)/i;
 function parseRefillAsk(message) {
@@ -336,4 +377,4 @@ function stripGeoTokens(query, geoTokens = []) {
 }
 
 module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
-    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
+    parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

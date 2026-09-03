@@ -752,7 +752,7 @@ function parseCardsTail(tail, count) {
  * made structural: null = "not listed", point inward (the card's More button),
  * never outward to Google.
  */
-function buildToolAnswerMessages({ message, langName = 'English', history = [], preferences = null }) {
+function buildToolAnswerMessages({ message, langName = 'English', history = [], preferences = null, aboutPlace = null }) {
     return [
         {
             role: 'system',
@@ -762,7 +762,10 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
-              + '- A null field means the detail is not listed: say so briefly and point to the place\'s card — tap More for website, phone, hours and directions.\n'
+              + (aboutPlace ? '- The traveler\'s "it" refers to ' + aboutPlace + ' — answer about that place.\n' : '')
+              // Ghost cards (QA 2026-09-04): this reply renders WITHOUT cards
+              // (places+0), yet answers kept saying "tap More on its card".
+              + '- A null field means the detail is not listed in the verified data: say so briefly. This reply shows NO cards — never tell the traveler to tap More or mention "its card".\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
               + '- Never guess or invent details. 1–3 sentences, natural prose.\n'
               // Trailing bleed (live 2026-08-30, twice): tool answers kept
