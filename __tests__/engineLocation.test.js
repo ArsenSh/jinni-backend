@@ -106,6 +106,22 @@ describe('whereAmI — cheapest source first', () => {
         });
         expect(r).toMatchObject({ source: 'cache', lat: 30.6495 });
     });
+    test('a FAR gazetteer namesake defers to the corpus ("Cascade" -> Seychelles, live 2026-09-04)', async () => {
+        const seychelles = { lat: -4.669, lng: 55.500, name: 'Cascade' };
+        const yerevanRow = { name: 'Cascade Complex', details: { geometry: { location: { lat: 40.1904, lng: 44.5152 } } } };
+        const r = await resolveStatedLocation('Cascade',
+            { near: { lat: 40.2016, lng: 44.5321 } },
+            { gazetteer: { lookupPlace: async () => seychelles }, placeCache: async () => [yerevanRow] });
+        expect(r.source).toBe('cache');
+        expect(r.lat).toBeCloseTo(40.1904, 3);
+    });
+    test('a far gazetteer hit still wins when NOTHING nearer knows the name', async () => {
+        const r = await resolveStatedLocation('Cascade',
+            { near: { lat: 40.2016, lng: 44.5321 } },
+            { gazetteer: { lookupPlace: async () => ({ lat: -4.669, lng: 55.5, name: 'Cascade' }) },
+              placeCache: async () => [] });
+        expect(r).toMatchObject({ source: 'gazetteer', lat: -4.669 });
+    });
     test('a broken tier never throws', async () => {
         const r = await resolveStatedLocation('X Place', {}, {
             gazetteer: { lookupPlace: async () => { throw new Error('db down'); } },

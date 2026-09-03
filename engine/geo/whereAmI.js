@@ -60,11 +60,28 @@ async function resolveStatedLocation(name, { sessionCards = [], near = null } = 
 
     // 2. The gazetteer — catches "I'm in Dilijan" for free. It holds
     //    settlements only, so a monastery or a lake misses here by design.
+    //    A hit ABSURDLY far from the traveler's GPS is almost always the
+    //    wrong namesake, so it only wins as the LAST resort: "near Cascade"
+    //    from Yerevan resolved to Cascade, SEYCHELLES — 5,115 km away — and
+    //    poisoned the session centre for the following turns (live
+    //    2026-09-04). The nearer tiers (own corpus by nearest match, Google
+    //    with a location bias) get their chance first.
+    let farGazetteerHit = null;
     try {
         const gz = deps.gazetteer === null ? null : (deps.gazetteer || require('./gazetteer'));
         if (gz) {
             const hit = await gz.lookupPlace(wanted, { near });
-            if (hit) return _warnIfFar({ lat: hit.lat, lng: hit.lng, name: hit.name, source: 'gazetteer' }, near);
+            if (hit) {
+                const r = { lat: hit.lat, lng: hit.lng, name: hit.name, source: 'gazetteer' };
+                const km = (near && Number.isFinite(near.lat) && Number.isFinite(near.lng))
+                    ? haversineKm(near.lat, near.lng, r.lat, r.lng) : null;
+                if (km != null && km > FAR_FROM_GPS_KM) {
+                    farGazetteerHit = r;
+                    console.log(`[whereAmI] gazetteer "${r.name}" is ${Math.round(km)}km away — deferring to nearer sources`);
+                } else {
+                    return r;
+                }
+            }
         }
     } catch { /* fail-open to the next tier */ }
 
@@ -113,6 +130,10 @@ async function resolveStatedLocation(name, { sessionCards = [], near = null } = 
             }
         }
     } catch { /* fall through */ }
+
+    // Nothing nearer knew the name — the far gazetteer hit may be a genuine
+    // ask about another country. Accept it last, with the namesake warning.
+    if (farGazetteerHit) return _warnIfFar(farGazetteerHit, near);
 
     return null;
 }

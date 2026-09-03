@@ -584,7 +584,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         const _referential = (intent.places || []).length === 0
             && (message.trim().split(/\s+/).length <= 6
                 || /\b(it|there|that|this|one|them|туда|там|это|его|её|այնտեղ|այն)\b/i.test(msgLower));
-        if (!namedCard && intent.isTravel && !deckAsk && _referential) {
+        // "Okay, plan the trip again." carried "Lake Sevan" as a named card
+        // into the tool loop, which refused (live 2026-09-04) — a redo ask
+        // wants a NEW DECK, not facts about one place.
+        const _redoAsk = /\b(again|anew|re-?plan|заново|ещ[её] раз|նորից)\b/i.test(msgLower);
+        if (!namedCard && intent.isTravel && !deckAsk && _referential && !_redoAsk) {
             const userTurns = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
             const prev = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : null;
             if (prev) {
