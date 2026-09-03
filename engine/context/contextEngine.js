@@ -151,13 +151,28 @@ function annotateOpenNow(places, ctx) {
  * planned for next week never filters. Unknown hours are exempt by
  * construction (null ≠ false) — outdoor viewpoints and unfilled validator
  * entries survive because they carry NO hours, not because of a category pass.
- * Policy (tightened 2026-08-22 after the live test carded a KNOWN-closed
- * theater on a tonight ask): everything droppable EXCEPT
- *  - hotels: front desks run 24h; hours data on hotels is noise;
- *  - events: carry their OWN dates — the event pipeline owns their time logic. */
-const _NEVER_DROP_WHEN_CLOSED = new Set(['hotels', 'events']);
+ * Policy history:
+ *  - Tightened 2026-08-22 (a KNOWN-closed theater carded on a tonight ask):
+ *    everything droppable except hotels (front desks run 24h) and events
+ *    (they carry their own dates).
+ *  - Inverted to an allowlist 2026-09-03, after that rule spent a whole night
+ *    silently deleting the founder's own curated destination. Noah's Garden
+ *    carries staff-entered opening hours; every test ran at 23:00-04:30; so
+ *    the one row with HONEST hours was dropped as closed on every single
+ *    turn, while Google rows with no hours at all sailed through — the more
+ *    data staff enter, the less visible their places become at night, which
+ *    is a tax on exactly the data the moat is made of. And "what should I
+ *    visit next" is not a promise to walk through a door this minute.
+ *
+ * Drop known-closed only where arriving at a closed door is the whole
+ * failure: food and drink, shops, ticketed activities (the 2026-08-22
+ * theater stays covered — theaters card under activities). Sightseeing —
+ * historical, photo spots, hidden gems, and the category-less browse — keeps
+ * closed rows; they are annotated _openNow=false, so the narrator can say
+ * "opens at 10:00" instead of the deck pretending the place does not exist. */
+const _DROP_WHEN_CLOSED = new Set(['restaurants', 'shopping', 'activities']);
 function shouldDropWhenClosed(category) {
-    return !_NEVER_DROP_WHEN_CLOSED.has(String(category || '').toLowerCase());
+    return _DROP_WHEN_CLOSED.has(String(category || '').toLowerCase());
 }
 
 /* Business/Destination hours use a day-name schedule
