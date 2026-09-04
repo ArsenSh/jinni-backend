@@ -290,3 +290,20 @@ describe('cross-script + qualifier fixes (live 2026-09-05)', () => {
         expect(out.name).toBe("Yasaman Yerevan's Restaurant");
     });
 });
+
+describe('pricing confidence rides provenance (founder 2026-09-05)', () => {
+    const base = { name: 'P', place_id: 'dest_p', geometry: { location: { lat: 40, lng: 44 } } };
+    test('business price is plain; destination price is hedged', async () => {
+        const biz = makeExecutors({}, { ownedLookup: async () => ({ ...base, _owned: 'business',
+            _pricing: { min: 10, max: 20, currency: 'USD' } }), lookup: async () => null });
+        expect((await biz.get_place_details({ name: 'Pobeda' })).price).toMatch(/set by the venue/);
+        const dest = makeExecutors({}, { ownedLookup: async () => ({ ...base, _owned: 'destination',
+            _pricing: { average: 5000, currency: 'AMD' } }), lookup: async () => null });
+        expect((await dest.get_place_details({ name: 'Pobeda' })).price).toMatch(/staff estimate/);
+    });
+    test('a lonely default isFree with no numbers stays silent', async () => {
+        const ex = makeExecutors({}, { ownedLookup: async () => ({ ...base, _owned: 'destination',
+            _pricing: { isFree: true, min: null, max: null, average: null } }), lookup: async () => null });
+        expect((await ex.get_place_details({ name: 'Pobeda' })).price).toBe(null);
+    });
+});

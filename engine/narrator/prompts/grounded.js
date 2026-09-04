@@ -800,6 +800,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               // named ANYTHING ("WAKEBOARDING", "Paragliding" are real listed
               // places here).
               + '- ALWAYS call get_place_details for whatever the traveler named BEFORE saying you lack data — even when the name looks like an activity or a common word, a listed place may carry exactly that name. Only after the tool returns nothing may you say it is not in the verified data.\n'
+              + '- The price field carries its own confidence instruction — follow it exactly: venue-set prices are stated plainly, staff estimates are hedged as unverified approximations. No price field means prices are not listed: say so, and NEVER invent an amount.\n'
               + (aboutPlace ? '- The traveler\'s "it" refers to ' + aboutPlace + ' — answer about that place.\n' : '')
               // The Kamancha turn re-fetched and re-described Mount Hatis
               // unasked (live 2026-09-04) — the loop follows the history's

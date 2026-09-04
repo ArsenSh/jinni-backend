@@ -143,6 +143,7 @@ function makeExecutors(ctx = {}, deps = {}) {
                 rating: d.rating || d.engagement?.rating || null,
                 _weekdayText: _hoursText(d.openingHours),
                 _bestTime: d.bestTimeToVisit || null,
+                _pricing: d.pricing || null,
                 place_id: d.placeId || (source === 'destination' ? `dest_${d._id}` : null),
                 geometry: { location: { lat: d.location.coordinates.lat, lng: d.location.coordinates.lng } },
                 image: typeof img === 'string' ? img : (img && typeof img.url === 'string' ? img.url : null),
@@ -217,6 +218,25 @@ function makeExecutors(ctx = {}, deps = {}) {
                     rating: owned.rating,
                     hours: owned._weekdayText,
                     best_time_to_visit: owned._bestTime || null,
+                    // Pricing speaks with the confidence of its SOURCE
+                    // (founder 2026-09-05): a business owner sets their own
+                    // prices → stated plainly; a staff estimate on a
+                    // destination → hedged ("approximately, not verified").
+                    // Destination isFree DEFAULTS to true, so a bare isFree
+                    // with no numbers is a default, not a fact — silence.
+                    price: (() => {
+                        const p = owned._pricing;
+                        if (!p) return null;
+                        const cur = p.currency || 'USD';
+                        const range = (p.min != null && p.max != null) ? `${p.min}-${p.max} ${cur}`
+                            : (p.average != null ? `around ${p.average} ${cur}`
+                                : (p.min != null ? `from ${p.min} ${cur}`
+                                    : (p.max != null ? `up to ${p.max} ${cur}` : null)));
+                        if (!range) return null;
+                        return owned._owned === 'business'
+                            ? `${range} per person — set by the venue itself, state it plainly`
+                            : `approximately ${range} — a staff estimate, NOT venue-verified: hedge it ("I couldn't verify exact prices, but approximately…")`;
+                    })(),
                     placeId: owned.place_id,
                 };
             }
