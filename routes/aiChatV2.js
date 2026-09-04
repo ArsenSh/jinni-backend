@@ -1140,21 +1140,29 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
         } else if (isItineraryAsk(message)) {
-            // ── ITINERARY-SHAPED ASK (founder scope §10: itinerary STAYS on
-            //    the quick action). "Can you plan 3 day itinerary?" used to
-            //    fall into the deck path — q="plan itinerary", lex=0 — and
-            //    served coworking spaces (live 2026-09-05). Deterministic
-            //    hand-off, no deck, no junk. ──
+            // ── ITINERARY-SHAPED ASK → the CLARIFIER, v1's exact contract
+            //    (founder 2026-09-05: "it should had triggered itinerary").
+            //    "Can you plan 3 day itinerary?" used to fall into the deck
+            //    path — q="plan itinerary", lex=0 — and served coworking
+            //    spaces. The itinerary is NEVER built from a chat sentence:
+            //    the emitted itinerary_clarifier event opens the same
+            //    sequential days→hotel clarifier the quick-action button
+            //    uses (one build path, one usage gate, §10 intact),
+            //    prefilled with the days the message already answered. The
+            //    clarifier owns the 7-day cap; the prefill clamps to match. ──
+            const _dm = /(\d{1,2})\s*[- ]?(?:day|days|дня|дней|день|օր)/i.exec(String(message));
+            const prefillDays = _dm ? Math.min(7, Math.max(1, parseInt(_dm[1], 10))) : null;
             const IT_LINES = {
-                en: 'A full day-by-day plan is what the Itinerary tool is for — tap the Itinerary button, tell it your days, hotel and budget, and I\'ll line the whole trip up there. Here in chat, ask me for any single place, route or evening and I\'ll bring real options.',
-                ru: 'Полный план по дням строит инструмент «Маршрут» — нажмите кнопку Itinerary, укажите дни, отель и бюджет, и я соберу всю поездку там. А здесь в чате спросите про любое место, маршрут или вечер — подберу реальные варианты.',
-                hy: 'Օրըստօրե ամբողջական ծրագիրը կազմում է Itinerary գործիքը — սեղմեք Itinerary կոճակը, նշեք օրերը, հյուրանոցը և բյուջեն, և ես այնտեղ կկազմեմ ամբողջ ուղևորությունը։ Իսկ այստեղ՝ չաթում, հարցրեք ցանկացած վայրի կամ երթուղու մասին։',
+                en: 'Great — let\'s plan your trip. Answer the quick questions below and I\'ll build the day-by-day itinerary.',
+                ru: 'Отлично — давайте спланируем поездку. Ответьте на пару вопросов ниже, и я соберу маршрут по дням.',
+                hy: 'Հիանալի է — եկեք պլանավորենք ձեր ուղևորությունը։ Պատասխանեք ստորև հարցերին, և ես կկազմեմ օրըստօրե երթուղին։',
             };
             reply = IT_LINES[String(intent._userLanguage || 'en').slice(0, 2)] || IT_LINES.en;
+            send(res, { type: 'itinerary_clarifier', prefill: { daysCount: prefillDays, destination: null } });
             send(res, { type: 'token', content: reply });
-            meta.answerType = 'itinerary_redirect';
+            meta.answerType = 'itinerary_clarifier';
             stats.path = 'chitchat';
-            console.log('[v2] itinerary-shaped ask -> hand-off to the Itinerary tool (deterministic, $0, no deck)');
+            console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ') — same build path as the quick action');
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService
