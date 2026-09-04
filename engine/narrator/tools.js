@@ -57,7 +57,71 @@ const FIND_FLIGHTS_TOOL = {
  * @param {object} ctx  { center, sessionPlaces: [{name, placeId}], requestId }
  * @param {object} [deps]  { lookup } — injected in tests; defaults to v1's shared resolver
  */
+/* Day-name schedule → human weekday lines for the tool answer. */
+function _hoursText(oh) {
+    if (!oh) return null;
+    if (oh.is24Hours) return ['Open 24 hours daily'];
+    const rows = (Array.isArray(oh.days) ? oh.days : [])
+        .filter(r => r?.day)
+        .map(r => r.closed ? `${r.day}: Closed`
+            : (r.open && r.close ? `${r.day}: ${r.open} – ${r.close}` : null))
+        .filter(Boolean);
+    return rows.length ? rows : null;
+}
+
 function makeExecutors(ctx = {}, deps = {}) {
+    // ── OWNED DATA FIRST (Arsen 2026-09-04: "user may ask [about a] thing
+    //    which is in destination/business databases — before making google
+    //    call"). Kamancha's tool answer carried the PlaceCache/Google
+    //    identity while a validator-curated Destination row with its own
+    //    image existed. The moat is Destination/Business — they answer
+    //    first; PlaceCache/Google only when we own nothing by that name.
+    //    Fail-open everywhere; jest (no mongoose connection) skips to the
+    //    injected lookup untouched. ──
+    const ownedLookup = deps.ownedLookup || (async (nm, near) => {
+        try {
+            const mongoose = require('mongoose');
+            if (mongoose.connection?.readyState !== 1) return null;
+            const esc = String(nm).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (esc.length < 3) return null;
+            const re = new RegExp(`^${esc}$`, 'i');
+            const [dests, bizs] = await Promise.all([
+                require('../../models/Destination').find({ name: re }).limit(4).lean(),
+                require('../../models/Business').find({ name: re }).limit(4).lean(),
+            ]);
+            const rows = [
+                ...bizs.map(d => ({ d, source: 'business' })),
+                ...dests.map(d => ({ d, source: 'destination' })),
+            ].filter(x => Number.isFinite(x.d?.location?.coordinates?.lat)
+                       && Number.isFinite(x.d?.location?.coordinates?.lng));
+            if (!rows.length) return null;
+            // Namesakes: nearest to the traveler wins (the Republic-Square-
+            // in-Texas lesson, applied here too).
+            let best = rows[0];
+            if (near && Number.isFinite(near.lat) && rows.length > 1) {
+                const { haversineKm } = require('../utils/geo');
+                best = rows.reduce((a, b) => {
+                    const ka = haversineKm(near.lat, near.lng, a.d.location.coordinates.lat, a.d.location.coordinates.lng);
+                    const kb = haversineKm(near.lat, near.lng, b.d.location.coordinates.lat, b.d.location.coordinates.lng);
+                    return ka <= kb ? a : b;
+                });
+            }
+            const { d, source } = best;
+            const img = Array.isArray(d.images) ? d.images[0] : null;
+            return {
+                name: d.name,
+                formatted_address: d.location?.address || null,
+                formatted_phone_number: d.contact?.phone || null,
+                website: d.contact?.website || null,
+                rating: d.rating || d.engagement?.rating || null,
+                _weekdayText: _hoursText(d.openingHours),
+                place_id: d.placeId || (source === 'destination' ? `dest_${d._id}` : null),
+                geometry: { location: { lat: d.location.coordinates.lat, lng: d.location.coordinates.lng } },
+                image: typeof img === 'string' ? img : (img && typeof img.url === 'string' ? img.url : null),
+                _owned: source,
+            };
+        } catch { return null; }
+    });
     const lookup = deps.lookup || (async (nameOrId, knownPlaceId) => {
         // Lazy: pulls v1's shared export only at execution time (jest never loads it).
         const { getCachedPlaceDetails } = require('../../routes/aiRoutes').shared;
@@ -91,6 +155,20 @@ function makeExecutors(ctx = {}, deps = {}) {
                 known = cards
                     .filter(p => messageNamesPlace(nameLower, p.name))
                     .sort((a, b) => _sigTokens(b.name || '').length - _sigTokens(a.name || '').length)[0];
+            }
+            // Our own validated rows answer before PlaceCache/Google.
+            const owned = await ownedLookup(name, ctx.center || null);
+            if (owned) {
+                try { if (typeof ctx.onPlace === 'function') ctx.onPlace(owned); } catch { /* never breaks the tool */ }
+                return {
+                    name: owned.name,
+                    address: owned.formatted_address,
+                    phone: owned.formatted_phone_number,
+                    website: owned.website,
+                    rating: owned.rating,
+                    hours: owned._weekdayText,
+                    placeId: owned.place_id,
+                };
             }
             let d;
             try {

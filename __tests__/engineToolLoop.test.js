@@ -231,3 +231,32 @@ describe('makeExecutors: onPlace side-channel (first-mention card)', () => {
         expect(out.name).toBe('A');
     });
 });
+
+describe('get_place_details: OWNED rows answer before PlaceCache/Google', () => {
+    test('a Destination hit short-circuits the cache/google lookup', async () => {
+        let googleCalled = false;
+        const owned = { name: 'Kamancha', place_id: 'dest_abc', rating: 4.2,
+            formatted_address: '23 Tumanyan St', formatted_phone_number: '095 711700',
+            website: 'kamancharest.com', _weekdayText: ['Monday: 10:00 – 00:00'],
+            geometry: { location: { lat: 40.18, lng: 44.51 } }, image: '/api/ai/place-image/dest_abc/0', _owned: 'destination' };
+        const seen = [];
+        const ex = makeExecutors({ onPlace: (d) => seen.push(d) }, {
+            ownedLookup: async () => owned,
+            lookup: async () => { googleCalled = true; return { name: 'x' }; },
+        });
+        const out = await ex.get_place_details({ name: 'Kamancha' });
+        expect(googleCalled).toBe(false);
+        expect(out.placeId).toBe('dest_abc');
+        expect(out.hours).toEqual(['Monday: 10:00 – 00:00']);
+        expect(seen[0].image).toBe('/api/ai/place-image/dest_abc/0');
+    });
+    test('no owned row -> falls through to the normal lookup', async () => {
+        const ex = makeExecutors({}, {
+            ownedLookup: async () => null,
+            lookup: async () => ({ name: 'Cachey', place_id: 'p2', rating: 4.0 }),
+        });
+        const out = await ex.get_place_details({ name: 'Cachey' });
+        expect(out.name).toBe('Cachey');
+        expect(out.placeId).toBe('p2');
+    });
+});

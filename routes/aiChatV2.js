@@ -1171,7 +1171,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         geometry: { lat: _doc.geometry.location.lat, lng: _doc.geometry.location.lng },
                         address: _doc.formatted_address || null, rating: _doc.rating || null,
                         website: _doc.website || null, phone: _doc.formatted_phone_number || null,
-                        types: _doc.types || [], source: 'cache',
+                        // Owned rows carry their curator's image — it beats
+                        // the placeId-derived PlaceCache URL (founder catch:
+                        // Kamancha's card showed the wrong photo).
+                        image: _doc.image || null,
+                        types: _doc.types || [], source: _doc._owned || 'cache',
                     }, 0, { action: intent.action || 'general' })];
                     console.log(`[v2] first-mention card attached: "${_doc.name}"`);
                 }
