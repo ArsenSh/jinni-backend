@@ -307,3 +307,16 @@ describe('pricing confidence rides provenance (founder 2026-09-05)', () => {
         expect((await ex.get_place_details({ name: 'Pobeda' })).price).toBe(null);
     });
 });
+
+describe('ownedNameMatches: transliteration is not 1:1 (kh/gh, live 2026-09-05)', () => {
+    const { ownedNameMatches } = require('../engine/narrator/tools');
+    const { transliterate } = require('../engine/places/matching');
+    const toks = (s) => transliterate(s).split(/[^a-z0-9]+/).filter(t => t.length >= 3);
+    test('RU tsaKHkadzor matches stored TsaGHkadzor within one edit', () => {
+        expect(ownedNameMatches(toks('Ясаман Цахкадзор'), "Yasaman Tsaghkadzor's Restaurant")).toBe(true);
+    });
+    test('a wrong place is still rejected', () => {
+        expect(ownedNameMatches(toks('Ясаман Цахкадзор'), 'Geghard')).toBe(false);
+        expect(ownedNameMatches(toks('Ясаман'), 'Matenadaran')).toBe(false);
+    });
+});

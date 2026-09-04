@@ -139,4 +139,4 @@ function namesPlausiblyMatch(requested, resolved) {
     return a.some(x => b.some(y => _tokensSimilar(x, y)));
 }
 
-module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, looseTokenMatch, _sigTokens, _scriptOf, transliterate };
+module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, looseTokenMatch, _sigTokens, _scriptOf, transliterate, _tokensSimilar };

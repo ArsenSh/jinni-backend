@@ -5,7 +5,7 @@
 // tool returns; a missing field comes back null and MUST be described as
 // "not listed", never guessed (the round-61 honesty rules, now structural).
 
-const { normalizePlaceName, messageNamesPlace, _sigTokens, namesPlausiblyMatch, transliterate } = require('../places/matching');
+const { normalizePlaceName, messageNamesPlace, _sigTokens, namesPlausiblyMatch, transliterate, _tokensSimilar } = require('../places/matching');
 
 const PLACE_DETAILS_TOOL = {
     type: 'function',
@@ -59,6 +59,18 @@ const FIND_FLIGHTS_TOOL = {
  * @param {object} ctx  { center, sessionPlaces: [{name, placeId}], requestId }
  * @param {object} [deps]  { lookup } — injected in tests; defaults to v1's shared resolver
  */
+/* Every significant token of the asked name must match SOME token of the
+ * row name — with the repo's 1-edit tolerance for long tokens, because
+ * transliteration is not 1:1: Russian х → "kh" while the stored spelling is
+ * "gh" ("Цахкадзор" → tsaKHkadzor vs TsaGHkadzor missed the owned row and
+ * the reply denied the branch exists, live 2026-09-05). */
+function ownedNameMatches(askTokens, rowName) {
+    const rowToks = String(rowName || '').toLowerCase().normalize('NFKD')
+        .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return askTokens.length > 0
+        && askTokens.every(t => rowToks.some(rt => _tokensSimilar(t, rt)));
+}
+
 /* Day-name schedule → human weekday lines for the tool answer. */
 function _hoursText(oh) {
     if (!oh) return null;
@@ -113,12 +125,22 @@ function makeExecutors(ctx = {}, deps = {}) {
                     .filter(t => t.length >= 3
                         && !['the', 'and', 'restaurant', 'restoran', 'cafe', 'bar', 'hotel', 'club', 'lounge', 'ресторан', 'кафе'].includes(t));
                 if (askTokens.length) {
-                    const first = askTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    const loose = await _fetch({ name: new RegExp(first, 'i') });
-                    rows = loose.filter(x => {
-                        const rn = String(x.d.name).toLowerCase();
-                        return askTokens.every(t => rn.includes(t));
-                    });
+                    // Anchor query: try each token, then its 4- and 3-char
+                    // prefixes — a fuzzy token ("tsakhkadzor") still needs
+                    // SOME substring to fetch candidates by; the tolerant
+                    // filter below does the real matching.
+                    const anchors = [];
+                    for (const tk of askTokens) {
+                        for (const a of [tk, tk.slice(0, 4), tk.slice(0, 3)]) {
+                            if (a.length >= 3 && !anchors.includes(a)) anchors.push(a);
+                        }
+                    }
+                    let loose = [];
+                    for (const a of anchors) {
+                        loose = await _fetch({ name: new RegExp(a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') });
+                        if (loose.length && (rows = loose.filter(x => ownedNameMatches(askTokens, x.d.name))).length) break;
+                        rows = [];
+                    }
                 }
             }
             if (!rows.length) return null;
@@ -287,4 +309,4 @@ function makeExecutors(ctx = {}, deps = {}) {
     };
 }
 
-module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors };
+module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors, ownedNameMatches };
