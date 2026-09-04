@@ -794,6 +794,12 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
               + NO_REMEMBERED_EVENTS
               + 'The traveler asks about a specific place. Use get_place_details to fetch its verified data, then answer from THAT data only.\n'
+              // "Tell me about WAKEBOARDING" got zero tool calls and a false
+              // "no verified data" (live 2026-09-05) — the name looked like a
+              // generic activity word, so the model never checked. Venues are
+              // named ANYTHING ("WAKEBOARDING", "Paragliding" are real listed
+              // places here).
+              + '- ALWAYS call get_place_details for whatever the traveler named BEFORE saying you lack data — even when the name looks like an activity or a common word, a listed place may carry exactly that name. Only after the tool returns nothing may you say it is not in the verified data.\n'
               + (aboutPlace ? '- The traveler\'s "it" refers to ' + aboutPlace + ' — answer about that place.\n' : '')
               // The Kamancha turn re-fetched and re-described Mount Hatis
               // unasked (live 2026-09-04) — the loop follows the history's

@@ -45,7 +45,11 @@ const chatTurnSchema = new mongoose.Schema({
         // 'no_web' added 2026-08-30: the honest no-web-search branch shipped
         // without its enum value — every such turn failed validation and was
         // silently missing from the telemetry it exists to feed.
-        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'no_web', 'error'],
+        // Synced against every stats.path aiChatV2 sets (grep before adding a
+        // branch!) — 'currency' AND 'map' were both missing (found live
+        // 2026-09-05: currency turns failed validation; map turns had been
+        // silently absent from telemetry all along).
+        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'no_web', 'map', 'currency', 'error'],
         index: true,
     },
 
