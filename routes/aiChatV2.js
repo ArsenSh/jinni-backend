@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -1139,6 +1139,22 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
+        } else if (isItineraryAsk(message)) {
+            // ── ITINERARY-SHAPED ASK (founder scope §10: itinerary STAYS on
+            //    the quick action). "Can you plan 3 day itinerary?" used to
+            //    fall into the deck path — q="plan itinerary", lex=0 — and
+            //    served coworking spaces (live 2026-09-05). Deterministic
+            //    hand-off, no deck, no junk. ──
+            const IT_LINES = {
+                en: 'A full day-by-day plan is what the Itinerary tool is for — tap the Itinerary button, tell it your days, hotel and budget, and I\'ll line the whole trip up there. Here in chat, ask me for any single place, route or evening and I\'ll bring real options.',
+                ru: 'Полный план по дням строит инструмент «Маршрут» — нажмите кнопку Itinerary, укажите дни, отель и бюджет, и я соберу всю поездку там. А здесь в чате спросите про любое место, маршрут или вечер — подберу реальные варианты.',
+                hy: 'Օրըստօրե ամբողջական ծրագիրը կազմում է Itinerary գործիքը — սեղմեք Itinerary կոճակը, նշեք օրերը, հյուրանոցը և բյուջեն, և ես այնտեղ կկազմեմ ամբողջ ուղևորությունը։ Իսկ այստեղ՝ չաթում, հարցրեք ցանկացած վայրի կամ երթուղու մասին։',
+            };
+            reply = IT_LINES[String(intent._userLanguage || 'en').slice(0, 2)] || IT_LINES.en;
+            send(res, { type: 'token', content: reply });
+            meta.answerType = 'itinerary_redirect';
+            stats.path = 'chitchat';
+            console.log('[v2] itinerary-shaped ask -> hand-off to the Itinerary tool (deterministic, $0, no deck)');
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService

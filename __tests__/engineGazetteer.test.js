@@ -656,3 +656,17 @@ describe('season window (founder feature 2026-09-05): advice, never a drop', () 
         expect(inSeason(null, 1)).toBe(true);
     });
 });
+
+describe('itinerary-shaped asks are deterministic (founder 2026-09-05)', () => {
+    const { isItineraryAsk } = require('../engine/retrieval/tuning');
+    test('plan-N-days shapes trigger', () => {
+        for (const m of ['Can you plan 3 day itinerary?', 'make me a 2-day trip',
+                         'составь план на 3 дня', 'my hotel is X, budget 500, I want a 3 day trip plan'])
+            expect(isItineraryAsk(m)).toBe(true);
+    });
+    test('ordinary plans and routes do not', () => {
+        for (const m of ['plan my evening', 'what can I do tomorrow?', 'route to Kamancha',
+                         'plan the trip again'])
+            expect(isItineraryAsk(m)).toBe(false);
+    });
+});

@@ -387,6 +387,17 @@ function parseCurrencyConvert(message) {
     return { amount, from, to: target };
 }
 
+/* "Can you plan 3 day itinerary?" fell into the deck path (q="plan
+ * itinerary", lex=0) and served coworking spaces (live 2026-09-05). A
+ * day-by-day plan is the ITINERARY tool's job (founder scope §10: itinerary
+ * stays on quick actions) — the shape is deterministic. */
+const _IT_LATIN = /\bitinerar|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b/i;
+const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\b\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)/i;
+function isItineraryAsk(message) {
+    const m = String(message || '');
+    return _IT_LATIN.test(m) || _IT_NONLATIN.test(m);
+}
+
 /* A browse-marked message wants a DECK — the junk-question brake must never
  * swallow "what can I do", "best bars", "recommend something". */
 function isBrowseAsk(message) { const m = String(message || ''); return BROWSE_MARK_RE.test(m) || BROWSE_MARK_NONLATIN_RE.test(m); }
@@ -460,5 +471,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
