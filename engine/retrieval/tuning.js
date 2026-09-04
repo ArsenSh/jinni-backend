@@ -336,6 +336,27 @@ const ENTITY_Q_NONLATIN_RE = /^\s*(?:расскажи(?:те)?(?: мне)? (?:о
 const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places|what (can|should|shall) (i|we) do|things to do|somewhere to go)\b/i;
 // \b is ASCII-only — Cyrillic/Armenian markers live boundary-free (repo lesson).
 const BROWSE_MARK_NONLATIN_RE = /(где можно|что.{0,12}(делать|посмотреть)|чем заняться|куда (сходить|пойти)|ինչ անել|ուր գնալ)/i;
+/* Destination.bestTimeToVisit ("June-August", free text from validators) —
+ * parsed leniently: month-name ranges, single months, season words. Anything
+ * unparseable returns null and stays NEUTRAL (unknown never ranks down —
+ * trust ladder). */
+const _MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const _SEASONS = { spring: [3, 5], summer: [6, 8], autumn: [9, 11], fall: [9, 11], winter: [12, 2] };
+function parseSeasonWindow(str) {
+    const s = String(str || '').toLowerCase().trim();
+    if (!s) return null;
+    const season = Object.keys(_SEASONS).find(k => s.includes(k));
+    if (season) return { start: _SEASONS[season][0], end: _SEASONS[season][1] };
+    const ms = [...s.matchAll(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*/g)].map(m => _MONTHS[m[1]]);
+    if (!ms.length) return null;
+    return { start: ms[0], end: ms.length > 1 ? ms[ms.length - 1] : ms[0] };
+}
+/* Dec–Feb wraps the year boundary. */
+function inSeason(w, month) {
+    if (!w || !month) return true;
+    return w.start <= w.end ? (month >= w.start && month <= w.end) : (month >= w.start || month <= w.end);
+}
+
 /* "How much is 20,000 AMD in USD?" was answered from MODEL MEMORY at
  * 385-400 AMD/$ while currencyService held the real 364 (live 2026-09-05) —
  * a no-numbers-from-memory violation. Parsed in code, computed from live
@@ -439,5 +460,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

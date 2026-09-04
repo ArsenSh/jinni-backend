@@ -204,6 +204,28 @@ async function findPlaces(params = {}, deps = {}) {
     //    when the caller asked (right-now intent). Unknown hours (null)
     //    always survive — the trust rule. ──
     if (timeContext) {
+        // ── Season awareness (founder 2026-09-05): bestTimeToVisit is
+        //    ADVICE, not closure — off-season candidates sink to the back of
+        //    the ordering and carry _offSeason for the narrator's caveat, but
+        //    are NEVER dropped (trust ladder: a June-August lake activity in
+        //    January still exists; it just must not lead the deck). Unknown/
+        //    unparseable windows stay neutral.
+        {
+            const { parseSeasonWindow, inSeason } = require('./tuning');
+            const month = Number(String(timeContext.localISO || '').slice(5, 7)) || null;
+            if (month) {
+                let off = 0;
+                for (const c of ordered) {
+                    const w = parseSeasonWindow(c.bestTime);
+                    c._offSeason = !!(w && !inSeason(w, month));
+                    if (c._offSeason) off++;
+                }
+                if (off && off < ordered.length) {
+                    ordered = [...ordered.filter(c => !c._offSeason), ...ordered.filter(c => c._offSeason)];
+                    console.log(`[retrieval] season: ${off} off-season candidate(s) sank (month=${month})`);
+                }
+            }
+        }
         annotateOpenNow(ordered, timeContext);
         if (enforceOpenNow && shouldDropWhenClosed(category)) {
             const before = ordered.length;

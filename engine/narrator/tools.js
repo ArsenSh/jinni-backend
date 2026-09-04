@@ -142,6 +142,7 @@ function makeExecutors(ctx = {}, deps = {}) {
                 website: d.contact?.website || null,
                 rating: d.rating || d.engagement?.rating || null,
                 _weekdayText: _hoursText(d.openingHours),
+                _bestTime: d.bestTimeToVisit || null,
                 place_id: d.placeId || (source === 'destination' ? `dest_${d._id}` : null),
                 geometry: { location: { lat: d.location.coordinates.lat, lng: d.location.coordinates.lng } },
                 image: typeof img === 'string' ? img : (img && typeof img.url === 'string' ? img.url : null),
@@ -215,6 +216,7 @@ function makeExecutors(ctx = {}, deps = {}) {
                     website: owned.website,
                     rating: owned.rating,
                     hours: owned._weekdayText,
+                    best_time_to_visit: owned._bestTime || null,
                     placeId: owned.place_id,
                 };
             }

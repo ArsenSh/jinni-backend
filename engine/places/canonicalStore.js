@@ -260,6 +260,9 @@ function dbDocToCandidate(d, source, center) {
         website: d.contact?.website || null,
         phone: d.contact?.phone || null,
         rating: d.rating || d.engagement?.rating || null,
+        // Curator's season window ("June-August") — advice for ranking +
+        // narration, never a drop (founder feature 2026-09-05).
+        bestTime: d.bestTimeToVisit || null,
         types: Array.isArray(d.type) ? d.type : [],
         primaryType: null,
         priceLevel: null,

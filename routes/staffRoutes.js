@@ -182,7 +182,13 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
             return res.json({ success: true, places: [], total: 0, totalPages: 0, noScope: true, counts: { visible: 0, hidden: 0, verified: 0 } });
         }
 
-        const and = [{ actions: { $in: EXPLORE_MOD_CATEGORIES } }];
+        // category=other (founder 2026-09-05): cache rows whose actions hold
+        // NONE of the moderated categories (whatever the AI decided at save
+        // time — 'attractions', legacy tags, or nothing) were invisible here
+        // while still living in the cache. 'other' surfaces exactly those.
+        const and = [category === 'other'
+            ? { actions: { $not: { $elemMatch: { $in: EXPLORE_MOD_CATEGORIES } } } }
+            : { actions: { $in: EXPLORE_MOD_CATEGORIES } }];
         if (scope.$or) and.push(scope);
         if (search) {
             and.push({ $or: [

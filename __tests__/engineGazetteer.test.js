@@ -636,3 +636,23 @@ describe('gazetteer: regionAt names the province', () => {
         expect(r).toMatchObject({ city: 'Ptghni', region: null });
     });
 });
+
+describe('season window (founder feature 2026-09-05): advice, never a drop', () => {
+    const { parseSeasonWindow, inSeason } = require('../engine/retrieval/tuning');
+    test('validator formats parse; garbage stays neutral', () => {
+        expect(parseSeasonWindow('June-August ')).toEqual({ start: 6, end: 8 });
+        expect(parseSeasonWindow('summer')).toEqual({ start: 6, end: 8 });
+        expect(parseSeasonWindow('Dec - Feb')).toEqual({ start: 12, end: 2 });
+        expect(parseSeasonWindow('whenever you like')).toBe(null);
+        expect(parseSeasonWindow('')).toBe(null);
+    });
+    test('winter wraps the year boundary', () => {
+        const w = parseSeasonWindow('winter');
+        expect(inSeason(w, 1)).toBe(true);
+        expect(inSeason(w, 12)).toBe(true);
+        expect(inSeason(w, 6)).toBe(false);
+    });
+    test('null window is always in season (unknown never ranks down)', () => {
+        expect(inSeason(null, 1)).toBe(true);
+    });
+});

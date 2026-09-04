@@ -28,6 +28,10 @@ function placeFactLine(p) {
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
+        // Curator's season window — SOURCED text. Off-season is a caveat the
+        // blurb must pass on, in-season a true angle it may use.
+        p._offSeason ? `OFF-SEASON now — best time to visit is ${String(p.bestTime).trim()}`
+            : (p.bestTime ? `best time to visit: ${String(p.bestTime).trim()}` : null),
         // Founder decision 2026-08-30: NEVER tell the model a place is
         // "verified by Jinni staff" — the phrase leaked into blurbs ("open
         // now and verified by Jinni staff") and reads as self-promotion.
