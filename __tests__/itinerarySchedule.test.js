@@ -13,7 +13,7 @@ const {
   PACE_SLOTS, HUNGER_LIMIT, mealStart, activityCapacity, projectedDayMinutes,
   isHeavyCategory, optimizeDayOrder, recomputeDayTimes,
   haversineKm, ratingScore, sanitizeSkeleton, extractJson, normalizeHours,
-  fillDaysRoundRobin, centroidOf, distTo,
+  fillDaysRoundRobin, centroidOf, distTo, decoratePhotoSpots,
 } = require('../routes/itineraryRoutes').__testables;
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -535,5 +535,63 @@ describe('haversineKm', () => {
     const d = haversineKm(40.1792, 44.4991, 40.7894, 43.8475);
     expect(d).toBeGreaterThan(85);
     expect(d).toBeLessThan(92);
+  });
+});
+
+/* ── photo-spot decoration (founder 2026-09-04) ──────────────────────────
+ * Photo spots must never anchor a day: they are attached to the composed
+ * route only where the detour is genuinely on the way, and never at the
+ * cost of pushing a meal later. */
+describe('decoratePhotoSpots', () => {
+  const start = { lat: 40.1776, lng: 44.5126 };            // Yerevan centre
+  // A compact, already-ordered day: cafe → sight → lunch → sight → dinner.
+  const makeDay = () => {
+    const day = { dayNumber: 1, slots: [
+      stop('cafe',        40.1780, 44.5130),
+      stop('historical',  40.1850, 44.5200),
+      stop('restaurants', 40.1860, 44.5210),
+      stop('museum',      40.1900, 44.5300),
+      stop('restaurants', 40.1910, 44.5310),
+    ]};
+    recomputeDayTimes(day, start);
+    return day;
+  };
+  const spot = (latitude, longitude) => ({
+    name: `photo-${++seq}`, latitude, longitude, rating: 4.5,
+  });
+
+  test('attaches an on-route spot between its neighbours', () => {
+    const day = makeDay();
+    // Right between the historical sight and the museum — ~zero detour.
+    const n = decoratePhotoSpots([day], [spot(40.1875, 44.5250)], { start });
+    expect(n).toBe(1);
+    const cats = day.slots.map(s => s.category);
+    expect(cats).toEqual(['cafe', 'historical', 'restaurants', 'photo_spots', 'museum', 'restaurants']);
+    expect(day.slots[3].time).toBeTruthy();                // it got a real time
+  });
+
+  test('refuses a far spot outright', () => {
+    const day = makeDay();
+    // ~40 km away (Sevan direction): would previously have been a valid stop.
+    const n = decoratePhotoSpots([day], [spot(40.55, 44.95)], { start });
+    expect(n).toBe(0);
+    expect(day.slots.length).toBe(5);
+  });
+
+  test('never pushes a meal later', () => {
+    const day = makeDay();
+    const mealsBefore = day.slots.filter(s => s.category === 'restaurants').map(s => s.time);
+    decoratePhotoSpots([day], [spot(40.1875, 44.5250), spot(40.1820, 44.5170)], { start });
+    const mealsAfter = day.slots.filter(s => s.category === 'restaurants').map(s => s.time);
+    mealsBefore.forEach((t, i) => expect(mealsAfter[i] <= t || !t).toBeTruthy());
+  });
+
+  test('caps decoration per day', () => {
+    const day = makeDay();
+    const spots = [
+      spot(40.1875, 44.5250), spot(40.1820, 44.5170), spot(40.1855, 44.5205),
+    ];
+    const n = decoratePhotoSpots([day], spots, { start, maxPerDay: 2 });
+    expect(n).toBeLessThanOrEqual(2);
   });
 });

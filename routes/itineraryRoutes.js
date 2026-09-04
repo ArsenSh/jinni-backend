@@ -550,6 +550,57 @@ function recomputeDayTimes(day, start, nearby = false, startMin = DAY_START_MIN)
 }
 
 /**
+ * Photo-spot decoration (founder 2026-09-04): photo spots are attached to an
+ * already-composed route rather than composed into it — nobody plans a day
+ * around a photo op, but everyone takes the photo 300m from lunch. For each
+ * spot, find the gap between consecutive routed stops where the walking
+ * detour d(A,P)+d(P,B)-d(A,B) is smallest; attach only when that detour is
+ * genuinely on the way (DECOR_KM), cap it per day, and REVERT if retiming the
+ * day pushes any meal later — meals are the day's anchors, so an unmoved meal
+ * is the proof the decoration consumed only slack. Times land correctly for
+ * free because insertion is positional on an already-ordered route.
+ */
+function decoratePhotoSpots(days, spots, { start, nearby = false, startMin = DAY_START_MIN, maxPerDay = 2 } = {}) {
+  if (!spots?.length) return 0;
+  const DECOR_KM = nearby ? 1.2 : 2;
+  const pt = (s) => ({ lat: s.place.latitude, lng: s.place.longitude });
+  const dk = (a, b) => haversineKm(a.lat, a.lng, b.lat, b.lng);
+  const pool = spots.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
+  let attached = 0;
+  for (const day of days) {
+    for (let n = 0; n < maxPerDay && pool.length; n++) {
+      const seq = day.slots.filter(sl => sl.status === 'enriched' && Number.isFinite(sl.place?.latitude));
+      if (seq.length < 2) break;
+      let best = null;
+      for (let i = 0; i < pool.length; i++) {
+        const P = { lat: pool[i].latitude, lng: pool[i].longitude };
+        for (let g = 0; g < seq.length - 1; g++) {
+          const detour = dk(pt(seq[g]), P) + dk(P, pt(seq[g + 1])) - dk(pt(seq[g]), pt(seq[g + 1]));
+          if (detour > DECOR_KM) continue;
+          if (!best || detour < best.detour) best = { spotIdx: i, after: seq[g], detour };
+        }
+      }
+      if (!best) break;
+      const spot = pool.splice(best.spotIdx, 1)[0];
+      const at = day.slots.indexOf(best.after) + 1;
+      // fmtTime is zero-padded 24h, so string compare is chronological.
+      const mealsBefore = day.slots.filter(sl => sl.category === 'restaurants').map(sl => sl.time);
+      day.slots.splice(at, 0, slotFrom(spot, 'photo_spots'));
+      recomputeDayTimes(day, start, nearby, startMin);
+      const mealsAfter = day.slots.filter(sl => sl.category === 'restaurants').map(sl => sl.time);
+      if (mealsBefore.some((t, i) => t && mealsAfter[i] && mealsAfter[i] > t)) {
+        day.slots.splice(at, 1);                       // no slack here — revert,
+        recomputeDayTimes(day, start, nearby, startMin);
+        pool.push(spot);                               // spot may fit another day
+        break;
+      }
+      attached++;
+    }
+  }
+  return attached;
+}
+
+/**
  * Exact re-ordering of each maximal run of non-meal stops between fixed
  * anchors (day start, breakfast cafe, meals). Runs are ≤5-6 stops, so all
  * permutations are checked (≤720 — microseconds) against total travel
@@ -841,6 +892,10 @@ function skeletonPrompt({ destination, daysCount, pace, interests, homeBase, sta
     `Balance the day: at most 2 stops of category "historical" or "museum" per day, and never two of them back-to-back — separate heavy sights with food, a viewpoint, a walk, shopping, or a hidden gem.`,
     `Assume realistic visit durations when choosing how much fits in a day: viewpoint/photo spot ~30 min, market/shopping ~45-60 min, historical site ~60-75 min, museum ~90 min, meal ~75 min — plus travel time between stops.`,
     interests?.length ? `Traveler interests: ${interests.join(', ')}. Bias stop selection toward these.` : '',
+    // Same photo-spot policy as the pooled builder's decoratePhotoSpots,
+    // expressed as an instruction since this path composes in the model.
+    interests?.some(i => /photo/i.test(String(i))) ? '' :
+      'Photo spots and viewpoints must never anchor a day or justify travel on their own: include one only when it sits within about 1 km of the route between other stops, at most one per day.',
     styleLine,
     budgetLine,
     homeBase?.name ? `The traveler stays at "${homeBase.name}" (lat ${homeBase.latitude ?? homeBase.lat}, lng ${homeBase.longitude ?? homeBase.lng}). Make the first stop of each day reasonably close to it and let the day naturally loop back toward it; do NOT list the accommodation itself as a stop.` : '',
@@ -1755,7 +1810,18 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
     }
 
     const restaurants = byAction.restaurants;
-    const activities = POOL_ACTIONS.filter(a => a !== 'restaurants').flatMap(a => byAction[a].map(p => ({ ...p, _cat: a })));
+    // Photo spots DECORATE the route instead of anchoring it (founder
+    // 2026-09-04: "users dont need to visit long distance for just photo
+    // spot"). They are held out of clustering/selection and attached after
+    // the days are composed — see decoratePhotoSpots. Exception: a traveler
+    // whose saved interests include photography — for them the panorama IS
+    // the destination, so the old full-standing behavior is kept. Famous
+    // viewpoints that also carry another tag enter via that tag either way.
+    const photoPrimary = (user?.preferences?.interests || []).some(i => /photo/i.test(String(i)));
+    const photoDecor = photoPrimary ? [] : byAction.photo_spots.map(p => ({ ...p, _cat: 'photo_spots' }));
+    const activities = POOL_ACTIONS
+      .filter(a => a !== 'restaurants' && (photoPrimary || a !== 'photo_spots'))
+      .flatMap(a => byAction[a].map(p => ({ ...p, _cat: a })));
 
     // Thin pool → tell the client to fall back to the LLM-skeleton path
     // (small towns are exactly where the model's local knowledge wins).
@@ -2041,6 +2107,13 @@ router.post('/build-from-pool', auth, usageTracker, async (req, res) => {
 
     // ── 5. schedule (order + honest times), then persist ──
     for (const day of days) optimizeDayOrder(day, startPoint, !!nearbyMode, startMinForDay);
+
+    // Phase 2: hang the held-out photo spots on the now-fixed routes.
+    if (photoDecor.length) {
+      const decorated = decoratePhotoSpots(days, photoDecor,
+        { start: startPoint, nearby: !!nearbyMode, startMin: startMinForDay });
+      console.log(`[pool-build] photo decoration: ${decorated}/${photoDecor.length} spot(s) attached`);
+    }
     pinDatedEvents(days, null);   // saved/pool events → real clock time (pool builds carry no trip dates, so time-only)
     const poolCostEstimate = await attachDestinationData(days, {
       estimateCurrency: user?.preferences?.travelStyle === 'budget'
@@ -2652,5 +2725,5 @@ module.exports.__testables = {
   optimizeDayOrder, recomputeDayTimes, improveActivityRuns,
   haversineKm, travelMinutes, dwellOf, ratingScore, placeScore,
   sanitizeSkeleton, extractJson, clusterByDay, normalizeHours,
-  fillDaysRoundRobin, centroidOf, distTo,
+  fillDaysRoundRobin, centroidOf, distTo, decoratePhotoSpots,
 };
