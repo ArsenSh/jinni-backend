@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -1150,8 +1150,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             //    uses (one build path, one usage gate, §10 intact),
             //    prefilled with the days the message already answered. The
             //    clarifier owns the 7-day cap; the prefill clamps to match. ──
-            const _dm = /(\d{1,2})\s*[- ]?(?:day|days|дня|дней|день|օր)/i.exec(String(message));
-            const prefillDays = _dm ? Math.min(7, Math.max(1, parseInt(_dm[1], 10))) : null;
+            const _pd = parseItineraryDays(message);
+            const prefillDays = _pd == null ? null : Math.min(7, Math.max(1, _pd));
             const IT_LINES = {
                 en: 'Great — let\'s plan your trip. Answer the quick questions below and I\'ll build the day-by-day itinerary.',
                 ru: 'Отлично — давайте спланируем поездку. Ответьте на пару вопросов ниже, и я соберу маршрут по дням.',

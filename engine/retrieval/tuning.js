@@ -391,6 +391,34 @@ function parseCurrencyConvert(message) {
  * itinerary", lex=0) and served coworking spaces (live 2026-09-05). A
  * day-by-day plan is the ITINERARY tool's job (founder scope §10: itinerary
  * stays on quick actions) — the shape is deterministic. */
+// How many days did an itinerary ask state? Digits in any of the six app
+// languages ("3 days", "3 jours", "3天", "3 أيام") plus spelled-out numbers
+// ("three days", "три дня", "եռօրյա" — Armenian fuses the numeral into one
+// word). Returns an int or null; the CALLER clamps to the clarifier's cap.
+// No \b near non-Latin scripts (repo lesson — ASCII-only word boundaries).
+const _DAYS_DIGIT_RE = /(\d{1,2})\s*[- ]?(?:days?|jours?|дня|дней|день|дн\.|օր|天|يوم|أيام)/i;
+const _DAYS_WORDS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, sept: 7, huit: 8, neuf: 9, dix: 10,
+    'один': 1, 'два': 2, 'две': 2, 'три': 3, 'четыре': 4, 'пять': 5, 'шесть': 6, 'семь': 7, 'восемь': 8, 'девять': 9, 'десять': 10,
+    'մեկ': 1, 'երկու': 2, 'երեք': 3, 'չորս': 4, 'հինգ': 5, 'վեց': 6, 'յոթ': 7, 'ութ': 8, 'ինը': 9, 'տասը': 10,
+};
+// Armenian compound "N-day" adjectives and CJK numerals fused to 天.
+const _DAYS_FUSED = {
+    'երկօրյա': 2, 'եռօրյա': 3, 'քառօրյա': 4, 'հնգօրյա': 5, 'վեցօրյա': 6, 'յոթօրյա': 7, 'ութօրյա': 8,
+    '一天': 1, '两天': 2, '二天': 2, '三天': 3, '四天': 4, '五天': 5, '六天': 6, '七天': 7, '八天': 8, '九天': 9, '十天': 10,
+};
+function parseItineraryDays(message) {
+    const m = String(message || '');
+    const d = _DAYS_DIGIT_RE.exec(m);
+    if (d) { const n = parseInt(d[1], 10); if (n >= 1 && n <= 30) return n; }
+    for (const [word, n] of Object.entries(_DAYS_FUSED)) if (m.includes(word)) return n;
+    const lower = m.toLowerCase();
+    const w = /([a-zа-яё\u0561-\u0587]+)[\s-]+(?:days?|jours?|дня|дней|день|օր\w*)/iu.exec(lower);
+    if (w && _DAYS_WORDS[w[1]] != null) return _DAYS_WORDS[w[1]];
+    return null;
+}
+
 const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
 const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
@@ -471,5 +499,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

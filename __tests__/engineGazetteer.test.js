@@ -670,3 +670,25 @@ describe('itinerary-shaped asks are deterministic (founder 2026-09-05)', () => {
             expect(isItineraryAsk(m)).toBe(false);
     });
 });
+
+describe('parseItineraryDays speaks all six app languages (founder 2026-09-05: "days=?" on 3 jours/3天/3 أيام)', () => {
+    const { parseItineraryDays } = require('../engine/retrieval/tuning');
+    test('digits with any language day-unit', () => {
+        expect(parseItineraryDays('Can you plan 3 day itinerary?')).toBe(3);
+        expect(parseItineraryDays('fais-moi un itinéraire de 3 jours')).toBe(3);
+        expect(parseItineraryDays('帮我做一个3天行程')).toBe(3);
+        expect(parseItineraryDays('خطط لي رحلة 3 أيام')).toBe(3);
+        expect(parseItineraryDays('составь план на 5 дней')).toBe(5);
+        expect(parseItineraryDays('I want an 8 day trip plan')).toBe(8);
+    });
+    test('spelled-out and fused numerals', () => {
+        expect(parseItineraryDays('across three days here')).toBe(3);
+        expect(parseItineraryDays('ուզում եմ եռօրյա ճամփորդության պլան')).toBe(3);
+        expect(parseItineraryDays('帮我做一个三天行程')).toBe(3);
+        expect(parseItineraryDays('хочу маршрут на три дня')).toBe(3);
+    });
+    test('no day count stays null — the clarifier asks', () => {
+        expect(parseItineraryDays('plan my evening')).toBe(null);
+        expect(parseItineraryDays('хочу расписать поездку на несколько дней')).toBe(null);
+    });
+});
