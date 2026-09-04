@@ -336,6 +336,36 @@ const ENTITY_Q_NONLATIN_RE = /^\s*(?:расскажи(?:те)?(?: мне)? (?:о
 const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places|what (can|should|shall) (i|we) do|things to do|somewhere to go)\b/i;
 // \b is ASCII-only — Cyrillic/Armenian markers live boundary-free (repo lesson).
 const BROWSE_MARK_NONLATIN_RE = /(где можно|что.{0,12}(делать|посмотреть)|чем заняться|куда (сходить|пойти)|ինչ անել|ուր գնալ)/i;
+/* "How much is 20,000 AMD in USD?" was answered from MODEL MEMORY at
+ * 385-400 AMD/$ while currencyService held the real 364 (live 2026-09-05) —
+ * a no-numbers-from-memory violation. Parsed in code, computed from live
+ * rates, no LLM. */
+const _FX_UNIT_RE = '(usd|eur|amd|rub|gbp|aed|dollars?|euros?|drams?|rubles?|pounds?|dirhams?|доллар\\w*|евро|драм\\w*|рубл\\w*|фунт\\w*|дирхам\\w*|\\$|€|£|֏)';
+function _fxCode(w) {
+    w = String(w || '').toLowerCase();
+    if (w === '$') return 'USD'; if (w === '€') return 'EUR'; if (w === '£') return 'GBP'; if (w === '֏') return 'AMD';
+    if (/^(usd|dollar|доллар)/.test(w)) return 'USD';
+    if (/^(eur|euro|евро)/.test(w)) return 'EUR';
+    if (/^(amd|dram|драм)/.test(w)) return 'AMD';
+    if (/^(rub|ruble|рубл)/.test(w)) return 'RUB';
+    if (/^(gbp|pound|фунт)/.test(w)) return 'GBP';
+    if (/^(aed|dirham|дирхам)/.test(w)) return 'AED';
+    return null;
+}
+function parseCurrencyConvert(message) {
+    const m = String(message || '').toLowerCase();
+    const amt = new RegExp('(\\d[\\d\\s.,]*)\\s*' + _FX_UNIT_RE, 'u').exec(m);
+    if (!amt) return null;
+    const rest = m.slice(amt.index + amt[0].length);
+    // no \b around Cyrillic (ASCII-only) — anchor on whitespace instead.
+    const to = new RegExp('(?:^|\\s)(?:in|to|на|в[оа]?|→)\\s+' + _FX_UNIT_RE, 'u').exec(rest);
+    if (!to) return null;
+    const from = _fxCode(amt[2]), target = _fxCode(to[1]);
+    const amount = parseFloat(String(amt[1]).replace(/[\s,]/g, ''));
+    if (!from || !target || from === target || !Number.isFinite(amount) || amount <= 0) return null;
+    return { amount, from, to: target };
+}
+
 /* A browse-marked message wants a DECK — the junk-question brake must never
  * swallow "what can I do", "best bars", "recommend something". */
 function isBrowseAsk(message) { const m = String(message || ''); return BROWSE_MARK_RE.test(m) || BROWSE_MARK_NONLATIN_RE.test(m); }
@@ -409,5 +439,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

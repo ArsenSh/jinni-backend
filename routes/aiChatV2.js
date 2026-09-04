@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -608,6 +608,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // just saw praised — and let the tool loop answer about THAT place.
         // Nothing shown yet -> clarify in one sentence, never a deck.
         let referentClarify = false;
+        let contextualQ = false;
+        // A pronoun binds to a PLACE only when the last assistant reply was
+        // actually ABOUT that place: "Is this expensive?" right after a
+        // currency conversion re-recited Kamancha's dossier (live 2026-09-05)
+        // — the antecedent was 20,000 AMD, not a restaurant four turns back.
+        const _lastAssistantText = (() => {
+            const msgs2 = sessionPeek?.messages || [];
+            for (let i = msgs2.length - 1; i >= 0; i--) {
+                const mm = msgs2[i];
+                if (mm && mm.sender !== 'user' && mm.text) return String(mm.text).toLowerCase();
+            }
+            return '';
+        })();
+        const _placeLive = (nm) => {
+            const tok = String(nm || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).find(t => t.length >= 3 && t !== 'the');
+            return !!tok && _lastAssistantText.includes(tok);
+        };
         if (!namedCard && parseReferentAsk(message)) {
             let ref = null, refAt = null;
             for (let i = (sessionPeek?.messages || []).length - 1; i >= 0 && !ref; i--) {
@@ -622,12 +639,18 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // live 2026-09-04). _bestCardFor recovers the full card (coords,
             // placeId → route map) when the discussed place was ever carded.
             const ld = sessionPeek?.lastDiscussed;
-            if (ld?.name && (!refAt || (ld.at && new Date(ld.at) > new Date(refAt)))) {
+            if (ld?.name && _placeLive(ld.name) && (!refAt || (ld.at && new Date(ld.at) > new Date(refAt)))) {
                 namedCard = _bestCardFor(String(ld.name).toLowerCase()) || { name: ld.name };
                 console.log(`[v2] referent ask -> "${ld.name}" (last discussed place)`);
-            } else if (ref) {
+            } else if (ref && _placeLive(ref.name)) {
                 namedCard = ref;
                 console.log(`[v2] referent ask -> "${ref.name}" (last deck's top card)`);
+            } else if (ld?.name || ref) {
+                // Places exist in the session, but the last reply was about
+                // something else — the pronoun points at THAT (a price, a
+                // fact). Chit-chat with history answers it in context.
+                contextualQ = true;
+                console.log('[v2] referent ask -> conversation context (last reply was not about a place)');
             } else {
                 referentClarify = true;
                 console.log('[v2] referent ask with nothing shown -> clarify, no deck');
@@ -1116,6 +1139,26 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
+        } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
+            // ── CURRENCY, computed not remembered (live 2026-09-05: the
+            //    model quoted 385-400 AMD/$ from memory while currencyService
+            //    held 364). Rates are FACTS — the service answers, $0. ──
+            const _fx = meta._fx; delete meta._fx;
+            let fxOut = null;
+            try {
+                const cs = require('../services/currencyService');
+                const rF = cs.getExchangeRate(_fx.from), rT = cs.getExchangeRate(_fx.to);
+                if (rF && rT) fxOut = _fx.amount / rF * rT;
+            } catch { /* fall through to the honest no-rate reply */ }
+            const _fmt = (n) => n >= 100 ? Math.round(n).toLocaleString('en-US')
+                : (Math.round(n * 100) / 100).toLocaleString('en-US');
+            reply = fxOut != null
+                ? `${_fx.amount.toLocaleString('en-US')} ${_fx.from} ≈ ${_fmt(fxOut)} ${_fx.to} at today's rate.`
+                : 'I can\'t reach live exchange rates right now — please check a rate app before relying on a number.';
+            send(res, { type: 'token', content: reply });
+            meta.answerType = 'currency';
+            stats.path = 'currency';
+            console.log(`[v2] currency: ${_fx.amount} ${_fx.from} -> ${fxOut != null ? _fmt(fxOut) : 'no rate'} ${_fx.to} (deterministic, $0)`);
         } else if (namedCard || placeQuestion) {
             const fetchedDocs = [];
             const loop = await runToolLoop({
@@ -1181,7 +1224,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     console.log(`[v2] first-mention card attached: "${_doc.name}"`);
                 }
             }
-        } else if (!intent.isTravel || intent.infoAsk === 'how_to' || referentClarify) {
+        } else if (!intent.isTravel || intent.infoAsk === 'how_to' || referentClarify || contextualQ) {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same
             //    voice, same no-invented-venues rule. ──
@@ -1724,7 +1767,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             ) {
                 const loop = await runToolLoop({
                     messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
-                        aboutPlace: sessionPeek?.lastDiscussed?.name || null }),
+                        aboutPlace: (sessionPeek?.lastDiscussed?.name && _placeLive(sessionPeek.lastDiscussed.name))
+                            ? sessionPeek.lastDiscussed.name : null }),
                     tools: [PLACE_DETAILS_TOOL],
                     execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                     maxTokens: 400,

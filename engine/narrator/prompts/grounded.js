@@ -350,7 +350,7 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
               + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
-        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName} — answer ONLY this message; every earlier question above is already answered, do not repeat those answers]` },
     ];
 }
 
@@ -421,7 +421,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + localFactsBlock(localFacts),
         },
         ...historyTurns(history),
-        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName} — answer ONLY this message; every earlier question above is already answered, do not repeat those answers]` },
     ];
 }
 
@@ -450,7 +450,7 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
               + 'Never suggest external websites or search engines.',
         },
         ...historyTurns(history),
-        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName} — answer ONLY this message; every earlier question above is already answered, do not repeat those answers]` },
     ];
 }
 
@@ -493,7 +493,7 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
               + 'Never suggest external websites or search engines.',
         },
         ...historyTurns(history),
-        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName}]` },
+        { role: 'user', content: `${String(message || '')}\n\n[reply in ${langName} — answer ONLY this message; every earlier question above is already answered, do not repeat those answers]` },
     ];
 }
 

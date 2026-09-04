@@ -171,6 +171,14 @@ function makeExecutors(ctx = {}, deps = {}) {
     return {
         get_place_details: async ({ name } = {}) => {
             if (!name || typeof name !== 'string') return { error: 'name_required' };
+            // "The restaurant says 50,000 AMD…" made the model call this with
+            // name="restaurant", which resolved to Ani Plaza Hotel and CARDED
+            // it (live 2026-09-05). A name with zero distinctive tokens can
+            // never identify one place — honest ask-back instead.
+            const _allToks = normalizePlaceName(transliterate(name)).split(' ').filter(t => t.length >= 3);
+            if (_allToks.length && !_sigTokens(transliterate(name)).length) {
+                return { error: 'name_too_generic — ask the traveler which specific place they mean' };
+            }
             // Session-first identity: if this name matches a card the traveler
             // ALREADY SAW, use that card's placeId — zero ambiguity, no
             // same-name-in-another-city risk (v1's round-61 concern).
