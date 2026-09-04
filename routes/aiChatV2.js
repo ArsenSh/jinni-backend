@@ -1139,7 +1139,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
-        } else if (isItineraryAsk(message)) {
+        } else if (intent.actionType === 'itinerary' || isItineraryAsk(message)) {
             // ── ITINERARY-SHAPED ASK → the CLARIFIER, v1's exact contract
             //    (founder 2026-09-05: "it should had triggered itinerary").
             //    "Can you plan 3 day itinerary?" used to fall into the deck
