@@ -463,6 +463,47 @@ describe('entity questions & referent asks (QA 2026-09-04)', () => {
                          'is the museum far from the opera house and worth combining'])
             expect(parseReferentAsk(m)).toBe(false);
     });
+    // Both slipped through live (QA §9/§10, 2026-09-04) and produced lex=0
+    // junk decks instead of pointing at the place under discussion.
+    test('"what about this place" and "how far walking" are referent asks', () => {
+        for (const m of ['What about this place?', 'what about that one',
+                         'How far walking?', 'how far on foot?'])
+            expect(parseReferentAsk(m)).toBe(true);
+    });
+    test('"what about <named place>" is NOT a bare referent', () => {
+        expect(parseReferentAsk('What about Khor Virap?')).toBe(false);
+    });
+});
+
+describe('parseRadiusKm: meters (QA §9 — "500 meters" ran at 15km)', () => {
+    const { parseRadiusKm } = require('../engine/retrieval/tuning');
+    test('meter phrasing converts to fractional km', () => {
+        expect(parseRadiusKm('Show me restaurants within 500 meters')).toBe(0.5);
+        expect(parseRadiusKm('cafes 800 m around')).toBe(0.8);
+        expect(parseRadiusKm('в радиусе 300 метров')).toBe(0.3);
+    });
+    test('km and miles still parse as before', () => {
+        expect(parseRadiusKm('what can I do within 10 km?')).toBe(10);
+        expect(parseRadiusKm('within 2 miles')).toBe(3);
+        expect(parseRadiusKm('10 կմ')).toBe(10);
+    });
+    test('sub-km floors at 0.2, never rounds up to 1', () => {
+        expect(parseRadiusKm('within 100 meters')).toBe(0.2);
+    });
+});
+
+describe('isTransportAsk: route words (QA §9 — "fastest route" refused routing)', () => {
+    const { isTransportAsk } = require('../engine/retrieval/tuning');
+    test('route phrasing is transport', () => {
+        for (const m of ['yes, which is fastest route to there?', 'route to Ginetun',
+                         'What is the fastest route to Ginetun?', 'best way to get there',
+                         'какой маршрут до Гарни'])
+            expect(isTransportAsk(m)).toBe(true);
+    });
+    test('no false positives on browse asks', () => {
+        for (const m of ['best restaurant in town', 'what is the best way to spend a day in Dilijan'])
+            expect(isTransportAsk(m)).toBe(false);
+    });
 });
 
 describe('isNearbyAsk', () => {

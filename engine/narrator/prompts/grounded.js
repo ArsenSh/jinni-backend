@@ -352,7 +352,12 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
  *  Wikivoyage's CC BY-SA and the FCDO's Open Government Licence alike). */
 function localFactsBlock(facts = [], maxChars = 4000) {
     if (!Array.isArray(facts) || !facts.length) return '';
-    return '\nVERIFIED LOCAL NOTES — prefer these over your own knowledge, and name the source in your reply:\n'
+    return '\nVERIFIED LOCAL NOTES — prefer these over your own knowledge, and name the source in your reply.\n'
+        // FCDO notes assumed a British traveler ("contact the British embassy",
+        // QA §12 live 2026-09-04) — the advisory's nationality is the SOURCE's,
+        // never the traveler's.
+        + 'A note from one government\'s advisory (e.g. UK FCDO) is written for THAT country\'s citizens: '
+        + 'pass consular or embassy advice on as "your country\'s embassy" — NEVER assume the traveler\'s nationality:\n'
         + facts.map(f => {
             const age = f.reviewedAt ? ` (source reviewed ${new Date(f.reviewedAt).toISOString().slice(0, 10)})` : '';
             return `[${f.sourceName}${age}] ${f.title || ''}\n${String(f.body || '').slice(0, maxChars)}`
@@ -385,6 +390,12 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + 'If they only asked "how do I get there", say which mode you would take and why.\n'
               + 'NEVER invent fares, phone numbers, timetables, journey times, or app names you are not sure '
               + 'operate in that city — say "roughly" or leave the number out instead.\n'
+              // Invented terrain (QA §12, live 2026-09-04): after honestly
+              // refusing once, the model asserted "unlit winding road" and
+              // "short easy trails" about Mount Hatis from pure memory.
+              + 'NEVER assert road, trail, or terrain conditions — paving, lighting, steepness, snow, trail '
+              + 'difficulty, or how safe a drive or hike is — unless a verified note below states them. '
+              + 'Say you do not have condition data and advise checking locally before setting out.\n'
               + (canQuoteFares
                   ? 'For flights between cities you have a find_flights tool: call it and quote ONLY the fares it '
                   + 'returns, with its booking link. If it returns nothing, say you have no fares for that route.\n'
@@ -767,6 +778,9 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               // (places+0), yet answers kept saying "tap More on its card".
               + '- A null field means the detail is not listed in the verified data: say so briefly. This reply shows NO cards — never tell the traveler to tap More or mention "its card".\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
+              + '- NEVER assert road, trail, or terrain conditions (paving, lighting, difficulty, how safe the '
+              + 'drive or hike is) — the verified data does not carry them; say you do not have that and '
+              + 'advise checking locally.\n'
               + '- Never guess or invent details. 1–3 sentences, natural prose.\n'
               // Trailing bleed (live 2026-08-30, twice): tool answers kept
               // appending "As for the six hotels — I don't have a verified

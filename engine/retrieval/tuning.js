@@ -76,8 +76,8 @@ function isRightNowAsk(message) {
  * the brain decides first. Latin terms take word boundaries so "bus" cannot
  * fire inside "business"; non-Latin scripts go boundary-free (the Cyrillic
  * lesson again). Pure. */
-const TRANSPORT_LATIN_RE = /\b(taxi|cab|uber|careem|bolt|shuttle|metro|subway|underground|tram|bus|ferry|boat|train|flight|flights|fly|airport|scooter|bicycle|car rental|rent a (car|scooter|bike)|how (do|can|should) i (get|reach|travel)|get (there|around)|walk (there|to)|drive (there|to)|directions?|how (far|long)( is| does)?|comment (aller|se rendre)|louer une voiture)\b/i;
-const TRANSPORT_NONLATIN_RE = /(такси|убер|метро|автобус|маршрутк|как добраться|как доехать|как дойти|пешком|паром|электричк|տաքսի|մետրո|ավտոբուս|ինչպես հասնել|ոտքով|métro|出租车|打车|地铁|公交|渡轮|步行|怎么去|怎么走|怎么到|تاكسي|مترو|حافلة|عبّارة|سيرا|كيف أصل|كيف اذهب)/i;
+const TRANSPORT_LATIN_RE = /\b(taxi|cab|uber|careem|bolt|shuttle|metro|subway|underground|tram|bus|ferry|boat|train|flight|flights|fly|airport|scooter|bicycle|car rental|rent a (car|scooter|bike)|how (do|can|should) i (get|reach|travel)|get (there|around)|walk (there|to)|drive (there|to)|directions?|(fastest|quickest|shortest) (route|way)|best route|route (to|there)|how (far|long)( is| does)?|comment (aller|se rendre)|louer une voiture)\b/i;
+const TRANSPORT_NONLATIN_RE = /(такси|убер|метро|автобус|маршрут|как добраться|как доехать|как дойти|пешком|паром|электричк|տաքսի|մետրո|ավտոբուս|ինչպես հասնել|ոտքով|métro|出租车|打车|地铁|公交|渡轮|步行|怎么去|怎么走|怎么到|تاكسي|مترو|حافلة|عبّارة|سيرا|كيف أصل|كيف اذهب)/i;
 function isTransportAsk(message) {
     const m = String(message || '');
     return TRANSPORT_LATIN_RE.test(m) || TRANSPORT_NONLATIN_RE.test(m);
@@ -194,10 +194,10 @@ function parseAtLocation(message) {
  * to apologise for). Miles are converted; the result is clamped so a typo
  * cannot turn a walk into a country-wide sweep. Pure. */
 const RADIUS_RES = [
-    /\b(?:within|under|less than|no more than|inside|in a|max(?:imum)?)\s+(\d{1,3})\s*(km|kilomet(?:er|re)s?|mi|miles?)\b/i,
-    /\b(\d{1,3})\s*(km|kilomet(?:er|re)s?|mi|miles?)\s*(?:radius|around|away|from me|of me)\b/i,
-    /(?:в радиусе|не дальше|не более|в пределах)\s+(\d{1,3})\s*(км|километ\w*)/i,
-    /(\d{1,3})\s*(կմ|կիլոմետր\w*)/i,
+    /\b(?:within|under|less than|no more than|inside|in a|max(?:imum)?)\s+(\d{1,4})\s*(km|kilomet(?:er|re)s?|mi|miles?|m|met(?:er|re)s?)\b/i,
+    /\b(\d{1,4})\s*(km|kilomet(?:er|re)s?|mi|miles?|m|met(?:er|re)s?)\s*(?:radius|around|away|from me|of me)\b/i,
+    /(?:в радиусе|не дальше|не более|в пределах)\s+(\d{1,4})\s*(км|километ\w*|м|метр\w*)/i,
+    /(\d{1,4})\s*(կմ|կիլոմետր\w*|մ|մետր\w*)/i,
 ];
 function parseRadiusKm(message) {
     const m = String(message || '');
@@ -207,7 +207,12 @@ function parseRadiusKm(message) {
         const n = Number(hit[1]);
         if (!Number.isFinite(n) || n <= 0) continue;
         const unit = String(hit[2] || '').toLowerCase();
-        const km = /^mi/.test(unit) ? n * 1.609 : n;
+        // "500 meters" used to fall through entirely and run at 15km (QA §9,
+        // 2026-09-04). Order matters: 'mi' starts with 'm'.
+        const km = /^mi/.test(unit) ? n * 1.609
+            : /^(m$|met|м$|метр|մ$|մետր)/.test(unit) ? n / 1000
+            : n;
+        if (km < 1) return Math.min(100, Math.max(0.2, Math.round(km * 10) / 10));
         return Math.min(100, Math.max(1, Math.round(km)));
     }
     return null;
@@ -326,6 +331,8 @@ const REFERENT_RE = new RegExp('^\\s*(?:'
     + '|how (?:far|much)[^.?!]{0,6}\\b(?:it|that|this)\\b[^.?!]{0,15}'
     + '|(?:take me to |show me )?the best one'
     + '|is it worth(?: it)?'
+    + '|what about (?:this|that)(?: (?:place|one|spot))?'
+    + '|how far (?:walking|on foot|by foot)'
     + '|это (?:далеко|дорого|того стоит|стоит того)|сколько это стоит|это открыто'
     + '|արժե\\u055e?)[\\s.?!]*$', 'i');
 function parseReferentAsk(message) {

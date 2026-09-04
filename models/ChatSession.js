@@ -152,6 +152,12 @@ const chatSessionSchema = new mongoose.Schema({
   // currently wants — price, radius cap, party size, target time — merged by
   // CODE each deck turn, reset on category change. QA §4, 2026-09-04.
   constraints: { type: mongoose.Schema.Types.Mixed, default: null },
+  // { name, at } — the last place the TOOL LOOP answered about ("Tell me about
+  // Mount Hatis"). A referent pronoun must point at the newest thing DISCUSSED,
+  // not the last deck's top card: "Is it safe to drive there?" routed and
+  // mapped to the Dinosaur Park while the prose was about Hatis (QA §12,
+  // live 2026-09-04). Never rendered — resolution context only.
+  lastDiscussed: { type: mongoose.Schema.Types.Mixed, default: null },
   messages: [messageSchema],
   isNearLimit: { type: Boolean, default: false },
   suggestedNewChat: { type: Boolean, default: false },

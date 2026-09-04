@@ -60,7 +60,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, messages: { $slice: -30 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, lastDiscussed: 1, messages: { $slice: -30 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
@@ -605,12 +605,23 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // Nothing shown yet -> clarify in one sentence, never a deck.
         let referentClarify = false;
         if (!namedCard && parseReferentAsk(message)) {
-            let ref = null;
+            let ref = null, refAt = null;
             for (let i = (sessionPeek?.messages || []).length - 1; i >= 0 && !ref; i--) {
-                const recs = sessionPeek.messages[i]?.recommendations || [];
-                if (recs.length && recs[0]?.name) ref = recs[0];
+                const m = sessionPeek.messages[i];
+                const recs = m?.recommendations || [];
+                if (recs.length && recs[0]?.name) { ref = recs[0]; refAt = m.timestamp || null; }
             }
-            if (ref) {
+            // A place the tool loop DISCUSSED after that deck outranks the
+            // deck's top card: "Is it safe to drive there?" after two turns
+            // about Mount Hatis routed and mapped to the Dinosaur Park — the
+            // last deck's top — while the prose was about Hatis (QA §12,
+            // live 2026-09-04). _bestCardFor recovers the full card (coords,
+            // placeId → route map) when the discussed place was ever carded.
+            const ld = sessionPeek?.lastDiscussed;
+            if (ld?.name && (!refAt || (ld.at && new Date(ld.at) > new Date(refAt)))) {
+                namedCard = _bestCardFor(String(ld.name).toLowerCase()) || { name: ld.name };
+                console.log(`[v2] referent ask -> "${ld.name}" (last discussed place)`);
+            } else if (ref) {
                 namedCard = ref;
                 console.log(`[v2] referent ask -> "${ref.name}" (last deck's top card)`);
             } else {
@@ -1117,6 +1128,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'tool';
             meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
             console.log(`[v2] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
+            // Stamp what this turn DISCUSSED so a later pronoun can point at
+            // it (see the referent block above). Fire-and-forget: a failed
+            // stamp only costs the pointer, never the reply.
+            const _discussed = (namedCard && namedCard.name)
+                || loop.toolCalls.find(c => c.name === 'get_place_details')?.args?.name || null;
+            if (sessionId && _discussed) {
+                require('../models/ChatSession').updateOne(
+                    { _id: sessionId },
+                    { $set: { lastDiscussed: { name: _discussed, at: new Date() } } },
+                ).catch(() => {});
+            }
         } else if (!intent.isTravel || intent.infoAsk === 'how_to' || referentClarify) {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,
             //    tipping): the traveler wants an answer, not a deck. Same
