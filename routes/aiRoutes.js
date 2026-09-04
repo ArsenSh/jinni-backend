@@ -5565,6 +5565,27 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
             const smartProximityResults = await proximityService.findSmartProximityPlaces(effectiveLocation, rankPrefs, action, userRadius, requestedCount, userRegion, requestId, subType, await buildSeenPenalty(userId));
             nearbyBusinesses = smartProximityResults.businesses;
             nearbyDestinations = smartProximityResults.destinations;
+            /* ── Season awareness (founder 2026-09-05: "quick-action-stream may
+             * also consider that") — same rule as the v2 engine: an off-season
+             * bestTimeToVisit ("June-August" asked in January) sinks the row to
+             * the BACK of the list, never drops it (the schedule-filter lesson
+             * right below: a validator's row is never removed by inference).
+             * Month from the client-less longitude estimate; any error leaves
+             * the list untouched. ── */
+            try {
+                const { parseSeasonWindow, inSeason } = require('../engine/retrieval/tuning');
+                const { buildTimeContext } = require('../engine/context/contextEngine');
+                const _tc = buildTimeContext({ timezone: null, lng: effectiveLocation?.lng ?? null });
+                const _month = Number(String(_tc.localISO || '').slice(5, 7)) || null;
+                if (_month && Array.isArray(nearbyDestinations)) {
+                    const off = (d) => { const w = parseSeasonWindow(d?.bestTimeToVisit); return !!(w && !inSeason(w, _month)); };
+                    const sank = nearbyDestinations.filter(off).length;
+                    if (sank && sank < nearbyDestinations.length) {
+                        nearbyDestinations = [...nearbyDestinations.filter(d => !off(d)), ...nearbyDestinations.filter(off)];
+                        console.log(`[quick-action] season: ${sank} off-season destination(s) sank (month=${_month})`);
+                    }
+                }
+            } catch (seasonErr) { console.warn(`[quick-action] season sink skipped: ${seasonErr.message}`); }
             /* ── Curated destinations are NOT filtered by schedule ────────────────
              * These were filed under 'events' by a validator on purpose: paragliding,
              * wakeboarding, zip lines and horse riding run almost every day, so from a
