@@ -271,3 +271,22 @@ describe('ownedLookup shorthand tier (via injected deps it is bypassed; test the
         expect(out.name).toBe("Yasaman Tsaghkadzor's Restaurant");
     });
 });
+
+describe('cross-script + qualifier fixes (live 2026-09-05)', () => {
+    test('implausible cache resolution is an honest miss, not an answer', async () => {
+        const ex = makeExecutors({}, {
+            ownedLookup: async () => null,
+            lookup: async () => ({ name: 'Matenadaran', place_id: 'pM', rating: 4.7 }),
+        });
+        const out = await ex.get_place_details({ name: 'Ясаман' });
+        expect(out.error).toBe('not_found');
+    });
+    test('cross-script match to the RIGHT place still passes', async () => {
+        const ex = makeExecutors({}, {
+            ownedLookup: async () => null,
+            lookup: async () => ({ name: "Yasaman Yerevan's Restaurant", place_id: 'pY', rating: 4.7 }),
+        });
+        const out = await ex.get_place_details({ name: 'Ясаман' });
+        expect(out.name).toBe("Yasaman Yerevan's Restaurant");
+    });
+});

@@ -5,7 +5,7 @@
 // tool returns; a missing field comes back null and MUST be described as
 // "not listed", never guessed (the round-61 honesty rules, now structural).
 
-const { normalizePlaceName, messageNamesPlace, _sigTokens } = require('../places/matching');
+const { normalizePlaceName, messageNamesPlace, _sigTokens, namesPlausiblyMatch, transliterate } = require('../places/matching');
 
 const PLACE_DETAILS_TOOL = {
     type: 'function',
@@ -14,6 +14,8 @@ const PLACE_DETAILS_TOOL = {
         description:
             'Verified details for ONE specific place: address, phone, website, rating, opening hours. '
           + 'Use when the traveler asks about a specific place\'s contact info, hours, rating or address. '
+          + 'Keep any city or area the traveler attached to the name IN the name ("Yasaman in Sevan" → '
+          + 'name: "Yasaman Sevan") — chains have branches and the location picks the right one. '
           + 'Fields can be null — that means the detail is not listed; say so honestly.',
         parameters: {
             type: 'object',
@@ -82,7 +84,8 @@ function makeExecutors(ctx = {}, deps = {}) {
         try {
             const mongoose = require('mongoose');
             if (mongoose.connection?.readyState !== 1) return null;
-            const esc = String(nm).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            nm = transliterate(String(nm).trim());   // "Ясаман" → "yasaman"
+            const esc = nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             if (esc.length < 3) return null;
             const re = new RegExp(`^${esc}$`, 'i');
             const Destination = require('../../models/Destination');
@@ -145,6 +148,16 @@ function makeExecutors(ctx = {}, deps = {}) {
                 // The curator's type array — without it the card renders as
                 // bare "Place" (live 2026-09-04, first owned-card round).
                 types: Array.isArray(d.type) ? d.type : (d.type ? [d.type] : []),
+                // Owned type arrays hold JINNI category words ("restaurants")
+                // plus vibe tags — labelForTypes (Google vocabulary) maps
+                // none of them, so the card said bare "Place" (live
+                // 2026-09-05). The category vocabulary answers directly.
+                _kind: (() => {
+                    const { CATEGORY_LABELS } = require('./cards');
+                    const arr = Array.isArray(d.type) ? d.type : (d.type ? [d.type] : []);
+                    for (const t of arr) { if (CATEGORY_LABELS[t]) return CATEGORY_LABELS[t]; }
+                    return null;
+                })(),
                 _owned: source,
             };
         } catch { return null; }
@@ -204,6 +217,14 @@ function makeExecutors(ctx = {}, deps = {}) {
                 return { error: `lookup_failed: ${err.message}` };
             }
             if (!d || !d.name) return { error: 'not_found' };
+            // The resolver's rescue can hand back a stranger ("Ясаман" →
+            // Matenadaran, live 2026-09-05) — and the first-mention card
+            // then AMPLIFIES the error into a wrong photo on screen. An
+            // implausible name is an honest miss, never an answer.
+            if (!namesPlausiblyMatch(name, d.name)) {
+                console.log(`[tool] rejected implausible resolution "${name}" → "${d.name}"`);
+                return { error: 'not_found' };
+            }
             // The route may want the FULL doc (geometry, address) to attach a
             // card — the model still only sees the slim honest projection.
             try { if (typeof ctx.onPlace === 'function') ctx.onPlace(d); } catch { /* never breaks the tool */ }

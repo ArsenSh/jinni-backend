@@ -1175,6 +1175,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         // the placeId-derived PlaceCache URL (founder catch:
                         // Kamancha's card showed the wrong photo).
                         image: _doc.image || null,
+                        _kind: _doc._kind || null,
                         types: _doc.types || [], source: _doc._owned || 'cache',
                     }, 0, { action: intent.action || 'general' })];
                     console.log(`[v2] first-mention card attached: "${_doc.name}"`);

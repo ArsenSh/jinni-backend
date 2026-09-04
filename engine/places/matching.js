@@ -118,12 +118,25 @@ function messageNamesPlace(msgLower, placeName, excludeTokens = null) {
     return sig.length > 0 && sig.every(w => looseTokenMatch(msgLower, w));
 }
 
+// Cyrillic → Latin, standard scientific-ish map. "Ясаман" (RU) asked about a
+// place stored as "Yasaman …" must COMPARE, not skip: the cross-script skip
+// below let the v1 resolver hand back Matenadaran for "Ясаман" and the tool
+// answer carded it (live 2026-09-05). Armenian/Greek stay untouched — their
+// maps are not 1:1, so the skip still protects native-script Google results.
+const _RU2LAT = { 'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya' };
+function transliterate(s) {
+    return String(s || '').toLowerCase().split('').map(c => _RU2LAT[c] !== undefined ? _RU2LAT[c] : c).join('');
+}
+
 function namesPlausiblyMatch(requested, resolved) {
     if (!requested || !resolved) return true;            // nothing to compare → keep
-    if (_scriptOf(requested) !== _scriptOf(resolved)) return true; // cross-script → skip (keep)
+    // Cyrillic becomes comparable Latin before the script test.
+    requested = transliterate(requested);
+    resolved = transliterate(resolved);
+    if (_scriptOf(requested) !== _scriptOf(resolved)) return true; // still cross-script → skip (keep)
     const a = _sigTokens(requested), b = _sigTokens(resolved);
     if (!a.length || !b.length) return true;             // only generic words → can't judge → keep
     return a.some(x => b.some(y => _tokensSimilar(x, y)));
 }
 
-module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, looseTokenMatch, _sigTokens, _scriptOf };
+module.exports = { normalizePlaceName, namesPlausiblyMatch, messageNamesPlace, looseTokenMatch, _sigTokens, _scriptOf, transliterate };
