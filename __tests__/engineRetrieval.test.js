@@ -698,3 +698,20 @@ describe('robustness pass 2026-08-30 (deterministic guards)', () => {
         expect(sushi.places.length).toBeLessThanOrEqual(3);   // real demand still shrinks
     });
 });
+
+describe('interest scoring reads CURATED tags, not just Google types (founder audit 2026-09-05)', () => {
+    const { _prefFitScore } = require('../engine/places/canonicalStore');
+    test('a validator tag matching the saved interest scores 1 directly', () => {
+        expect(_prefFitScore([], null, { interests: ['romantic'] }, ['romantic', 'restaurants'])).toBe(1);
+    });
+    test("vocabulary drift bridged: saved key food_drink hits tag food&drink", () => {
+        expect(_prefFitScore([], null, { interests: ['food_drink'] }, ['food&drink'])).toBe(1);
+    });
+    test('google-type inference still works when tags miss', () => {
+        expect(_prefFitScore(['night_club'], null, { interests: ['nightlife'] }, ['luxury'])).toBe(1);
+    });
+    test('no interests stays neutral; unmatched interest stays 0', () => {
+        expect(_prefFitScore([], null, {}, ['romantic'])).toBe(0.5);
+        expect(_prefFitScore(['casino'], null, { interests: ['nature'] }, ['nightlife'])).toBe(0);
+    });
+});

@@ -272,6 +272,32 @@ async function findPlaces(params = {}, deps = {}) {
         provenance.taste = true;
     }
 
+    // ── Curated-tag interest nudge (founder audit 2026-09-05: romantic-only
+    //    user got a nightlife-heavy deck while the one card tagged 'romantic'
+    //    sat unweighted). Validator/business tags share the onboarding
+    //    vocabulary (via the _TAG_STEMS drift map) — a direct hit climbs a few
+    //    fused positions. A NUDGE, never a hijack — same law as taste. ──
+    if (Array.isArray(params.preferences?.interests) && params.preferences.interests.length) {
+        const { _prefFitScore } = require('../places/canonicalStore');
+        const _hit = (c) => _prefFitScore([], null, params.preferences,
+            [...(Array.isArray(c.types) ? c.types : []), ...(Array.isArray(c.interests) ? c.interests : [])]) === 1;
+        const CLIMB = 3;
+        let climbed = 0;
+        const arr = ordered.slice();
+        for (let i = 1; i < arr.length; i++) {
+            if (_hit(arr[i]) && !_hit(arr[i - 1])) {
+                const j = Math.max(0, i - CLIMB);
+                const [c] = arr.splice(i, 1);
+                arr.splice(j, 0, c);
+                climbed++;
+            }
+        }
+        if (climbed) {
+            ordered = arr;
+            console.log(`[retrieval] interest nudge: ${climbed} curated-tag match(es) climbed (interests=${params.preferences.interests.join(',')})`);
+        }
+    }
+
     // ── Demanded-term guarantee (the sushi lesson, 2026-08-22): when the clean
     //    query names something RARE in the pool (sushi, uzbek — ≤25% of
     //    candidates match), the matching candidates must not be crowded out by

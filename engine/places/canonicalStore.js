@@ -43,10 +43,26 @@ function isCommunityRejected(likes = 0, dislikes = 0) {
 
 // Preference fit (0..1) — copied from v1 (aiRoutes ~1993). Query-time only,
 // never stored on the shared place doc.
-function _prefFitScore(types, primaryType, preferences) {
+// Curated tag → the onboarding interest stem it satisfies. The two
+// vocabularies are ALMOST identical but drift ('food&drink' tag vs saved key
+// 'food_drink' — founder audit 2026-09-05), so matching goes through stems.
+const _TAG_STEMS = { romantic: 'romantic', family: 'famil', nature: 'natur', adventure: 'adventur',
+    cultural: 'cultur', history: 'histor', art: 'art', nightlife: 'night', relaxation: 'relax', 'food&drink': 'food' };
+
+function _prefFitScore(types, primaryType, preferences, tags = []) {
     const t = [...(types || []), primaryType].filter(Boolean).map(x => String(x).toLowerCase());
     const interestsRaw = Array.isArray(preferences?.interests) ? preferences.interests.join(' ') : (preferences?.interests || '');
     const interests = String(interestsRaw).toLowerCase();
+    // ── Direct curated-tag hit BEATS Google-type inference (founder audit
+    //    2026-09-05: a Destination tagged 'romantic' scored ZERO for a
+    //    romantic-only user because only Google types were consulted —
+    //    the validator's own vocabulary is the most precise signal we own). ──
+    if (interests) {
+        for (const tag of (tags || []).map(x => String(x).toLowerCase())) {
+            const stem = _TAG_STEMS[tag];
+            if (stem && interests.includes(stem)) return 1;
+        }
+    }
     const want = [];
     if (/food|drink|gourmet|culinary/.test(interests)) want.push('restaurant', 'cafe', 'bakery', 'bar', 'food', 'meal_takeaway', 'coffee_shop', 'wine_bar', 'pub');
     if (/nature|outdoor/.test(interests)) want.push('park', 'garden', 'natural_feature', 'national_park', 'botanical_garden');
@@ -175,7 +191,7 @@ function feedbackScoreFor(likes = 0, dislikes = 0) {
 /** v1's backfill prior (aiRoutes ~2179–2195), with feedback bounded — see above. */
 function scoreCachedDoc(d, distanceKm, radiusKm, category, preferences = {}) {
     const rating = d.rating || 0;
-    const pref = _prefFitScore(d.types, d.primaryType, preferences);
+    const pref = _prefFitScore(d.types, d.primaryType, preferences, d.interests);
     const hits = Math.min(d.useCount || 0, HIT_CAP) / HIT_CAP;
     const closeness = 1 - (distanceKm / radiusKm);
     const feedbackScore = feedbackScoreFor(d.likes, d.dislikes);
@@ -193,6 +209,8 @@ function cacheDocToCandidate(d, center) {
         placeId: d.placeId,
         name: d.name,
         source: 'cache',
+        // Validator interest tags — read by the retrieval interest nudge.
+        interests: Array.isArray(d.interests) ? d.interests : [],
         rating: d.rating || null,
         types: d.types || [],
         primaryType: d.primaryType || null,
