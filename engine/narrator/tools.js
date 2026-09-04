@@ -118,6 +118,9 @@ function makeExecutors(ctx = {}, deps = {}) {
                 place_id: d.placeId || (source === 'destination' ? `dest_${d._id}` : null),
                 geometry: { location: { lat: d.location.coordinates.lat, lng: d.location.coordinates.lng } },
                 image: typeof img === 'string' ? img : (img && typeof img.url === 'string' ? img.url : null),
+                // The curator's type array — without it the card renders as
+                // bare "Place" (live 2026-09-04, first owned-card round).
+                types: Array.isArray(d.type) ? d.type : (d.type ? [d.type] : []),
                 _owned: source,
             };
         } catch { return null; }
