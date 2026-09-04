@@ -473,7 +473,11 @@ async function findSmartProximityPlaces(userLocation, preferences, actionType, r
         function calculatePreferenceScore(placeTypes, userInterests, averagePrice = null, normalizedBudget = null) {
             let score = 5;
             const canonTypes = placeTypes.map(canonInterest);
-            userInterests.forEach(interest => { if (canonTypes.includes(canonInterest(interest))) { score += 2 } });
+            // +4 (was +2, founder call 2026-09-05): one matched interest tag
+            // now outweighs ~40km of proximity — in a thin category pool the
+            // tagged rows must visibly lead, not merely edge ahead. Distance
+            // term spans 0-5 over the 50km discovery radius for scale.
+            userInterests.forEach(interest => { if (canonTypes.includes(canonInterest(interest))) { score += 4 } });
             // Photo-spot bias: most photogenic destinations aren't tagged
             // 'photo_spots' explicitly, so beyond the strong boost for an
             // explicit tag (above) we softly boost destinations whose tags tend
