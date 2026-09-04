@@ -210,19 +210,17 @@ async function findPlaces(params = {}, deps = {}) {
         //    are NEVER dropped (trust ladder: a June-August lake activity in
         //    January still exists; it just must not lead the deck). Unknown/
         //    unparseable windows stay neutral.
+        // STAMP here (the narrator caveat needs _offSeason on every
+        // candidate); the SINK runs at the very end of the pipeline — an
+        // early sink was undone by the curated-seat hoist and the deck
+        // carded WAKEBOARDING at #3 in September (live 2026-09-05).
         {
             const { parseSeasonWindow, inSeason } = require('./tuning');
             const month = Number(String(timeContext.localISO || '').slice(5, 7)) || null;
             if (month) {
-                let off = 0;
                 for (const c of ordered) {
                     const w = parseSeasonWindow(c.bestTime);
                     c._offSeason = !!(w && !inSeason(w, month));
-                    if (c._offSeason) off++;
-                }
-                if (off && off < ordered.length) {
-                    ordered = [...ordered.filter(c => !c._offSeason), ...ordered.filter(c => c._offSeason)];
-                    console.log(`[retrieval] season: ${off} off-season candidate(s) sank (month=${month})`);
                 }
             }
         }
@@ -455,6 +453,18 @@ async function findPlaces(params = {}, deps = {}) {
         }
     }
 
+    // ── SEASON SINK, LAST WORD (founder 2026-09-05): nothing after this
+    //    reorders, so an off-season row can no longer be hoisted back into
+    //    the deck by curated-seat/taste/nudge. Still never a drop — when the
+    //    pool is thinner than the deck they appear, at the end, with the
+    //    OFF-SEASON caveat on their facts line. ──
+    {
+        const off = ordered.filter(c => c && c._offSeason).length;
+        if (off && off < ordered.length) {
+            ordered = [...ordered.filter(c => !c || !c._offSeason), ...ordered.filter(c => c && c._offSeason)];
+            console.log(`[retrieval] season sink (final): ${off} off-season candidate(s) moved behind the rest`);
+        }
+    }
     const places = ordered.slice(0, effectiveWanted);
     // ── WHERE DID IT GO? (2026-09-03) ──
     // "Noah's Garden is in the pool and not in the deck" was unanswerable
