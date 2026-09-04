@@ -260,3 +260,14 @@ describe('get_place_details: OWNED rows answer before PlaceCache/Google', () => 
         expect(out.placeId).toBe('p2');
     });
 });
+
+describe('ownedLookup shorthand tier (via injected deps it is bypassed; test the tool with a partial-name owned hit)', () => {
+    test('owned row still answers when deps.ownedLookup resolves a shorthand', async () => {
+        const owned = { name: "Yasaman Tsaghkadzor's Restaurant", place_id: 'dest_y1', rating: 4.7,
+            geometry: { location: { lat: 40.53, lng: 44.72 } }, _owned: 'destination' };
+        const ex = makeExecutors({}, { ownedLookup: async (nm) => /yasaman/i.test(nm) ? owned : null,
+            lookup: async () => { throw new Error('must not reach google'); } });
+        const out = await ex.get_place_details({ name: 'Yasaman Tsaghkadzor' });
+        expect(out.name).toBe("Yasaman Tsaghkadzor's Restaurant");
+    });
+});

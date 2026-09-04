@@ -85,15 +85,39 @@ function makeExecutors(ctx = {}, deps = {}) {
             const esc = String(nm).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             if (esc.length < 3) return null;
             const re = new RegExp(`^${esc}$`, 'i');
-            const [dests, bizs] = await Promise.all([
-                require('../../models/Destination').find({ name: re }).limit(4).lean(),
-                require('../../models/Business').find({ name: re }).limit(4).lean(),
-            ]);
-            const rows = [
-                ...bizs.map(d => ({ d, source: 'business' })),
-                ...dests.map(d => ({ d, source: 'destination' })),
-            ].filter(x => Number.isFinite(x.d?.location?.coordinates?.lat)
-                       && Number.isFinite(x.d?.location?.coordinates?.lng));
+            const Destination = require('../../models/Destination');
+            const Business = require('../../models/Business');
+            const _fetch = async (q) => {
+                const [dests, bizs] = await Promise.all([
+                    Destination.find(q).limit(6).lean(),
+                    Business.find(q).limit(6).lean(),
+                ]);
+                return [
+                    ...bizs.map(d => ({ d, source: 'business' })),
+                    ...dests.map(d => ({ d, source: 'destination' })),
+                ].filter(x => Number.isFinite(x.d?.location?.coordinates?.lat)
+                           && Number.isFinite(x.d?.location?.coordinates?.lng));
+            };
+            let rows = await _fetch({ name: re });
+            if (!rows.length) {
+                // Shorthand tier ("Yasaman Tsaghkadzor" for "Yasaman
+                // Tsaghkadzor's Restaurant", live 2026-09-04): every
+                // significant token of the ASKED name must appear in the row
+                // name. Generic venue nouns don't count as evidence, so
+                // "restaurant" alone can never claim a row. Collections are
+                // tiny (dozens of rows) — the substring query is cheap.
+                const askTokens = String(nm).toLowerCase().split(/[^\p{L}\p{N}]+/u)
+                    .filter(t => t.length >= 3
+                        && !['the', 'and', 'restaurant', 'restoran', 'cafe', 'bar', 'hotel', 'club', 'lounge', 'ресторан', 'кафе'].includes(t));
+                if (askTokens.length) {
+                    const first = askTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const loose = await _fetch({ name: new RegExp(first, 'i') });
+                    rows = loose.filter(x => {
+                        const rn = String(x.d.name).toLowerCase();
+                        return askTokens.every(t => rn.includes(t));
+                    });
+                }
+            }
             if (!rows.length) return null;
             // Namesakes: nearest to the traveler wins (the Republic-Square-
             // in-Texas lesson, applied here too).
