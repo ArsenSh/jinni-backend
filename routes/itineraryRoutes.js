@@ -566,7 +566,7 @@ function decoratePhotoSpots(days, spots, { start, nearby = false, startMin = DAY
   const pt = (s) => ({ lat: s.place.latitude, lng: s.place.longitude });
   const dk = (a, b) => haversineKm(a.lat, a.lng, b.lat, b.lng);
   const pool = spots.filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude));
-  let attached = 0;
+  let attached = 0, reverts = 0;
   for (const day of days) {
     for (let n = 0; n < maxPerDay && pool.length; n++) {
       const seq = day.slots.filter(sl => sl.status === 'enriched' && Number.isFinite(sl.place?.latitude));
@@ -592,10 +592,31 @@ function decoratePhotoSpots(days, spots, { start, nearby = false, startMin = DAY
         day.slots.splice(at, 1);                       // no slack here — revert,
         recomputeDayTimes(day, start, nearby, startMin);
         pool.push(spot);                               // spot may fit another day
+        reverts++;
         break;
       }
       attached++;
     }
+  }
+  /* Diagnosis line (first live builds attached 0/N and the summary alone
+     cannot say WHY): for each unattached spot, the best detour it could have
+     had anywhere. Best >> cap means the spots are simply far from the routes;
+     best under the cap with reverts > 0 means the days are packed so tight
+     that a 30-min stop always pushes a meal — a tuning problem, not a
+     distance problem. */
+  if (pool.length) {
+    const misses = pool.map(p => {
+      const P = { lat: p.latitude, lng: p.longitude };
+      let best = Infinity;
+      for (const day of days) {
+        const seq = day.slots.filter(sl => sl.status === 'enriched' && Number.isFinite(sl.place?.latitude));
+        for (let g = 0; g < seq.length - 1; g++) {
+          best = Math.min(best, dk(pt(seq[g]), P) + dk(P, pt(seq[g + 1])) - dk(pt(seq[g]), pt(seq[g + 1])));
+        }
+      }
+      return `"${p.name}" best-detour=${Number.isFinite(best) ? best.toFixed(1) + 'km' : 'n/a'}`;
+    });
+    console.log(`[photo-decor] cap=${DECOR_KM}km, meal-push reverts=${reverts} — unattached: ${misses.join(' | ')}`);
   }
   return attached;
 }
