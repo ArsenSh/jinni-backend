@@ -226,6 +226,43 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
  *  riding along. Born from the live test where the narration starred DABOO and
  *  COBA while the cards led with an equestrian center. */
 const { namesPlausiblyMatch } = require('../places/matching');
+/* The narrator indexes its blurbs itself ({"i":N}) — and live 2026-09-04 it
+ * numbered them in its PRAISE order, not the list order: Bamboo's card carried
+ * Ginetun's blurb, Ginetun carried Bellagio's, Bellagio carried Bamboo's.
+ * Each blurb names its subject, so the deterministic fix is to seat every
+ * blurb that uniquely names ONE deck place on THAT card; the model's index is
+ * only the fallback. Conservative: ambiguous or nameless blurbs never move. */
+const _GENERIC_NAME_TOKENS = new Set(['restaurant', 'cafe', 'cafes', 'bar', 'hotel', 'museum', 'park',
+    'tavern', 'grill', 'house', 'club', 'lounge', 'kitchen', 'garden', 'center', 'centre', 'place']);
+function _distinctiveTokens(name) {
+    return String(name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+        .split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 4 && !_GENERIC_NAME_TOKENS.has(t));
+}
+function realignBlurbs(places, blurbs = []) {
+    const n = places?.length || 0;
+    if (!n || !blurbs.some(Boolean)) return blurbs;
+    const toks = places.map(p => _distinctiveTokens(p?.name));
+    const out = new Array(n).fill(null);
+    const claimed = new Set(), leftovers = [];
+    for (let i = 0; i < Math.min(blurbs.length, n); i++) {
+        const b = blurbs[i];
+        if (!b) continue;
+        const low = String(b).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+        const hits = [];
+        for (let j = 0; j < n; j++) if (toks[j].length && toks[j].some(t => low.includes(t))) hits.push(j);
+        if (hits.length === 1 && !claimed.has(hits[0])) { out[hits[0]] = b; claimed.add(hits[0]); continue; }
+        leftovers.push({ i, b });
+    }
+    // A blurb that named nothing (or something ambiguous) keeps its own seat
+    // when free, else takes the first empty one — never dropped.
+    for (const { i, b } of leftovers) {
+        if (!out[i]) { out[i] = b; continue; }
+        const free = out.findIndex(x => x === null);
+        if (free !== -1) out[free] = b;
+    }
+    return out;
+}
+
 function hoistNarrated(intro, places, blurbs = []) {
     const text = String(intro || '');
     if (!text || !places?.length) return { places: places || [], blurbs };
@@ -250,4 +287,4 @@ function buildContentParts(prose, recCount, trailingText = null) {
     return parts;
 }
 
-module.exports = { toRecommendation, buildContentParts, hoistNarrated, categoryFor, factDescription, CATEGORY_VOCABULARY, CATEGORY_LABELS, normalizeCategory };
+module.exports = { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs, categoryFor, factDescription, CATEGORY_VOCABULARY, CATEGORY_LABELS, normalizeCategory };

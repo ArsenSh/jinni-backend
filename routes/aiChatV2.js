@@ -19,7 +19,7 @@ const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
-const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
+const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
     isEntityQuestion, parseReferentAsk, namesVenueType } = require('../engine/retrieval/tuning');
@@ -1880,6 +1880,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    retrieval candidate. v1's exact payload shape → the
                 //    frontend renders them unchanged (photos, map, votes).
                 //    Prose and deck AGREE: intro-named places lead the cards. ──
+                // Blurbs seat on the card they NAME, not the index the model
+                // wrote (mis-numbered by praise order, live 2026-09-04).
+                const _realigned = realignBlurbs(result.places, blurbs);
+                if (_realigned.some((b, i2) => b !== blurbs[i2])) {
+                    console.log('[v2] blurbs realigned to their named cards');
+                    blurbs = _realigned;
+                }
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode, description: hoisted.blurbs[i] || null }));

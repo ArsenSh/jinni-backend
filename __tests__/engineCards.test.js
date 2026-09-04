@@ -212,3 +212,32 @@ describe('parseCardsTail kinds', () => {
         expect(t.blurbs[0]).toBe('a');
     });
 });
+
+describe('realignBlurbs: blurbs seat on the card they NAME (live 2026-09-04)', () => {
+    const { realignBlurbs } = require('../engine/narrator/cards');
+    const places = ['Bamboo Restaurant', 'Ginetun Restaurant', 'Tsirani Restaurant',
+        'Bellagio Restaurant', 'Cascade Royal', 'Blanca by Melonpan'].map(n => ({ name: n }));
+    test('the live praise-order shuffle is corrected', () => {
+        const blurbs = [
+            "Closest overall at 2.1 km, Ginetun's 4.7 rating makes it a strong pick.",
+            'Bellagio, 3.5 km away, pairs dining with lodging.',
+            'Tsirani at 3.6 km offers a solid option.',
+            'Bamboo, 4.1 km out, blends elegant dining with nightlife.',
+            'Cascade Royal, 4.6 km away, is dependable.',
+            'Blanca by Melonpan, the farthest at 4.8 km.'];
+        const out = realignBlurbs(places, blurbs);
+        expect(out[0]).toMatch(/^Bamboo/);
+        expect(out[1]).toMatch(/Ginetun/);
+        expect(out[3]).toMatch(/^Bellagio/);
+        expect(out.filter(Boolean)).toHaveLength(6);
+    });
+    test('nameless or ambiguous blurbs never move, none are dropped', () => {
+        const out = realignBlurbs([{ name: 'A B C' }, { name: 'Xyzzy Bar' }],
+            ['great vibes here', 'Xyzzy has the best wine']);
+        expect(out).toEqual(['great vibes here', 'Xyzzy has the best wine']);
+    });
+    test('already-correct blurbs stay put', () => {
+        const blurbs = places.map(p => `${p.name} is lovely.`);
+        expect(realignBlurbs(places, blurbs)).toEqual(blurbs);
+    });
+});

@@ -220,6 +220,12 @@ async function regionAt({ lat, lng } = {}, { maxKm = 30, mergeKm = 12 } = {}, de
             // Sections, subdivisions and abandoned/historical entries are never
             // the answer to "what city is this".
             featureCode: { $nin: SUBPLACE_CODES },
+            // Zero-population PPL rows are street/monument-level artifacts
+            // ("Isahakyan A.", "Sharrl Aznavuri") — live 2026-09-04 twenty of
+            // them crowded Yerevan out of the 25-candidate pool from Tsarav
+            // Aghbyur, so the most-populous rule crowned Arinj. They can never
+            // WIN the populous comparison; they only dilute the pool.
+            population: { $gt: 0 },
             location: { $near: { $geometry: { type: 'Point', coordinates: [lng, lat] },
                                  $maxDistance: maxKm * 1000 } },
         }).limit(NEAR_CANDIDATES).lean());

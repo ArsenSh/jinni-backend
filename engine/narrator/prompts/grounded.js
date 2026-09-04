@@ -628,6 +628,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
               + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
+              + '"i" is the place\'s index in the numbered list ABOVE — NEVER the order you chose to write about them. '
               // The card's category. Google's raw types are on each facts line
               // and they are coarse — a rental agency, an apartment block and a
               // mall can all arrive as one vague type. The model reads the NAME
