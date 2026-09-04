@@ -211,3 +211,23 @@ describe('get_place_details session-card selection (the Dilijan Park Resort conf
         expect(calls[0]).toBe(null);
     });
 });
+
+describe('makeExecutors: onPlace side-channel (first-mention card)', () => {
+    test('the full doc reaches ctx.onPlace; the model still gets the slim projection', async () => {
+        const doc = { name: 'Kamancha', place_id: 'pid1', rating: 4.2,
+            formatted_address: '23 Tumanyan St', geometry: { location: { lat: 40.18, lng: 44.51 } } };
+        const seen = [];
+        const ex = makeExecutors({ sessionPlaces: [], onPlace: (d) => seen.push(d) }, { lookup: async () => doc });
+        const out = await ex.get_place_details({ name: 'Kamancha' });
+        expect(seen).toHaveLength(1);
+        expect(seen[0].geometry.location.lat).toBe(40.18);
+        expect(out.rating).toBe(4.2);
+        expect(out.geometry).toBeUndefined();
+    });
+    test('a throwing onPlace never breaks the tool', async () => {
+        const ex = makeExecutors({ onPlace: () => { throw new Error('x'); } },
+            { lookup: async () => ({ name: 'A', place_id: 'p' }) });
+        const out = await ex.get_place_details({ name: 'A' });
+        expect(out.name).toBe('A');
+    });
+});

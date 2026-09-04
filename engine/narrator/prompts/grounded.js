@@ -800,7 +800,7 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
                   : '')
               // Ghost cards (QA 2026-09-04): this reply renders WITHOUT cards
               // (places+0), yet answers kept saying "tap More on its card".
-              + '- A null field means the detail is not listed in the verified data: say so briefly. This reply shows NO cards — never tell the traveler to tap More or mention "its card".\n'
+              + '- A null field means the detail is not listed in the verified data: say so briefly. Never tell the traveler to tap More or mention "its card" — when a card exists it renders automatically under this reply.\n'
               + '- NEVER tell the traveler to look a place up on Google, Google Maps or any external site.\n'
               + '- NEVER assert road, trail, or terrain conditions (paving, lighting, difficulty, how safe the '
               + 'drive or hike is) — the verified data does not carry them; say you do not have that and '

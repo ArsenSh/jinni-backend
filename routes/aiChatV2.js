@@ -1117,13 +1117,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
         } else if (namedCard || placeQuestion) {
+            const fetchedDocs = [];
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
                     aboutPlace: (namedCard && namedCard.name) || null,
                     alreadyDescribed: !!(namedCard && namedCard.name && sessionPeek?.lastDiscussed?.name
                         && String(namedCard.name).toLowerCase() === String(sessionPeek.lastDiscussed.name).toLowerCase()) }),
                 tools: [PLACE_DETAILS_TOOL],
-                execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
+                execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}`,
+                    onPlace: (d) => fetchedDocs.push(d) }),
                 maxTokens: 400,
             }, { provider: deepseekProvider });
             addUsage(loop);
@@ -1147,6 +1149,32 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     { _id: sessionId },
                     { $set: { lastDiscussed: { name: _discussed, at: new Date() } } },
                 ).catch(() => {});
+            }
+            // ── FIRST-MENTION CARD (founder decision 2026-09-04: "Kamancha
+            //    was in the cache but answered without a card — you decide").
+            //    The traveler asked ABOUT this place and we hold its verified
+            //    row: show the card once (photo, map, save — the product's
+            //    visual language and the save funnel). Data comes from the
+            //    REAL tool result, never parsed prose, so the
+            //    cards-from-retrieval invariant holds. Follow-ups about a
+            //    place already carded this session stay prose-only — the
+            //    card is already on screen. ──
+            const _doc = [...fetchedDocs].reverse().find(x =>
+                x?.place_id && Number.isFinite(x?.geometry?.location?.lat) && Number.isFinite(x?.geometry?.location?.lng));
+            if (_doc && loop.text) {
+                const { normalizePlaceName: _npn } = require('../engine/places/matching');
+                const already = sessionCards.some(c => (c.placeId && c.placeId === _doc.place_id)
+                    || _npn(c.name || '') === _npn(_doc.name || ''));
+                if (!already) {
+                    recommendations = [toRecommendation({
+                        name: _doc.name, placeId: _doc.place_id,
+                        geometry: { lat: _doc.geometry.location.lat, lng: _doc.geometry.location.lng },
+                        address: _doc.formatted_address || null, rating: _doc.rating || null,
+                        website: _doc.website || null, phone: _doc.formatted_phone_number || null,
+                        types: _doc.types || [], source: 'cache',
+                    }, 0, { action: category || 'general' })];
+                    console.log(`[v2] first-mention card attached: "${_doc.name}"`);
+                }
             }
         } else if (!intent.isTravel || intent.infoAsk === 'how_to' || referentClarify) {
             // ── Chit-chat, and now also HOW-TO questions (visas, SIM cards,

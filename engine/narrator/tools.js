@@ -99,6 +99,9 @@ function makeExecutors(ctx = {}, deps = {}) {
                 return { error: `lookup_failed: ${err.message}` };
             }
             if (!d || !d.name) return { error: 'not_found' };
+            // The route may want the FULL doc (geometry, address) to attach a
+            // card — the model still only sees the slim honest projection.
+            try { if (typeof ctx.onPlace === 'function') ctx.onPlace(d); } catch { /* never breaks the tool */ }
             return {
                 name: d.name,
                 address: d.formatted_address || null,
