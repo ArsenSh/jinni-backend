@@ -333,10 +333,12 @@ const ENTITY_Q_RE = new RegExp('^\\s*(?:'
 // \b is ASCII-only, so the non-latin prefixes get their own boundary-free
 // pattern (the NEARBY_*_RE pair set the precedent).
 const ENTITY_Q_NONLATIN_RE = /^\s*(?:расскажи(?:те)?(?: мне)? (?:о|про) |где (?:находится|расположен)|сколько стоит |во сколько |когда (?:открывается|закрывается)|պատմիր |որտեղ է )/i;
-const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places)\b/i;
+const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places|what (can|should|shall) (i|we) do|things to do|somewhere to go)\b/i;
+// \b is ASCII-only — Cyrillic/Armenian markers live boundary-free (repo lesson).
+const BROWSE_MARK_NONLATIN_RE = /(где можно|что.{0,12}(делать|посмотреть)|чем заняться|куда (сходить|пойти)|ինչ անել|ուր գնալ)/i;
 /* A browse-marked message wants a DECK — the junk-question brake must never
  * swallow "what can I do", "best bars", "recommend something". */
-function isBrowseAsk(message) { return BROWSE_MARK_RE.test(String(message || '')); }
+function isBrowseAsk(message) { const m = String(message || ''); return BROWSE_MARK_RE.test(m) || BROWSE_MARK_NONLATIN_RE.test(m); }
 
 function isEntityQuestion(message) {
     const m = String(message || '');

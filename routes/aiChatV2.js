@@ -1676,7 +1676,15 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 //    answer about. A deck that matched nothing is not an
                 //    answer to a question (founder invariant) — the tool loop
                 //    with history answers it instead. ──
-                result.provenance.lexical === 0 && sessionCards.length > 0
+                // A CATEGORIZED ask is a browse by definition — the category
+                // IS the match evidence; lex only counts free-text tokens.
+                // "What can I do tonight?" (cat=events) built a good 6-event
+                // deck and the brake swallowed it, then the prose claimed "no
+                // verified events" while holding six (live 2026-09-04, the
+                // over-fire risk called out at ship time). Junk turns are all
+                // cat=free.
+                !category
+                && result.provenance.lexical === 0 && sessionCards.length > 0
                 && /[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim())
                 && !namesVenueType(message) && !isBrowseAsk(message)
                 && !refillActive && !deckAsk && !countOrRefillAsk
