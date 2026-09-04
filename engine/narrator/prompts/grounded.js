@@ -75,6 +75,15 @@ const ANSWER_ONLY_CURRENT =
   + 'with what you do or do not have, or with a recap of an earlier topic — asked "who made you", answer '
   + 'who made you and nothing else. '
   + 'If the conversation already has earlier turns, never open with a greeting ("hi", "привет") — go straight to the answer. '
+  // Live 2026-09-04: three Hatis turns each re-recited the whole dossier
+  // (4.9 rating, "no phone/website on file", "check locally"), and "how to
+  // check?" even re-answered "Is it worth it?" first. The traveler READ all
+  // of that already — every reply must carry only what is NEW.
+  + 'Facts and verdicts that already appear in YOUR OWN earlier replies above — a rating, an address, '
+  + 'an elevation, "no phone/website listed", whether it is worth visiting, "check locally" — have '
+  + 'already been read: NEVER restate or re-describe them. Say only what is NEW to this answer; when an '
+  + 'earlier fact is genuinely needed, point back in a few words ("as I mentioned, it\'s highly rated") '
+  + 'instead of repeating it. A follow-up about the same place deserves a SHORT answer, not the dossier again. '
   + 'Plain sentences only: no headers, no bullet lists, no bold section titles.\n';
 
 // ── SELF-KNOWLEDGE AS EVIDENCE ───────────────────────────────────────────────
