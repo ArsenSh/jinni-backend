@@ -334,6 +334,10 @@ const ENTITY_Q_RE = new RegExp('^\\s*(?:'
 // pattern (the NEARBY_*_RE pair set the precedent).
 const ENTITY_Q_NONLATIN_RE = /^\s*(?:расскажи(?:те)?(?: мне)? (?:о|про) |где (?:находится|расположен)|сколько стоит |во сколько |когда (?:открывается|закрывается)|պատմիր |որտեղ է )/i;
 const BROWSE_MARK_RE = /\b(best|top|good|great|cheapest|cheap|nearest|closest|nearby|near me|around me|some|any|options|ideas|recommend\w*|restaurants|hotels|bars|cafes|museums|places)\b/i;
+/* A browse-marked message wants a DECK — the junk-question brake must never
+ * swallow "what can I do", "best bars", "recommend something". */
+function isBrowseAsk(message) { return BROWSE_MARK_RE.test(String(message || '')); }
+
 function isEntityQuestion(message) {
     const m = String(message || '');
     return (ENTITY_Q_RE.test(m) || ENTITY_Q_NONLATIN_RE.test(m)) && !BROWSE_MARK_RE.test(m);
@@ -403,5 +407,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

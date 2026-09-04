@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -1119,7 +1119,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         } else if (namedCard || placeQuestion) {
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
-                    aboutPlace: (namedCard && namedCard.name) || null }),
+                    aboutPlace: (namedCard && namedCard.name) || null,
+                    alreadyDescribed: !!(namedCard && namedCard.name && sessionPeek?.lastDiscussed?.name
+                        && String(namedCard.name).toLowerCase() === String(sessionPeek.lastDiscussed.name).toLowerCase()) }),
                 tools: [PLACE_DETAILS_TOOL],
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                 maxTokens: 400,
@@ -1135,8 +1137,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Stamp what this turn DISCUSSED so a later pronoun can point at
             // it (see the referent block above). Fire-and-forget: a failed
             // stamp only costs the pointer, never the reply.
-            const _discussed = (namedCard && namedCard.name)
-                || loop.toolCalls.find(c => c.name === 'get_place_details')?.args?.name || null;
+            // LAST call, not first: "Tell me about Kamancha" re-fetched
+            // Hatis first, then Kamancha — .find() stamped Hatis and the next
+            // pronoun pointed at the wrong place (live 2026-09-04).
+            const _discussed = [...loop.toolCalls].reverse().find(c => c.name === 'get_place_details')?.args?.name
+                || (namedCard && namedCard.name) || null;
             if (sessionId && _discussed) {
                 require('../models/ChatSession').updateOne(
                     { _id: sessionId },
@@ -1659,6 +1664,46 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 meta.answerType = 'no_match';
                 stats.path = 'no_match';
                 console.log(`[v2] relevance brake: nothing matches [${result.provenance.unmatched.join(',')}] — answered without cards (${Date.now() - t0}ms)`);
+            } else if (
+                // ── JUNK-QUESTION BRAKE (Arsen 2026-09-04: "how to check?"
+                //    became q="check", lex=0, six random cards — and the SAME
+                //    message had routed to chit-chat an hour earlier; the deck
+                //    path was trusting the intent LLM's travel=true dice roll).
+                //    Deterministic and evidence-based, phrasing-free: the
+                //    deck's own provenance says no keyword matched anything,
+                //    the message is question-shaped, names no venue type,
+                //    carries no browse marker, and there IS a conversation to
+                //    answer about. A deck that matched nothing is not an
+                //    answer to a question (founder invariant) — the tool loop
+                //    with history answers it instead. ──
+                result.provenance.lexical === 0 && sessionCards.length > 0
+                && /[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim())
+                && !namesVenueType(message) && !isBrowseAsk(message)
+                && !refillActive && !deckAsk && !countOrRefillAsk
+            ) {
+                const loop = await runToolLoop({
+                    messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
+                        aboutPlace: sessionPeek?.lastDiscussed?.name || null }),
+                    tools: [PLACE_DETAILS_TOOL],
+                    execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
+                    maxTokens: 400,
+                }, { provider: deepseekProvider });
+                addUsage(loop);
+                reply = loop.text || 'Could you say a bit more about what you want me to check?';
+                for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
+                    send(res, { type: 'token', content: chunk });
+                }
+                stats.path = 'tool';
+                meta.answerType = 'question_rescue';
+                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                const _qd = [...loop.toolCalls].reverse().find(c => c.name === 'get_place_details')?.args?.name || null;
+                if (sessionId && _qd) {
+                    require('../models/ChatSession').updateOne(
+                        { _id: sessionId },
+                        { $set: { lastDiscussed: { name: _qd, at: new Date() } } },
+                    ).catch(() => {});
+                }
+                console.log(`[v2] junk-question brake: lex=0 question "${String(message).slice(0, 40)}" → tool loop (${loop.toolCalls.length} call(s)), no deck`);
             } else {
                 stage('writing', 'Almost there — putting it together…');
                 const weather = await weatherPromise;   // resolved long ago or null
@@ -1940,8 +1985,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     // turn actually searches for something new.
                     require('../models/ChatSession').updateOne({ _id: sessionId }, {
                         $set: { constraints: { ...ledger,
-                            lastQuery: modifierTurn ? ledger.lastQuery : retrievalQuery,
-                            lastCore: modifierTurn ? (ledger.lastCore || null)
+                            // A lex=0 turn matched NOTHING — its query is
+                            // noise ("how to check" became the anchor and the
+                            // next "something cheaper" re-ran it, live
+                            // 2026-09-04). Junk never becomes the anchor.
+                            lastQuery: (modifierTurn || result.provenance.lexical === 0)
+                                ? ledger.lastQuery : retrievalQuery,
+                            lastCore: (modifierTurn || result.provenance.lexical === 0)
+                                ? (ledger.lastCore || null)
                                 : (stripRadiusPhrase(intent.searchQuery) || ledger.lastCore || null),
                             updatedAt: new Date() } },
                     }).catch(() => {});
