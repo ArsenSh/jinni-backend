@@ -40,7 +40,27 @@ const CHAT_STOPWORDS = new Set([
     'within', 'inside', 'radius', 'closest', 'nearest', 'kilometers', 'kilometres',
 ]);
 
+/* Radius wording is a CONSTRAINT, not content — it rides the ledger as
+ * radiusKm. Left in the query text it poisons the paid search: the fallback
+ * POSTed textQuery="restaurants within 500 meters Arinj" and got 1 junk hit
+ * (live 2026-09-04, right after meters support shipped). Strips every
+ * RADIUS_RES span plus any leftover bare "N unit" pair. */
+function stripRadiusPhrase(text) {
+    const src = String(text || '');
+    let out = src;
+    for (const re of RADIUS_RES) out = out.replace(new RegExp(re.source, re.flags + 'g'), ' ');
+    out = out.replace(/\b\d{1,4}\s*(km|kilomet(?:er|re)s?|mi|miles?|m|met(?:er|re)s?)\b/gi, ' ')
+             .replace(/(\d{1,4})\s*(км|километ[а-яё]*|метр[а-яё]*|м|կմ|կիլոմետր[ա-ֆ]*|մետր[ա-ֆ]*|մ)/gi, ' ');
+    // "within 2 km of me" — the first pattern eats "within 2 km" and orphans
+    // the connector. Only tidied when a radius actually came out, so plain
+    // proximity phrasing ("bars around me") stays untouched.
+    if (out !== src) out = out.replace(/\b(?:of|from|around) me\b|\bradius\b/gi, ' ');
+    return out.replace(/\s{2,}/g, ' ').trim();
+}
+
 function buildRetrievalQuery(searchQuery, rawMessage, maxTokens = 8) {
+    searchQuery = stripRadiusPhrase(searchQuery);
+    rawMessage = stripRadiusPhrase(rawMessage);
     const base = tokenize(searchQuery || '');
     const seen = new Set(base);
     const extra = [];
@@ -196,8 +216,8 @@ function parseAtLocation(message) {
 const RADIUS_RES = [
     /\b(?:within|under|less than|no more than|inside|in a|max(?:imum)?)\s+(\d{1,4})\s*(km|kilomet(?:er|re)s?|mi|miles?|m|met(?:er|re)s?)\b/i,
     /\b(\d{1,4})\s*(km|kilomet(?:er|re)s?|mi|miles?|m|met(?:er|re)s?)\s*(?:radius|around|away|from me|of me)\b/i,
-    /(?:в радиусе|не дальше|не более|в пределах)\s+(\d{1,4})\s*(км|километ\w*|м|метр\w*)/i,
-    /(\d{1,4})\s*(կմ|կիլոմետր\w*|մ|մետր\w*)/i,
+    /(?:в радиусе|не дальше|не более|в пределах)\s+(\d{1,4})\s*(км|километ[а-яё]*|метр[а-яё]*|м)/i,
+    /(\d{1,4})\s*(կմ|կիլոմետր[ա-ֆ]*|մետր[ա-ֆ]*|մ)/i,
 ];
 function parseRadiusKm(message) {
     const m = String(message || '');
@@ -383,5 +403,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

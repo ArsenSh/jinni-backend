@@ -490,6 +490,17 @@ describe('parseRadiusKm: meters (QA §9 — "500 meters" ran at 15km)', () => {
     test('sub-km floors at 0.2, never rounds up to 1', () => {
         expect(parseRadiusKm('within 100 meters')).toBe(0.2);
     });
+    // The phrase must LEAVE the query once parsed — it went to Google as
+    // textQuery="restaurants within 500 meters Arinj" (live 2026-09-04).
+    test('stripRadiusPhrase removes the constraint from query text', () => {
+        const { stripRadiusPhrase, buildRetrievalQuery } = require('../engine/retrieval/tuning');
+        expect(stripRadiusPhrase('restaurants within 500 meters')).toBe('restaurants');
+        expect(stripRadiusPhrase('рестораны в радиусе 300 метров')).toBe('рестораны');
+        expect(stripRadiusPhrase('cafes within 2 km of me')).toBe('cafes');
+        expect(stripRadiusPhrase('cozy wine bars near the opera')).toBe('cozy wine bars near the opera');
+        expect(buildRetrievalQuery('restaurants within 500 meters', 'Show me restaurants within 500 meters'))
+            .not.toMatch(/meters|500/);
+    });
 });
 
 describe('isTransportAsk: route words (QA §9 — "fastest route" refused routing)', () => {

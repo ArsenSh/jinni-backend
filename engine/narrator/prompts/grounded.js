@@ -325,6 +325,13 @@ function buildChitchatMessages({ message, langName = 'English', history = [], lo
                   + 'For entry rules and safety, tell them to confirm with the official authority.\n'
                   : '')
               + 'This is a casual/meta message — answer naturally in 1–3 sentences.\n'
+              // Same rule as getting-around/tool answers: "what kind of
+              // construction is going on there?" came through THIS door and
+              // the reply asserted "rough and gravelly, high-clearance
+              // vehicle recommended" from pure memory (live 2026-09-04).
+              + 'NEVER assert road, trail, or terrain conditions — paving, lighting, steepness, difficulty, '
+              + 'or how safe a drive or hike is — unless a verified note below states them. Say you do not '
+              + 'have condition data and advise checking locally.\n'
               + 'You DO see the recent conversation above — never claim you cannot. Draw on it only where THIS '
               + 'message needs it; do not summarise or revisit it otherwise.\n'
               + 'Do not invent or name any specific real venue in THIS reply (none are verified on this turn). '

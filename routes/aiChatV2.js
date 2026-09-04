@@ -20,7 +20,7 @@ const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated } = require('../engine/narrator/cards');
-const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, isNearbyAsk, isWalkingAsk, isClosestAsk,
+const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
     isEntityQuestion, parseReferentAsk, namesVenueType } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
@@ -1418,9 +1418,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // typed, live 2026-09-03). The retrieval query is the same ask
                 // already reduced to its content words, which is what a search
                 // engine can actually use.
-                coreQuery: (modifierTurn
+                coreQuery: stripRadiusPhrase((modifierTurn
                     ? (ledger.lastCore || intent.searchQuery)
-                    : (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery)) || '',
+                    : (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery)) || ''),
                 category,
                 subType: intent.subType || null,
                 center,
@@ -1931,7 +1931,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         $set: { constraints: { ...ledger,
                             lastQuery: modifierTurn ? ledger.lastQuery : retrievalQuery,
                             lastCore: modifierTurn ? (ledger.lastCore || null)
-                                : (intent.searchQuery || ledger.lastCore || null),
+                                : (stripRadiusPhrase(intent.searchQuery) || ledger.lastCore || null),
                             updatedAt: new Date() } },
                     }).catch(() => {});
                 }
