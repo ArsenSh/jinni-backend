@@ -473,6 +473,12 @@ describe('entity questions & referent asks (QA 2026-09-04)', () => {
     test('"what about <named place>" is NOT a bare referent', () => {
         expect(parseReferentAsk('What about Khor Virap?')).toBe(false);
     });
+    // 'Is it worth it?"' — a trailing quotation mark broke the match and the
+    // engine served a lex=0 junk deck again (live 2026-09-04 evening).
+    test('trailing quotes and brackets do not break a referent ask', () => {
+        for (const m of ['Is it worth it?"', "Is it worth it?'", 'Is it worth it?”', '(Is it far?)'])
+            expect(parseReferentAsk(m)).toBe(true);
+    });
 });
 
 describe('parseRadiusKm: meters (QA §9 — "500 meters" ran at 15km)', () => {

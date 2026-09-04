@@ -346,7 +346,7 @@ function isEntityQuestion(message) {
  * POINTER — resolve it to the most recently shown card, or ask. Pure-pronoun
  * shapes only: a sentence that names a venue noun ("is this restaurant
  * open?") already flows through the named-card machinery. */
-const REFERENT_RE = new RegExp('^\\s*(?:'
+const REFERENT_RE = new RegExp('^[\\s"\u0027«»“”’(\\[]*(?:'
     + 'is (?:it|that|this)\\b[^.?!]{0,30}'
     + '|how (?:far|much)[^.?!]{0,6}\\b(?:it|that|this)\\b[^.?!]{0,15}'
     + '|(?:take me to |show me )?the best one'
@@ -354,7 +354,7 @@ const REFERENT_RE = new RegExp('^\\s*(?:'
     + '|what about (?:this|that)(?: (?:place|one|spot))?'
     + '|how far (?:walking|on foot|by foot)'
     + '|это (?:далеко|дорого|того стоит|стоит того)|сколько это стоит|это открыто'
-    + '|արժե\\u055e?)[\\s.?!]*$', 'i');
+    + '|արժե\\u055e?)[\\s.?!"\u0027«»“”’)\\]]*$', 'i');
 function parseReferentAsk(message) {
     const m = String(message || '').trim();
     if (!m || m.length > 48) return false;

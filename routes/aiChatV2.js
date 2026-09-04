@@ -588,7 +588,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // into the tool loop, which refused (live 2026-09-04) — a redo ask
         // wants a NEW DECK, not facts about one place.
         const _redoAsk = /\b(again|anew|re-?plan|заново|ещ[её] раз|նորից)\b/i.test(msgLower);
-        if (!namedCard && intent.isTravel && !deckAsk && _referential && !_redoAsk) {
+        // "ok, покажи рестораны рядом" is 4 words, so the ≤6-word clause made
+        // it "referential" and the bridge carried Blanca into the tool loop —
+        // prose about one place instead of the asked deck (live 2026-09-04).
+        // Naming a venue type means a NEW browse, never a follow-up pointer.
+        if (!namedCard && intent.isTravel && !deckAsk && _referential && !_redoAsk && !namesVenueType(message)) {
             const userTurns = (sessionPeek?.messages || []).filter(m => m?.sender === 'user' && m.text);
             const prev = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : null;
             if (prev) {
