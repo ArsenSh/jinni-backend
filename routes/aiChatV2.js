@@ -1156,6 +1156,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 en: 'Great — let\'s plan your trip. Answer the quick questions below and I\'ll build the day-by-day itinerary.',
                 ru: 'Отлично — давайте спланируем поездку. Ответьте на пару вопросов ниже, и я соберу маршрут по дням.',
                 hy: 'Հիանալի է — եկեք պլանավորենք ձեր ուղևորությունը։ Պատասխանեք ստորև հարցերին, և ես կկազմեմ օրըստօրե երթուղին։',
+                fr: 'Parfait — planifions votre voyage. Répondez aux questions ci-dessous et je construirai l\'itinéraire jour par jour.',
+                zh: '好的——我们来规划您的行程。回答下面的问题，我会为您制定每日行程。',
+                ar: 'رائع — لنخطط رحلتك. أجب عن الأسئلة أدناه وسأبني لك برنامج الرحلة يومًا بيوم.',
             };
             reply = IT_LINES[String(intent._userLanguage || 'en').slice(0, 2)] || IT_LINES.en;
             send(res, { type: 'itinerary_clarifier', prefill: { daysCount: prefillDays, destination: null } });

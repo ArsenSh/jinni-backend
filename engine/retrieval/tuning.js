@@ -391,8 +391,8 @@ function parseCurrencyConvert(message) {
  * itinerary", lex=0) and served coworking spaces (live 2026-09-05). A
  * day-by-day plan is the ITINERARY tool's job (founder scope §10: itinerary
  * stays on quick actions) — the shape is deterministic. */
-const _IT_LATIN = /\bitinerar|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b/i;
-const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\b\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)/i;
+const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
+const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
     const m = String(message || '');
     return _IT_LATIN.test(m) || _IT_NONLATIN.test(m);
