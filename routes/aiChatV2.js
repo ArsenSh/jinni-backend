@@ -1167,14 +1167,21 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Hotel + breakfast the message already answered ride along so
             // the clarifier skips the typing — the user still taps Start
             // (an itinerary is never BUILT straight from a chat sentence).
+            // Destination named in THIS message ("plan one day in Tbilisi")
+            // rides along — v1's contract. Without it the build ran around
+            // the saved centre and served a YEREVAN day for a Tbilisi ask
+            // (live 2026-09-05). namedPlace is set only when the message
+            // itself named a geographic destination, never by session drift.
+            const _itinDest = (namedPlace && Number.isFinite(namedPlace.lat) && Number.isFinite(namedPlace.lng))
+                ? { name: namedPlace.city, lat: namedPlace.lat, lng: namedPlace.lng } : null;
             send(res, { type: 'itinerary_clarifier', prefill: {
-                daysCount: prefillDays, destination: null,
+                daysCount: prefillDays, destination: _itinDest,
                 hotelName: _det.hotel || null, hotelBreakfast: _det.breakfast ?? null,
             } });
             send(res, { type: 'token', content: reply });
             meta.answerType = 'itinerary_clarifier';
             stats.path = 'chitchat';
-            console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ', hotel=' + (_det.hotel ? 'stated' : '?') + ', breakfast=' + (_det.breakfast == null ? '?' : _det.breakfast) + ') — same build path as the quick action');
+            console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ', hotel=' + (_det.hotel ? 'stated' : '?') + ', breakfast=' + (_det.breakfast == null ? '?' : _det.breakfast) + (_itinDest ? `, dest=${_itinDest.name}` : '') + ') — same build path as the quick action');
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService

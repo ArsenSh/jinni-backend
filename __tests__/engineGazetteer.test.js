@@ -717,3 +717,11 @@ describe('cache exactness outranks proximity (live 2026-09-05: "Yerevan Park" se
         expect(src).toMatch(/findOne\(\{ searchName: normalizedName \}\)/);
     });
 });
+
+describe('itinerary clarifier carries a named destination (live 2026-09-05: Tbilisi ask built a Yerevan day)', () => {
+    test('v2 prefill rides namedPlace, never a hard null', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiChatV2.js'), 'utf8');
+        expect(src).toMatch(/destination: _itinDest/);
+        expect(src).toMatch(/namedPlace && Number\.isFinite\(namedPlace\.lat\)/);
+    });
+});
