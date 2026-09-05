@@ -27,6 +27,30 @@ const PLACE_DETAILS_TOOL = {
     },
 };
 
+// REAL road distance & drive time — the Reality Check engine (founder
+// 2026-09-05: "visit Tatev, Noravank, return by 20:00" opened a generic
+// clarifier instead of saying it is impossible). Distances and durations
+// are FACTS: they reach the traveler only from the routing engine (self-
+// hosted OSRM, $0/call), never from model memory.
+const GET_ROUTE_TOOL = {
+    type: 'function',
+    function: {
+        name: 'get_route',
+        description:
+            'REAL road distance and driving time between two named places, from the routing engine. '
+          + 'Use for ANY "how far", travel-time or feasibility judgement ("can I visit X and be back by 20:00?") — '
+          + 'NEVER estimate a distance or drive time yourself. Works for towns, villages, monasteries, landmarks.',
+        parameters: {
+            type: 'object',
+            properties: {
+                origin: { type: 'string', description: 'Starting place name (the traveler\'s city if not stated).' },
+                destination: { type: 'string', description: 'Destination place name.' },
+            },
+            required: ['origin', 'destination'],
+        },
+    },
+};
+
 // Flights (Arsen 2026-08-23: "can it check airport or trips?"). Prices are
 // FACTS — they may only come from the API, never from the model's memory,
 // which is the same rule that keeps cards honest. The tool is offered to the
@@ -292,6 +316,41 @@ function makeExecutors(ctx = {}, deps = {}) {
             };
         },
 
+        get_route: async ({ origin, destination } = {}) => {
+            if (!origin || !destination) return { error: 'origin_and_destination_required' };
+            // Names resolve through the same cheapest-first ladder the stated-
+            // position feature uses: session cards, gazetteer, own corpus,
+            // Google last. Injectable for tests.
+            const resolve = deps.resolveLocation || (async (nm) =>
+                require('../geo/whereAmI').resolveStatedLocation(nm,
+                    { sessionCards: ctx.sessionPlaces || [], near: ctx.center || null },
+                    { findPlaces: (q, near) => require('../../services/googleService').findPlaces(q, near) }));
+            let a = null, b = null;
+            try { [a, b] = await Promise.all([resolve(origin), resolve(destination)]); } catch { /* honest miss below */ }
+            if (!a || !b) return { error: 'place_not_found', which: !a ? origin : destination };
+            const { haversineKm } = require('../utils/geo');
+            const straightKm = Math.round(haversineKm(a.lat, a.lng, b.lat, b.lng) * 10) / 10;
+            const fetchRoute = deps.fetchRoute || (async (from, to) => {
+                const axios = require('axios');
+                const { osrmBaseFor, buildOsrmRouteUrl } = require('../travel/osrm');
+                const base = osrmBaseFor('driving-car');
+                if (!base) return null;
+                const res2 = await axios.get(buildOsrmRouteUrl(base, [from, to]), { timeout: 6000 });
+                const r = res2.data?.routes?.[0];
+                return (r && Number.isFinite(r.distance)) ? { km: r.distance / 1000, minutes: r.duration / 60 } : null;
+            });
+            let route = null;
+            try { route = await fetchRoute(a, b); } catch { route = null; }
+            if (!route) {
+                // Fail HONEST, not silent: the straight line is labeled as such
+                // and the model is told not to turn it into a drive time.
+                return { origin: a.name, destination: b.name, straight_line_km: straightKm,
+                         note: 'road route unavailable — this is the STRAIGHT-LINE distance; the road is longer, do NOT state a drive time' };
+            }
+            return { origin: a.name, destination: b.name,
+                     road_km: Math.round(route.km * 10) / 10, drive_minutes: Math.round(route.minutes),
+                     straight_line_km: straightKm, source: 'osrm' };
+        },
         find_flights: async ({ origin, destination, depart_date: departDate, return_date: returnDate, currency } = {}) => {
             if (!origin || !destination) return { error: 'origin_and_destination_required' };
             const search = deps.searchFlights || require('../travel/flights').searchFlights;
@@ -309,4 +368,4 @@ function makeExecutors(ctx = {}, deps = {}) {
     };
 }
 
-module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors, ownedNameMatches };
+module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, makeExecutors, ownedNameMatches };

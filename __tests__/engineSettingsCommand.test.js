@@ -401,7 +401,7 @@ describe('itinerary details ride the intent (founder 2026-09-05: hotel/breakfast
 
     test('stated days + hotel + breakfast survive validation in shape', () => {
         const r = validateIntent({ ...base, itinerary_details: { days: 3, hotel: 'Grand Hotel Yerevan', breakfast: true } }, 'my hotel is Grand Hotel Yerevan with breakfast, plan 3 days');
-        expect(r.itineraryDetails).toEqual({ days: 3, hotel: 'Grand Hotel Yerevan', breakfast: true });
+        expect(r.itineraryDetails).toEqual({ days: 3, hotel: 'Grand Hotel Yerevan', breakfast: true, timeBound: false });
     });
 
     test('absent facts stay null — never invented', () => {
@@ -417,5 +417,17 @@ describe('itinerary details ride the intent (founder 2026-09-05: hotel/breakfast
     test('junk shapes are dropped, not repaired', () => {
         const r = validateIntent({ ...base, itinerary_details: { days: 99, hotel: 'A', breakfast: 'yes' } }, 'plan 99 days');
         expect(r.itineraryDetails).toBe(null); // 99>30, 1-char hotel, string breakfast — all rejected
+    });
+});
+
+describe('count=1 and time_bound survive intent validation (ChatGPT battery 2026-09-05)', () => {
+    const { validateIntent } = require('../services/intentService');
+    test('"only one" is expressible', () => {
+        const r = validateIntent({ is_travel: true, action_type: 'restaurants', count: 1 }, 'say me only one restaurant');
+        expect(r.count).toBe(1);
+    });
+    test('time-bound itinerary ask carries the feasibility flag', () => {
+        const r = validateIntent({ is_travel: true, action_type: 'itinerary', itinerary_details: { days: 0, hotel: '', breakfast: null, time_bound: true } }, 'visit Tatev and return by 20:00');
+        expect(r.itineraryDetails.timeBound).toBe(true);
     });
 });

@@ -320,3 +320,35 @@ describe('ownedNameMatches: transliteration is not 1:1 (kh/gh, live 2026-09-05)'
         expect(ownedNameMatches(toks('Ясаман'), 'Matenadaran')).toBe(false);
     });
 });
+
+describe('get_route is the Reality Check engine (founder 2026-09-05: Tatev by 20:00 built a generic day)', () => {
+    const { makeExecutors, GET_ROUTE_TOOL } = require('../engine/narrator/tools');
+    const yerevan = { lat: 40.18, lng: 44.51, name: 'Yerevan' };
+    const tatev = { lat: 39.38, lng: 46.25, name: 'Tatev Monastery' };
+    const resolveLocation = async (nm) => (/tatev/i.test(nm) ? tatev : /yerevan/i.test(nm) ? yerevan : null);
+
+    test('road figures come from the routing engine, never invented', async () => {
+        const ex = makeExecutors({ center: yerevan }, { resolveLocation, fetchRoute: async () => ({ km: 253.4, minutes: 262 }) });
+        const r = await ex.get_route({ origin: 'Yerevan', destination: 'Tatev' });
+        expect(r).toEqual(expect.objectContaining({ road_km: 253.4, drive_minutes: 262, source: 'osrm' }));
+        expect(r.straight_line_km).toBeGreaterThan(100); // haversine sanity
+    });
+
+    test('router down → labeled straight-line, no drive time', async () => {
+        const ex = makeExecutors({ center: yerevan }, { resolveLocation, fetchRoute: async () => null });
+        const r = await ex.get_route({ origin: 'Yerevan', destination: 'Tatev' });
+        expect(r.road_km).toBeUndefined();
+        expect(r.drive_minutes).toBeUndefined();
+        expect(r.note).toMatch(/STRAIGHT-LINE/);
+    });
+
+    test('unknown place → honest place_not_found naming the culprit', async () => {
+        const ex = makeExecutors({ center: yerevan }, { resolveLocation, fetchRoute: async () => null });
+        const r = await ex.get_route({ origin: 'Yerevan', destination: 'Atlantis' });
+        expect(r).toEqual({ error: 'place_not_found', which: 'Atlantis' });
+    });
+
+    test('the tool forbids self-estimation in its own description', () => {
+        expect(GET_ROUTE_TOOL.function.description).toMatch(/NEVER estimate/);
+    });
+});

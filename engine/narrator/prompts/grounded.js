@@ -800,6 +800,8 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               // named ANYTHING ("WAKEBOARDING", "Paragliding" are real listed
               // places here).
               + '- ALWAYS call get_place_details for whatever the traveler named BEFORE saying you lack data — even when the name looks like an activity or a common word, a listed place may carry exactly that name. Only after the tool returns nothing may you say it is not in the verified data.\n'
+              + '- TRAVEL TIME & FEASIBILITY: for any "how far", "how long to drive" or "can I visit X and be back by TIME" question, call get_route for each leg — NEVER estimate a distance or drive time from memory. Judge feasibility from the returned drive_minutes against the traveler\'s window; if it cannot fit, say so plainly and suggest what DOES fit instead. If the tool returns only straight_line_km, say the road is longer and give no drive time.\n'
+              + '- DISTANCE FIGURES: km on place cards are STRAIGHT-LINE distances; a road route is always longer. If the traveler compares two different figures, explain both are correct measures (straight-line vs road) — never call our figure a mistake.\n'
               + '- The price field carries its own confidence instruction — follow it exactly: venue-set prices are stated plainly, staff estimates are hedged as unverified approximations. No price field means prices are not listed: say so, and NEVER invent an amount.\n'
               + (aboutPlace ? '- The traveler\'s "it" refers to ' + aboutPlace + ' — answer about that place.\n' : '')
               // The Kamancha turn re-fetched and re-described Mount Hatis

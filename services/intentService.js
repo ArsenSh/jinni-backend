@@ -157,12 +157,12 @@ Return ONLY this JSON object:
 "when":"<now, planned, or unspecified — 'now' when the user wants something for RIGHT NOW or tonight (going out immediately, 'where can I eat', late-hour context); 'planned' when clearly for another day (tomorrow, next week, a trip); 'unspecified' otherwise>",
 "period":"<the TIME PERIOD the message asks about (events/activities): one of today, tomorrow, weekend, next_week, Ndays (e.g. 3days for 'the next 3 days'), or explicit dates as YYYY-MM-DD..YYYY-MM-DD (resolve phrases like 'on September 5' or 'when my parents visit early September' using today's date). Follow-ups INHERIT the conversation's period ('other ones' after a next-week ask is still next_week). Empty string when no period is asked.>",
 "refill":<true or false — true when the CURRENT message asks for MORE or OTHER results of the previous ask ("other ones", "another suggestions", "ещё", "d'autres") rather than a new topic>,
-"count":<a number 2-12 ONLY when the CURRENT message explicitly asks for that many results ("show me 10 hotels", "top 5", "дай 8 вариантов", "10 ռեստորան") — 0 when no count is asked. A number that is not a result count (an address, "table for 2", "2 nights") stays 0>,
+"count":<a number 1-12 ONLY when the CURRENT message explicitly asks for that many results ("show me 10 hotels", "top 5", "just ONE restaurant", "дай 8 вариантов", "только один", "10 ռեստորան") — 0 when no count is asked. A number that is not a result count (an address, "table for 2", "2 nights") stays 0>,
 "price_direction":"<cheaper, pricier, or empty string "" — 'cheaper' when the CURRENT message pushes toward lower price ("cheap", "budget-friendly", "any cheaper ones?", "дешевле", "էժան"); 'pricier' when it pushes upscale ("fancier", "more upscale", "подороже"). Judge the message, not the saved style.>",
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?', 'Ինչքա՞ն արժե X-ը', 'X открыт сегодня вечером?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
-"itinerary_details":<ONLY when action_type is itinerary, else null. {"days":<number of days the message states, 0 if not stated>,"hotel":"<the hotel/accommodation NAME only when the CURRENT message explicitly says where the user stays ('my hotel is Marriott', 'we are staying at Ibis Yerevan') — NEVER guess or invent one, otherwise an empty string "">","breakfast":<true when the message says breakfast is included, false when it says breakfast is NOT included, null when breakfast is not mentioned>}>,
+"itinerary_details":<ONLY when action_type is itinerary, else null. {"days":<number of days the message states, 0 if not stated>,"hotel":"<the hotel/accommodation NAME only when the CURRENT message explicitly says where the user stays ('my hotel is Marriott', 'we are staying at Ibis Yerevan') — NEVER guess or invent one, otherwise an empty string "">","breakfast":<true when the message says breakfast is included, false when it says breakfast is NOT included, null when breakfast is not mentioned>},"time_bound":<true when the message tries to FIT specific named places into a bounded SAME-DAY time window ("visit X and Y and return by 20:00", "I only have 3 hours", "успею ли до 19:00") — that is a FEASIBILITY question, not a plan-building request; false otherwise>}>,
 "settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
 Rules:
@@ -244,7 +244,8 @@ function validateIntent(raw, message) {
         const hotel = (typeof rd.hotel === 'string' && rd.hotel.trim().length >= 2)
             ? rd.hotel.trim().slice(0, 120) : null;
         const breakfast = (rd.breakfast === true || rd.breakfast === false) ? rd.breakfast : null;
-        if (days != null || hotel != null || breakfast != null) itineraryDetails = { days, hotel, breakfast };
+        const timeBound = rd.time_bound === true;
+        if (days != null || hotel != null || breakfast != null || timeBound) itineraryDetails = { days, hotel, breakfast, timeBound };
     }
 
     let placeNames = [];
@@ -285,7 +286,9 @@ function validateIntent(raw, message) {
     // FRESH asks too, not just refills (Group C 2026-08-30: "show me 10
     // hotels" got the default deck of 6 shrunk to 3).
     const countNum = Number(raw.count);
-    const count = Number.isFinite(countNum) && countNum >= 2 && countNum <= 12
+    // 1 is a legal ask ("say me only ONE restaurant" served three cards,
+    // live 2026-09-05 — the old >=2 floor made 'one' unexpressible).
+    const count = Number.isFinite(countNum) && countNum >= 1 && countNum <= 12
         ? Math.round(countNum) : null;
     // Price direction of the CURRENT ask ("any cheaper ones?") — lets the
     // turn outrank the saved style without rewriting it.

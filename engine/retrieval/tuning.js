@@ -433,6 +433,15 @@ function isCorrectionLead(message) {
     return _CORRECTION_LEAD_LATIN.test(m) || _CORRECTION_LEAD_NONLATIN.test(m);
 }
 
+// A RETURN-BY DEADLINE inside an itinerary-shaped ask marks a FEASIBILITY
+// question ("visit Tatev and return by 20:00" — live 2026-09-05: the
+// clarifier built a generic Yerevan day instead of saying "impossible").
+// Backstop only — the intent LLM's time_bound flag is the primary signal.
+const _RETURN_DEADLINE_RE = /\b(?:return|be back|get back|back)\b[^.!?]{0,24}\bby\b\s*\d|вернут\w*[^.!?]{0,18}к\s*\d|обратно[^.!?]{0,18}к\s*\d|успе\w*[^.!?]{0,18}до\s*\d|վերադառն\w*[^.!?]{0,24}մինչև|մինչև ժամը\s*\d|قبل الساعة\s*\d|\d{1,2}[:.]?\d{0,2}\s*之前回/iu;
+function hasReturnDeadline(message) {
+    return _RETURN_DEADLINE_RE.test(String(message || ''));
+}
+
 const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
 const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
@@ -513,5 +522,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

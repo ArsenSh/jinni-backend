@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -32,7 +32,7 @@ const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French',
 
 const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, lastDeckAction, narrowingMatches } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
-const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, makeExecutors } = require('../engine/narrator/tools');
+const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
@@ -958,7 +958,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         // they asked for a number, they get it.
         const explicitCount = intent.count
             || (refillActive ? refill.count : parseDeckCount(message)) || null;
-        const deckCount = explicitCount ? Math.min(12, Math.max(2, explicitCount)) : 6;
+        const deckCount = explicitCount ? Math.min(12, Math.max(1, explicitCount)) : 6;
 
         // "Show on map (please)" is a UI wish about what is ALREADY on screen,
         // not a search (live 2026-08-31: it went to retrieval as q="Show on
@@ -1153,6 +1153,32 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // Days: the intent LLM's extraction first (understands any
             // phrasing), the deterministic parser as the $0 backstop.
             const _det = intent.itineraryDetails || {};
+            // ── FEASIBILITY, not plan-building (founder 2026-09-05: "visit
+            //    Tatev, Noravank and return by 20:00" opened the clarifier and
+            //    built a generic Yerevan day — every stated constraint was
+            //    dropped). UNIVERSAL RULE: never hand a message to a surface
+            //    that cannot honor what it states. The clarifier builds
+            //    generic full days; it cannot seat named venues or partial-day
+            //    windows. A time-bound ask goes to the grounded lane instead,
+            //    where get_route (self-hosted OSRM, $0) supplies REAL road
+            //    distances and drive times — the model may never invent them. ──
+            if (_det.timeBound || hasReturnDeadline(message)) {
+                const loop = await runToolLoop({
+                    messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
+                    execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
+                    maxTokens: 500,
+                }, { provider: deepseekProvider });
+                addUsage(loop);
+                reply = loop.text || 'Tell me which places and how much time you have, and I\'ll check what fits.';
+                for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
+                    send(res, { type: 'token', content: chunk });
+                }
+                stats.path = 'tool';
+                meta.answerType = 'feasibility';
+                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                console.log(`[v2] time-bound itinerary ask -> feasibility check (${loop.toolCalls.length} tool call(s)), no clarifier`);
+            } else {
             const _pd = _det.days || parseItineraryDays(message);
             const prefillDays = _pd == null ? null : Math.min(7, Math.max(1, _pd));
             const IT_LINES = {
@@ -1182,6 +1208,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             meta.answerType = 'itinerary_clarifier';
             stats.path = 'chitchat';
             console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ', hotel=' + (_det.hotel ? 'stated' : '?') + ', breakfast=' + (_det.breakfast == null ? '?' : _det.breakfast) + (_itinDest ? `, dest=${_itinDest.name}` : '') + ') — same build path as the quick action');
+            }
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService
@@ -1209,7 +1236,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     aboutPlace: (namedCard && namedCard.name) || null,
                     alreadyDescribed: !!(namedCard && namedCard.name && sessionPeek?.lastDiscussed?.name
                         && String(namedCard.name).toLowerCase() === String(sessionPeek.lastDiscussed.name).toLowerCase()) }),
-                tools: [PLACE_DETAILS_TOOL],
+                tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}`,
                     onPlace: (d) => fetchedDocs.push(d) }),
                 maxTokens: 400,
@@ -1705,7 +1732,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     try {
                         const loop = await runToolLoop({
                             messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
-                            tools: [PLACE_DETAILS_TOOL],
+                            tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
                             execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                             maxTokens: 400,
                         }, { provider: deepseekProvider });
@@ -1812,7 +1839,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
                         aboutPlace: (sessionPeek?.lastDiscussed?.name && _placeLive(sessionPeek.lastDiscussed.name))
                             ? sessionPeek.lastDiscussed.name : null }),
-                    tools: [PLACE_DETAILS_TOOL],
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
                     execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                     maxTokens: 400,
                 }, { provider: deepseekProvider });

@@ -725,3 +725,16 @@ describe('itinerary clarifier carries a named destination (live 2026-09-05: Tbil
         expect(src).toMatch(/namedPlace && Number\.isFinite\(namedPlace\.lat\)/);
     });
 });
+
+describe('return-by deadlines mark feasibility asks (backstop for intent time_bound)', () => {
+    const { hasReturnDeadline } = require('../engine/retrieval/tuning');
+    test('deadline phrasings across languages', () => {
+        for (const m of ['I want to visit Tatev, Noravank and return by 20:00.', 'be back by 8',
+                         'хочу успеть до 19:00', 'վերադառնալ մինչև ժամը 20'])
+            expect(hasReturnDeadline(m)).toBe(true);
+    });
+    test('plain plan asks stay with the clarifier', () => {
+        for (const m of ['plan 3 days', 'my hotel is X with breakfast, plan 2 days', 'build itinerary in Georgia'])
+            expect(hasReturnDeadline(m)).toBe(false);
+    });
+});
