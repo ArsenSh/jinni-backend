@@ -431,3 +431,19 @@ describe('count=1 and time_bound survive intent validation (ChatGPT battery 2026
         expect(r.itineraryDetails.timeBound).toBe(true);
     });
 });
+
+describe('anchor_reference: the LLM decides what is a reference, never a phrase list (founder 2026-09-05)', () => {
+    const { validateIntent } = require('../services/intentService');
+    test('the flag survives validation as a strict boolean', () => {
+        expect(validateIntent({ is_travel: true, action_type: 'restaurants', anchor_reference: true }, 'close to the glamping I saved?').anchorReference).toBe(true);
+        expect(validateIntent({ is_travel: true, action_type: 'restaurants', anchor_reference: 'yes' }, 'x').anchorReference).toBe(false);
+        expect(validateIntent({ is_travel: true, action_type: 'restaurants' }, 'near Khor Virap').anchorReference).toBe(false);
+    });
+    test('the route guards on the flag; the phrase list is gone', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiChatV2.js'), 'utf8');
+        expect(src).toMatch(/_refPhrase = intent\.anchorReference === true/);
+        expect(src).not.toMatch(/isReferencePhrase/);
+        const tsrc = require('fs').readFileSync(require.resolve('../engine/retrieval/tuning.js'), 'utf8');
+        expect(tsrc).not.toMatch(/isReferencePhrase/);
+    });
+});

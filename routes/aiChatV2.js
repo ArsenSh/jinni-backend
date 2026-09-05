@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, isReferencePhrase } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -825,7 +825,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // resolve from this conversation's own cards, never from a
                 // paid Text Search (live 2026-09-05: "Glamping hotel i saved"
                 // matched WOW GLAMPING 80km away and re-centred the session).
-                const _refPhrase = isReferencePhrase(statedName);
+                // WHETHER it is a reference is the intent LLM's judgement
+                // (any language), never a phrase list (founder 2026-09-05).
+                const _refPhrase = intent.anchorReference === true;
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,
                     { sessionCards, near: gpsCenter },

@@ -442,18 +442,6 @@ function hasReturnDeadline(message) {
     return _RETURN_DEADLINE_RE.test(String(message || ''));
 }
 
-// A REFERENCE PHRASE ("the glamping I saved", "my hotel", "the first one")
-// points at something this conversation already knows — it is NOT a place
-// name and must never be sent to Google as one. Live 2026-09-05: "Glamping
-// hotel i saved" went to Text Search verbatim, matched "WOW GLAMPING" 80km
-// away in Lori, re-centred the session, and the narrator sold the traveler
-// a Dsegh restaurant as their saved Dilijan hotel. The AI resolves these
-// from the session ledger; this guard only keeps them out of paid search.
-const _REFERENCE_MARK_RE = /\b(?:i|we)\s+(?:saved|liked|chose|picked|booked|mentioned)\b|\bmy\s|\bthe\s+(?:first|second|third|last)\b|котор\w+\s+я|я\s+(?:сохранил|выбрал|забронировал)|сохранённ|\bмо(?:й|я|е|его|ей)\s|որ\s+(?:պահպանեցի|ընտրեցի)|իմ\s/iu;
-function isReferencePhrase(name) {
-    return _REFERENCE_MARK_RE.test(String(name || ''));
-}
-
 const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
 const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
@@ -534,5 +522,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, isReferencePhrase, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
