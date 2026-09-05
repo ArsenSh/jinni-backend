@@ -730,3 +730,30 @@ describe('out-of-town ring (founder 2026-09-06: "outside the city" served downto
         expect(src).toMatch(/service-type row\(s\) dropped/);
     });
 });
+
+describe('out-of-town ring EXECUTES, not just reads (live 2026-09-06: "beforeR is not defined" crashed the deployed turn)', () => {
+    const mk = (name, id, lat, lng, km) => ({ placeId: id, name, source: 'cache',
+        geometry: { lat, lng }, distanceKm: km, text: name.toLowerCase() });
+    test('the ring drops in-city rows at runtime; unknown distance survives', async () => {
+        const r = await findPlaces({ category: null, count: 4, minDistanceKm: 15, radiusKm: 100, query: 'getaway outside city' }, {
+            loadCandidates: async () => [
+                mk('City Bar', 'c1', 40.18, 44.51, 3), mk('City Pub', 'c2', 40.19, 44.52, 5),
+                mk('Dilijan Spot', 'c3', 40.74, 44.86, 90), mk('Sevan Spot', 'c4', 40.55, 44.95, 60),
+                { ...mk('No Distance', 'c5', 40.30, 44.70, 0), distanceKm: undefined },
+            ],
+            cache: new SemanticCache({}), embedder: null,
+        });
+        const names = r.places.map(p => p.name);
+        expect(names).not.toContain('City Bar');
+        expect(names).not.toContain('City Pub');
+        expect(names).toContain('Dilijan Spot');
+        expect(names).toContain('No Distance'); // trust rule
+    });
+    test('fail-open: a pool with almost nothing beyond the ring still serves', async () => {
+        const r = await findPlaces({ count: 3, minDistanceKm: 15, query: 'outside' }, {
+            loadCandidates: async () => [mk('A', 'a', 40.18, 44.51, 2), mk('B', 'b', 40.19, 44.52, 4), mk('C', 'c', 40.20, 44.53, 6)],
+            cache: new SemanticCache({}), embedder: null,
+        });
+        expect(r.places.length).toBeGreaterThan(0);
+    });
+});

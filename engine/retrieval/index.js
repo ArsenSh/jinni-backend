@@ -186,6 +186,10 @@ async function findPlaces(params = {}, deps = {}) {
     if (provenance.cacheHit && Number.isFinite(params.radiusKm)) {
         const beforeR = ordered.length;
         ordered = ordered.filter(c => !(Number.isFinite(c?.distanceKm) && c.distanceKm > params.radiusKm));
+        provenance.outsideRadius = beforeR - ordered.length;
+        if (provenance.outsideRadius) {
+            console.log(`[retrieval] cached pool re-checked against r=${params.radiusKm}km — ${provenance.outsideRadius} outside`);
+        }
     }
     // ── OUT-OF-TOWN RING (founder 2026-09-06): "somewhere outside the city"
     //    means NOT HERE — drop everything inside the ring. Unknown distance
@@ -199,10 +203,6 @@ async function findPlaces(params = {}, deps = {}) {
             ordered = outside;
         } else {
             console.log(`[retrieval] out-of-town ring skipped — only ${outside.length} candidate(s) beyond ${params.minDistanceKm}km`);
-        }
-        provenance.outsideRadius = beforeR - ordered.length;
-        if (provenance.outsideRadius) {
-            console.log(`[retrieval] cached pool re-checked against r=${params.radiusKm}km — ${provenance.outsideRadius} outside`);
         }
     }
     // Emptied HERE = everything real was already shown — that, and only that,
