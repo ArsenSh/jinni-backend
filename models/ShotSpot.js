@@ -28,6 +28,10 @@ const mongoose = require('mongoose');
 
 const shotSpotSchema = new mongoose.Schema({
     title:   { type: String, required: true, trim: true, maxlength: 120 },
+    // Explicit because scout drafts (desk-pinned, founder 2026-09-06) have no
+    // photo yet; publishing requires hasPhoto. Docs created before this field
+    // are recognized by photo.capturedAt in the route's pub() shim.
+    hasPhoto: { type: Boolean, default: false },
     // draft = staff-only (capture page); active = visible to travelers.
     status:  { type: String, enum: ['draft', 'active'], default: 'draft', index: true },
 

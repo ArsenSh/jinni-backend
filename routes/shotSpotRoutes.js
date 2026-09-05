@@ -105,12 +105,17 @@ function shapeFields(b) {
 // UI needs every recorded sensor value to guide honestly).
 function pub(doc) {
     const d = doc.toObject ? doc.toObject() : doc;
+    const hasPhoto = d.hasPhoto === true || (d.hasPhoto === undefined && !!(d.photo && d.photo.capturedAt));
     return {
         id: String(d._id),
         title: d.title, status: d.status, city: d.city, country: d.country,
         camera: d.camera, subject: d.subject, access: d.access, shooting: d.shooting,
         photo: {
-            url: `/api/shotspots/${d._id}/photo`,
+            // hasPhoto shim: docs older than the field carry capturedAt iff a
+            // photo was uploaded. Scout drafts (desk-pinned, no photo yet)
+            // report url:null so UIs show a pin placeholder, never a 404 img.
+            hasPhoto,
+            url: hasPhoto ? `/api/shotspots/${d._id}/photo` : null,
             width: d.photo?.width || null, height: d.photo?.height || null,
             capturedAt: d.photo?.capturedAt || null, source: d.photo?.source || 'jinni_staff',
         },
@@ -183,16 +188,25 @@ router.post('/staff', auth, staffOrAdmin, async (req, res) => {
         if (!f.camera || f.camera.lat === null || f.camera.lng === null) {
             return res.status(400).json({ error: 'camera lat/lng required (capture on site)' });
         }
-        const ph = decodePhoto(req.body.photoData);
-        if (ph.error) return res.status(400).json({ error: ph.error });
-        const spot = await ShotSpot.create({
-            ...f,
-            status: f.status || 'draft',
-            photo: {
+        // Photo optional at create (scout drafts: staff pins coordinates from
+        // the desk, shoots later) — but a photo-less spot is FORCED to draft;
+        // only real photos publish. The camera point still comes from a human
+        // decision either way (sensors on site, or a deliberate desk pin).
+        let photo = null;
+        if (req.body.photoData !== undefined) {
+            const ph = decodePhoto(req.body.photoData);
+            if (ph.error) return res.status(400).json({ error: ph.error });
+            photo = {
                 data: ph.buf, contentType: ph.contentType,
                 width: num(req.body.photoWidth, 1, 20000), height: num(req.body.photoHeight, 1, 20000),
                 capturedAt: new Date(), source: 'jinni_staff',
-            },
+            };
+        }
+        const spot = await ShotSpot.create({
+            ...f,
+            status: photo ? (f.status || 'draft') : 'draft',
+            hasPhoto: !!photo,
+            ...(photo ? { photo } : {}),
             createdBy: req.user.id, createdByName: req.user.name || '',
         });
         res.status(201).json({ spot: pub(spot) });
@@ -204,7 +218,10 @@ router.post('/staff', auth, staffOrAdmin, async (req, res) => {
 
 router.patch('/staff/:id([0-9a-fA-F]{24})', auth, staffOrAdmin, async (req, res) => {
     try {
-        const spot = await ShotSpot.findById(req.params.id);
+        // +photo.data: without it a photo replacement would save a doc whose
+        // bytes were never loaded, and the publish guard below couldn't tell
+        // a scout draft from a real spot.
+        const spot = await ShotSpot.findById(req.params.id).select('+photo.data');
         if (!spot) return res.status(404).json({ error: 'Not found' });
         const f = shapeFields(req.body);
         // Never let a partial edit blank out required capture coords.
@@ -213,11 +230,17 @@ router.patch('/staff/:id([0-9a-fA-F]{24})', auth, staffOrAdmin, async (req, res)
         if (req.body.photoData) {
             const ph = decodePhoto(req.body.photoData);
             if (ph.error) return res.status(400).json({ error: ph.error });
+            // Explicit object, not {...spot.photo}: spreading a Mongoose
+            // subdocument leaks internals (same trap staffRoutes documents).
             spot.photo = {
-                ...spot.photo, data: ph.buf, contentType: ph.contentType,
+                data: ph.buf, contentType: ph.contentType,
                 width: num(req.body.photoWidth, 1, 20000), height: num(req.body.photoHeight, 1, 20000),
                 capturedAt: new Date(), source: 'jinni_staff',
             };
+        }
+        spot.hasPhoto = !!(spot.photo && spot.photo.data && spot.photo.data.length);
+        if (spot.status === 'active' && !spot.hasPhoto) {
+            return res.status(400).json({ error: 'A spot needs a real photo before publishing' });
         }
         await spot.save();
         res.json({ spot: pub(spot) });
