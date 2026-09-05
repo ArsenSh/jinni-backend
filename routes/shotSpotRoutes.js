@@ -131,6 +131,8 @@ function pub(doc, counts = {}) {
         title: d.title, status: d.status, city: d.city, country: d.country,
         camera: d.camera, subject: d.subject, access: d.access, shooting: d.shooting,
         recreationCount: counts[String(d._id)] || 0,
+        aiFound: d.aiFound === true,
+        evidence: d.evidence || [],
         photo: {
             // hasPhoto shim: docs older than the field carry capturedAt iff a
             // photo was uploaded. Scout drafts (desk-pinned, no photo yet)
@@ -396,10 +398,7 @@ router.delete('/staff/recreations/:rid([0-9a-fA-F]{24})', auth, staffOrAdmin, as
 // coordinates and counts. A dense cluster of geotagged Commons FILE pages
 // means "many photographers stood here": a proven vantage worth scouting.
 const MINE_UA = 'JinniAI-ShotSpots-Leads/1.0 (staff scouting tool)';
-router.get('/staff/mine', auth, staffOrAdmin, async (req, res) => {
-    const lat = num(req.query.lat, -90, 90), lng = num(req.query.lng, -180, 180);
-    if (lat === null || lng === null) return res.status(400).json({ error: 'lat/lng required' });
-    const radiusM = Math.min((num(req.query.radiusKm, 0.2, 15) || 3) * 1000, 10000);
+async function mineLeads(lat, lng, radiusM) {
     // Honest failure per source: 'unavailable' is reported, never faked as
     // "no results" (the seeder's throttling lesson, 2026-09-05).
     const out = { viewpoints: [], clusters: [], sources: { osm: 'unavailable', commons: 'unavailable' } };
@@ -442,7 +441,75 @@ router.get('/staff/mine', auth, staffOrAdmin, async (req, res) => {
             out.sources.commons = 'ok';
         }
     } catch (e) { /* 'unavailable' stands */ }
-    res.json(out);
+    return out;
+}
+
+router.get('/staff/mine', auth, staffOrAdmin, async (req, res) => {
+    const lat = num(req.query.lat, -90, 90), lng = num(req.query.lng, -180, 180);
+    if (lat === null || lng === null) return res.status(400).json({ error: 'lat/lng required' });
+    const radiusM = Math.min((num(req.query.radiusKm, 0.2, 15) || 3) * 1000, 10000);
+    res.json(await mineLeads(lat, lng, radiusM));
+});
+
+// ── "Let Jinni hunt" — the AI finds candidates ITSELF; staff only verify ────
+// (founder 2026-09-06: "if ai could find by himself then staff verify that is
+// another thing"). Jinni turns the strongest evidence into draft ShotSpots
+// (aiFound:true, evidence attached). They can NEVER publish themselves —
+// hasPhoto stays false until a human stands there and shoots, so the face of
+// the feature remains real photos while the FINDING is genuinely the AI's.
+router.post('/staff/hunt', auth, staffOrAdmin, async (req, res) => {
+    try {
+        const lat = num(req.body.lat, -90, 90), lng = num(req.body.lng, -180, 180);
+        const city = str(req.body.city, 80);
+        if (lat === null || lng === null) return res.status(400).json({ error: 'lat/lng required' });
+        if (!city) return res.status(400).json({ error: 'city required (Jinni files candidates under it)' });
+        const radiusM = Math.min((num(req.body.radiusKm, 0.2, 15) || 5) * 1000, 10000);
+
+        const leads = await mineLeads(lat, lng, radiusM);
+        if (leads.sources.osm !== 'ok' && leads.sources.commons !== 'ok') {
+            return res.status(502).json({ error: 'Evidence sources unavailable right now — try again later', sources: leads.sources });
+        }
+
+        const candidates = [
+            ...leads.viewpoints.map(v => ({
+                lat: v.lat, lng: v.lng,
+                title: v.name === 'Unnamed viewpoint' ? 'Scenic viewpoint' : v.name,
+                kind: 'osm_viewpoint',
+                note: `Mapped viewpoint (OSM), ${v.distanceM}m from hunt center`,
+            })),
+            ...leads.clusters.map(c => ({
+                lat: c.lat, lng: c.lng,
+                title: `Photographers' vantage (${c.photographers} shots)`,
+                kind: 'commons_cluster',
+                note: `${c.photographers} geotagged photos cluster here. Samples: ${c.sampleTitles.join(' · ')}`,
+            })),
+        ];
+
+        // Dedupe: never re-suggest a point a spot (any status) already covers,
+        // and don't create twins within one hunt. 80m ≈ same vantage.
+        const existing = await ShotSpot.find({}).select('camera.lat camera.lng').lean();
+        const taken = existing.map(s => s.camera).filter(c => c && c.lat != null);
+        const created = [];
+        for (const c of candidates) {
+            if (created.length >= 15) break; // one hunt = a reviewable batch
+            const clash = [...taken, ...created].some(p => haversineM(p, c) < 80);
+            if (clash) continue;
+            const spot = await ShotSpot.create({
+                title: c.title.slice(0, 120), city, country: str(req.body.country, 80),
+                status: 'draft', aiFound: true, hasPhoto: false,
+                camera: { lat: c.lat, lng: c.lng, accuracyMeters: null, heading: null, pitch: null, orientation: 'portrait' },
+                access: { nearestPlace: '', point: { lat: null, lng: null }, instructions: '', walkMinutes: null },
+                shooting: { bestTime: 'any', season: '', notes: '' },
+                evidence: [{ kind: c.kind, note: c.note.slice(0, 500) }],
+                createdBy: req.user.id, createdByName: 'Jinni (auto-hunt)',
+            });
+            created.push({ lat: c.lat, lng: c.lng, id: spot._id });
+        }
+        res.json({ created: created.length, considered: candidates.length, sources: leads.sources });
+    } catch (err) {
+        console.error('[shotspots] hunt error:', err);
+        res.status(500).json({ error: 'Hunt failed' });
+    }
 });
 
 module.exports = router;

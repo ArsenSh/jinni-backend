@@ -32,6 +32,11 @@ const shotSpotSchema = new mongoose.Schema({
     // photo yet; publishing requires hasPhoto. Docs created before this field
     // are recognized by photo.capturedAt in the route's pub() shim.
     hasPhoto: { type: Boolean, default: false },
+    // True when JINNI created this candidate itself (the /staff/hunt miner) —
+    // the founder's repositioning (2026-09-06): the AI finds, humans only
+    // verify. Drives the traveler-facing "Discovered by Jinni" credit and the
+    // staff 🤖 badge. Never claimed for spots a human scouted by hand.
+    aiFound: { type: Boolean, default: false },
     // draft = staff-only (capture page); active = visible to travelers.
     status:  { type: String, enum: ['draft', 'active'], default: 'draft', index: true },
 
