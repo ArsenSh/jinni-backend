@@ -1150,7 +1150,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             //    uses (one build path, one usage gate, §10 intact),
             //    prefilled with the days the message already answered. The
             //    clarifier owns the 7-day cap; the prefill clamps to match. ──
-            const _pd = parseItineraryDays(message);
+            // Days: the intent LLM's extraction first (understands any
+            // phrasing), the deterministic parser as the $0 backstop.
+            const _det = intent.itineraryDetails || {};
+            const _pd = _det.days || parseItineraryDays(message);
             const prefillDays = _pd == null ? null : Math.min(7, Math.max(1, _pd));
             const IT_LINES = {
                 en: 'Great — let\'s plan your trip. Answer the quick questions below and I\'ll build the day-by-day itinerary.',
@@ -1161,11 +1164,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 ar: 'رائع — لنخطط رحلتك. أجب عن الأسئلة أدناه وسأبني لك برنامج الرحلة يومًا بيوم.',
             };
             reply = IT_LINES[String(intent._userLanguage || 'en').slice(0, 2)] || IT_LINES.en;
-            send(res, { type: 'itinerary_clarifier', prefill: { daysCount: prefillDays, destination: null } });
+            // Hotel + breakfast the message already answered ride along so
+            // the clarifier skips the typing — the user still taps Start
+            // (an itinerary is never BUILT straight from a chat sentence).
+            send(res, { type: 'itinerary_clarifier', prefill: {
+                daysCount: prefillDays, destination: null,
+                hotelName: _det.hotel || null, hotelBreakfast: _det.breakfast ?? null,
+            } });
             send(res, { type: 'token', content: reply });
             meta.answerType = 'itinerary_clarifier';
             stats.path = 'chitchat';
-            console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ') — same build path as the quick action');
+            console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ', hotel=' + (_det.hotel ? 'stated' : '?') + ', breakfast=' + (_det.breakfast == null ? '?' : _det.breakfast) + ') — same build path as the quick action');
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService

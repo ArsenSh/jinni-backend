@@ -162,6 +162,7 @@ Return ONLY this JSON object:
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?', 'Ինչքա՞ն արժե X-ը', 'X открыт сегодня вечером?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
 "needs_weather":<true or false>,
+"itinerary_details":<ONLY when action_type is itinerary, else null. {"days":<number of days the message states, 0 if not stated>,"hotel":"<the hotel/accommodation NAME only when the CURRENT message explicitly says where the user stays ('my hotel is Marriott', 'we are staying at Ibis Yerevan') — NEVER guess or invent one, otherwise an empty string "">","breakfast":<true when the message says breakfast is included, false when it says breakfast is NOT included, null when breakfast is not mentioned>}>,
 "settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
 
 Rules:
@@ -171,6 +172,7 @@ Rules:
 - action_type is "shopping" for any shop, store, boutique, mall, market or bazaar request. shopping_subtype maps: souvenirs & gifts -> souvenirs; clothing, boutiques, fashion, shoes -> clothing; markets & bazaars -> market; malls & department stores -> mall; jewelry, watches, gold (a Rolex store, a jeweler) -> jewelry; gourmet/food/grocery/wine/sweets shops -> food. Use "" only when no sub-type clearly fits.
 - action_type is "photo_spots" for viewpoints, panoramas, scenic/instagrammable/photogenic spots and "where to take photos" requests.
 - action_type is "itinerary" ONLY when the user asks to BUILD/CREATE a multi-day trip plan, in any language ("plan me a 3 day itinerary", "составь маршрут на неделю", "3 օրվա ծրագիր կազմիր", "帮我做一个三天行程", "خطط لي رحلة ٣ أيام"). It is NOT itinerary for questions about an already-built plan ("what's on my itinerary for day 2?" -> general) or single-outing plans ("plan my evening" -> activities).
+- itinerary_details extracts ONLY what the itinerary message itself states, in any language: days count, the stated hotel name, breakfast included or not. "my hotel is Grand Hotel Yerevan with breakfast, plan 3 days" -> {"days":3,"hotel":"Grand Hotel Yerevan","breakfast":true}. Absent facts stay 0 / "" / null — never fill from imagination or earlier turns.
 - place_names: ONLY geographic destinations (cities, towns, regions, islands, countries) explicitly written in the current message, translated/transliterated to English (e.g. "Ереван" -> "Yerevan"). This INCLUDES elliptical follow-ups whose whole point is the place — "in Dubai", "what about Paris?", "and for Tbilisi?" after a search all mean the CURRENT ask targets that destination, so include it. NEVER put hotel, restaurant, bar or attraction names here — asking about a specific venue is NOT a destination change. Use [] if none. NEVER invent one and NEVER include a place that was only mentioned earlier in the conversation.
 - info_ask marks a question that wants an ANSWER, not a deck of place cards ("how do I book a taxi", "can I walk there", "which metro line", "do I need a visa" all want answers; "where can I eat", "suggest rooftop bars" want places). A message can be travel-related AND info_ask — that is normal. Judge by what a GOOD answer looks like: prose, or a list of places? You are not limited to the example labels — name the topic yourself when none fits.
 - settings_change: [] on almost every message. Fill it ONLY when the traveler ASKS FOR a saved setting to change ("change my style to budget", "make my interests family", "search 10 km around me"). A POLITE QUESTION IS STILL A COMMAND — "could you change my style to budget?", "can you make my interests family?", "would you make my interests family?", "можешь поставить бюджетный стиль?", "можешь установить текущее местоположение?" all fill settings_change. What decides it is whether the message NAMES A SETTING AND THE VALUE to give it, never the grammar. A question that names NO value is not a change ("can you change my preferences?", "what are my preferences?") — leave settings_change empty for those. Wanting something once is NOT a setting change: "find me a cheap lunch" changes nothing. Values:
@@ -230,6 +232,20 @@ function validateIntent(raw, message) {
         && SHOPPING_SUBTYPES.has(raw.shopping_subtype.trim().toLowerCase()))
         ? raw.shopping_subtype.trim().toLowerCase()
         : null;
+
+    // Itinerary extraction — trusted only on an itinerary turn, and only in
+    // the exact shape asked for. A hallucinated hotel name is worse than no
+    // prefill, so everything is length-capped and defaults to absent.
+    let itineraryDetails = null;
+    if (actionType === 'itinerary' && raw.itinerary_details && typeof raw.itinerary_details === 'object') {
+        const rd = raw.itinerary_details;
+        const days = (Number.isFinite(Number(rd.days)) && Number(rd.days) >= 1 && Number(rd.days) <= 30)
+            ? Math.round(Number(rd.days)) : null;
+        const hotel = (typeof rd.hotel === 'string' && rd.hotel.trim().length >= 2)
+            ? rd.hotel.trim().slice(0, 120) : null;
+        const breakfast = (rd.breakfast === true || rd.breakfast === false) ? rd.breakfast : null;
+        if (days != null || hotel != null || breakfast != null) itineraryDetails = { days, hotel, breakfast };
+    }
 
     let placeNames = [];
     if (Array.isArray(raw.place_names)) {
@@ -319,6 +335,7 @@ function validateIntent(raw, message) {
             : [],
         actionType,
         subType,
+        itineraryDetails,
         placeNames,
         when,
         period,

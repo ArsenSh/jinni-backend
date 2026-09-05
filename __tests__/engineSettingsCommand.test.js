@@ -394,3 +394,28 @@ describe('chit-chat never claims settings changes', () => {
         expect(m[0].content).toMatch(/could not apply it/);
     });
 });
+
+describe('itinerary details ride the intent (founder 2026-09-05: hotel/breakfast prefill)', () => {
+    const { validateIntent } = require('../services/intentService');
+    const base = { is_travel: true, action_type: 'itinerary', language: 'en' };
+
+    test('stated days + hotel + breakfast survive validation in shape', () => {
+        const r = validateIntent({ ...base, itinerary_details: { days: 3, hotel: 'Grand Hotel Yerevan', breakfast: true } }, 'my hotel is Grand Hotel Yerevan with breakfast, plan 3 days');
+        expect(r.itineraryDetails).toEqual({ days: 3, hotel: 'Grand Hotel Yerevan', breakfast: true });
+    });
+
+    test('absent facts stay null — never invented', () => {
+        const r = validateIntent({ ...base, itinerary_details: { days: 0, hotel: '', breakfast: null } }, 'plan me an itinerary');
+        expect(r.itineraryDetails).toBe(null);
+    });
+
+    test('a non-itinerary turn never carries details (hallucination fence)', () => {
+        const r = validateIntent({ ...base, action_type: 'restaurants', itinerary_details: { days: 3, hotel: 'X Hotel', breakfast: true } }, 'show me restaurants');
+        expect(r.itineraryDetails).toBe(null);
+    });
+
+    test('junk shapes are dropped, not repaired', () => {
+        const r = validateIntent({ ...base, itinerary_details: { days: 99, hotel: 'A', breakfast: 'yes' } }, 'plan 99 days');
+        expect(r.itineraryDetails).toBe(null); // 99>30, 1-char hotel, string breakfast — all rejected
+    });
+});

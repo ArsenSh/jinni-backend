@@ -1053,7 +1053,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                     : `Great — let's plan your trip. Answer the quick questions below and I'll build the day-by-day itinerary.`);
             res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8','Cache-Control': 'no-cache','Connection': 'keep-alive','Access-Control-Allow-Origin': '*','Access-Control-Allow-Headers': 'Cache-Control, Authorization, Content-Type','Access-Control-Expose-Headers': 'X-Usage-Tokens-Used, X-Usage-Tokens-Remaining, X-Usage-Places-Viewed, X-Usage-Places-Remaining, X-Usage-Requests-Remaining'});
             res.write(`data: ${JSON.stringify({ type: 'token', content: intro })}\n\n`);
-            res.write(`data: ${JSON.stringify({ type: 'itinerary_clarifier', prefill: { daysCount: prefillDays, destination: prefillDestination } })}\n\n`);
+            const itinDet = intent.itineraryDetails || {};
+            res.write(`data: ${JSON.stringify({ type: 'itinerary_clarifier', prefill: { daysCount: prefillDays || ((itinDet.days >= 1 && itinDet.days <= 14) ? itinDet.days : null), destination: prefillDestination, hotelName: itinDet.hotel || null, hotelBreakfast: itinDet.breakfast ?? null } })}\n\n`);
             // Same completion shape as the normal path, so the client finalizes
             // the message (streaming=false, contentParts persisted) identically.
             res.write(`data: ${JSON.stringify({ type: 'complete', contentParts: [{ type: 'text', content: intro, index: 0 }], recommendations: [], metadata: {} })}\n\n`);
