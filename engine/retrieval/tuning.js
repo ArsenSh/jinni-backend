@@ -419,6 +419,20 @@ function parseItineraryDays(message) {
     return null;
 }
 
+// A NEGATION-LED CORRECTION is a follow-up, never a browse ask. Live
+// 2026-09-05: "no, in mote melkonyan street it is" (correcting a wrong
+// place answer) fell past the junk-question brake because it is a
+// STATEMENT — q="mote melkonyan street", lex=0, cat=free — and the deck
+// served 2 a.m. bars. Leading negation + nothing retrievable = the user
+// is correcting what was just said; answer it, don't deal cards.
+// Latin \b works; Cyrillic/Armenian/CJK/Arabic need explicit tails.
+const _CORRECTION_LEAD_LATIN = /^[\s"'«»""''(\[]*(?:no|nope|nah|wrong|actually|non)(?=[\s,.!:;—-]|$)/i;
+const _CORRECTION_LEAD_NONLATIN = /^[\s"'«»""''(\[]*(?:нет|не|неверно|вообще-то|ոչ|չէ|սխալ|不对|不是|不要|لا\s|ليس)(?=[\s,.!:;—-]|$|[^a-z])/iu;
+function isCorrectionLead(message) {
+    const m = String(message || '').trim();
+    return _CORRECTION_LEAD_LATIN.test(m) || _CORRECTION_LEAD_NONLATIN.test(m);
+}
+
 const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
 const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
@@ -499,5 +513,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

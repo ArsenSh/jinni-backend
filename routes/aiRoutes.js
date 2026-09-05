@@ -2492,7 +2492,19 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                 // requires the significant tokens to actually correspond.
                 const MAX_CACHE_KM = 300;
                 const candidates = await PlaceCache.find(nameFilter).limit(10);
-                let best = null, bestKm = Infinity;
+                // EXACTNESS OUTRANKS PROXIMITY. The fuzzy searchName regex can
+                // pull a DIFFERENT place cached under a search phrase that
+                // merely contains the asked words: "Yerevan Park" matched the
+                // row cached as "yerevan 2800th anniversary park" (Vardanians'
+                // Park) and nearest-wins served it over the REAL "Yerevan
+                // Park" row sitting right there with an exact searchName
+                // (live 2026-09-05). Distance only breaks ties WITHIN a tier:
+                // exact name/searchName hits first, fuzzy matches only when
+                // no exact row exists.
+                const _exactAsk = String(placeIdOrName).toLowerCase().trim();
+                const _isExact = (c) => (c.searchName || '').toLowerCase().trim() === normalizedName
+                    || (c.name || '').toLowerCase().trim() === _exactAsk;
+                let best = null, bestKm = Infinity, bestExact = false;
                 for (const c of candidates) {
                     if (!namesPlausiblyMatch(placeIdOrName, c.name)) continue;
                     if (!cachedHitAcceptable(placeIdOrName, c.name, c.types, c.primaryType, includedType)) {
@@ -2510,12 +2522,18 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                     const lat = c.details?.geometry?.location?.lat, lng = c.details?.geometry?.location?.lng;
                     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
                     const km = _haversineKm(cLat, cLng, lat, lng);
-                    if (km < bestKm) { bestKm = km; best = c; }
+                    const exact = _isExact(c);
+                    if ((exact && !bestExact) || (exact === bestExact && km < bestKm)) {
+                        bestKm = km; best = c; bestExact = exact;
+                    }
                 }
                 if (best && bestKm <= MAX_CACHE_KM) { cached = best; }
                 else if (best) { console.log(`[cache] ignored name match "${placeIdOrName}" — nearest plausible cached copy is ${Math.round(bestKm)}km from search center; resolving fresh`); }
             } else {
-                const c = await PlaceCache.findOne(nameFilter);
+                // Same exactness rule without a centre: an exact row wins
+                // before the fuzzy filter gets a say.
+                const c = await PlaceCache.findOne({ searchName: normalizedName })
+                    || await PlaceCache.findOne(nameFilter);
                 cached = (c && namesPlausiblyMatch(placeIdOrName, c.name) && cachedHitAcceptable(placeIdOrName, c.name, c.types, c.primaryType, includedType)) ? c : null;
             }
             placeId = cached?.placeId;

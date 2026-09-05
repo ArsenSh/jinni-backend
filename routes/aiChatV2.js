@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -1797,7 +1797,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // cat=free.
                 !category
                 && result.provenance.lexical === 0 && sessionCards.length > 0
-                && /[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim())
+                && (/[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim()) || isCorrectionLead(message))
                 && !namesVenueType(message) && !isBrowseAsk(message)
                 && !refillActive && !deckAsk && !countOrRefillAsk
             ) {
@@ -1824,7 +1824,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                         { $set: { lastDiscussed: { name: _qd, at: new Date() } } },
                     ).catch(() => {});
                 }
-                console.log(`[v2] junk-question brake: lex=0 question "${String(message).slice(0, 40)}" → tool loop (${loop.toolCalls.length} call(s)), no deck`);
+                console.log(`[v2] junk-question brake: lex=0 question/correction "${String(message).slice(0, 40)}" → tool loop (${loop.toolCalls.length} call(s)), no deck`);
             } else {
                 stage('writing', 'Almost there — putting it together…');
                 const weather = await weatherPromise;   // resolved long ago or null

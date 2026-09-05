@@ -692,3 +692,28 @@ describe('parseItineraryDays speaks all six app languages (founder 2026-09-05: "
         expect(parseItineraryDays('хочу расписать поездку на несколько дней')).toBe(null);
     });
 });
+
+describe('negation-led corrections are follow-ups, not browse asks (live 2026-09-05: "no, in mote melkonyan street it is" → 2am bars)', () => {
+    const { isCorrectionLead } = require('../engine/retrieval/tuning');
+    test('leading negation in the app languages', () => {
+        for (const m of ['no, in mote melkonyan street it is', 'нет, это на улице Монте Мелконяна',
+                         'ոչ, դա Մոնթե Մելքոնյան փողոցում է', 'actually it is on Monte Melkonyan',
+                         "non, c'est rue X", '不对，在另一条街'])
+            expect(isCorrectionLead(m)).toBe(true);
+    });
+    test('words merely starting with a negation do not fire', () => {
+        for (const m of ['northern avenue please', 'nothing special', 'show me bars', 'где поесть'])
+            expect(isCorrectionLead(m)).toBe(false);
+    });
+});
+
+describe('cache exactness outranks proximity (live 2026-09-05: "Yerevan Park" served Vardanians\' Park)', () => {
+    test('the shared cache lookup tiers exact hits above fuzzy ones', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiRoutes.js'), 'utf8');
+        // The invariant, greppable: exact rows picked before fuzzy, distance breaks ties within a tier.
+        expect(src).toMatch(/EXACTNESS OUTRANKS PROXIMITY/);
+        expect(src).toMatch(/\(exact && !bestExact\) \|\| \(exact === bestExact && km < bestKm\)/);
+        // No-centre branch tries the exact searchName first.
+        expect(src).toMatch(/findOne\(\{ searchName: normalizedName \}\)/);
+    });
+});
