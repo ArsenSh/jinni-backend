@@ -110,6 +110,18 @@ const FREE_RE = /public domain|cc0|cc[- ]by(?![^-])|cc[- ]by[- ]sa/i;   // PD/CC
 const licenceRank = (l) => /public domain|cc0/i.test(l) ? 0 : /cc[- ]by(?!.*sa)/i.test(l) ? 1 : 2;
 
 async function commonsAround(lat, lng, radiusM = 250) {
+    // Retry with backoff, and NEVER report a failure as "0 photos": the first
+    // live server runs showed spots flipping OK -> "weak evidence" between two
+    // back-to-back runs — Commons throttling being swallowed as zero evidence.
+    for (let attempt = 0; ; attempt++) {
+        try { return await _commonsAround(lat, lng, radiusM); }
+        catch (e) {
+            if (attempt >= 2) return { count: null, image: null, error: e.message };
+            await sleep(1500 * (attempt + 1));
+        }
+    }
+}
+async function _commonsAround(lat, lng, radiusM) {
     const url = 'https://commons.wikimedia.org/w/api.php';
     const geo = await axios.get(url, { headers: { 'User-Agent': UA }, timeout: 30000, params: {
         action: 'query', format: 'json', list: 'geosearch', gsnamespace: 6,
@@ -172,7 +184,7 @@ async function reverseGeocode(lat, lng) {
     const out = [];
     for (const s of spots.slice(0, LIMIT)) {
         await sleep(300);                                       // politeness across all three APIs
-        const { count, image } = await commonsAround(s.lat, s.lng).catch(() => ({ count: 0, image: null }));
+        const { count, image, error } = await commonsAround(s.lat, s.lng);
         await sleep(1100);                                      // Nominatim: max 1 req/s
         const geo = await reverseGeocode(s.lat, s.lng);
         // Unnamed viewpoints: road+locality keeps siblings distinct
@@ -184,6 +196,7 @@ async function reverseGeocode(lat, lng) {
             photoEvidence: count, image,
             source: { osm: s.osmId, licence: 'ODbL (OpenStreetMap contributors)' },
             verdict: !name ? 'SKIP: no name resolvable'
+                   : count === null ? `REVIEW: commons unavailable (${error || 'error'})`
                    : count < MIN_PHOTOS && !s.name ? `SKIP: weak evidence (${count} Commons photos)`
                    : !image ? 'REVIEW: no freely-licensed image'
                    : 'OK',
