@@ -441,6 +441,7 @@ app.get('/share/:token', shareRouter.ogHandler);
 app.use('/api/staff', staffRoutes);
 app.use('/api/routing', routingRoutes);
 app.use('/api/itinerary', require('./routes/itineraryRoutes'));
+app.use('/api/shotspots', require('./routes/shotSpotRoutes')); // Jinni Shot Spots (Stage 1) — self-contained, deletable
 
 // =============================================
 // 6.5 Currency API Endpoints (NEW - OPTIONAL)

@@ -1,0 +1,139 @@
+{
+  "city": "Yerevan",
+  "LAT": 40.1792,
+  "LNG": 44.4991,
+  "RADIUS": 12,
+  "generated": "2026-09-05T02:43:33.438Z",
+  "spots": [
+    {
+      "name": "Viewpoint – Saralanj Highway, Kentron",
+      "nameHy": null,
+      "nameRu": null,
+      "lat": 40.1941388,
+      "lng": 44.5157644,
+      "address": "Saralanj Highway, Kentron",
+      "photoEvidence": 50,
+      "image": {
+        "title": "File:Yerevan panorama 2.jpg",
+        "thumbUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/be/Yerevan_panorama_2.jpg/1280px-Yerevan_panorama_2.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "width": 11638,
+        "height": 2417,
+        "licence": "CC BY-SA 4.0",
+        "author": "Tiia Monto",
+        "captured": "2018-05-06 13:20:48"
+      },
+      "source": {
+        "osm": "node/619775721",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "OK"
+    },
+    {
+      "name": "Viewpoint – Saralanj Highway, Kentron",
+      "nameHy": null,
+      "nameRu": null,
+      "lat": 40.1944092,
+      "lng": 44.5238817,
+      "address": "Saralanj Highway, Kentron",
+      "photoEvidence": 50,
+      "image": {
+        "title": "File:Detail at Mother Armenia Monument 1.JPG",
+        "thumbUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a4/Detail_at_Mother_Armenia_Monument_1.JPG/1280px-Detail_at_Mother_Armenia_Monument_1.JPG?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "width": 4896,
+        "height": 3672,
+        "licence": "CC0",
+        "author": "Aschroet",
+        "captured": "2014-12-30 17:19:38"
+      },
+      "source": {
+        "osm": "node/619781885",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "OK"
+    },
+    {
+      "name": "Viewpoint – Aram street, Kentron",
+      "nameHy": null,
+      "nameRu": "площадь Республики",
+      "lat": 40.1784454,
+      "lng": 44.5158622,
+      "address": "Aram street, Kentron",
+      "photoEvidence": 50,
+      "image": {
+        "title": "File:Supermarket Nalbandyan Street (Yerevan) May 2018.jpg",
+        "thumbUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/8/8d/Supermarket_Nalbandyan_Street_%28Yerevan%29_May_2018.jpg/1280px-Supermarket_Nalbandyan_Street_%28Yerevan%29_May_2018.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "width": 3024,
+        "height": 4032,
+        "licence": "CC0",
+        "author": "Benoît Prieur",
+        "captured": "2018-05-13 13:38:31"
+      },
+      "source": {
+        "osm": "node/4739812121",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "OK"
+    },
+    {
+      "name": "Viewpoint – New Highway, Kentron",
+      "nameHy": null,
+      "nameRu": null,
+      "lat": 40.1870967,
+      "lng": 44.5280277,
+      "address": "New Highway, Kentron",
+      "photoEvidence": 17,
+      "image": {
+        "title": "File:Anatomicum building, 1927, Yerevan 02.jpg",
+        "thumbUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/8/88/Anatomicum_building%2C_1927%2C_Yerevan_02.jpg/1280px-Anatomicum_building%2C_1927%2C_Yerevan_02.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "width": 7021,
+        "height": 7242,
+        "licence": "CC BY-SA 4.0",
+        "author": "Beko",
+        "captured": "2022-10-16"
+      },
+      "source": {
+        "osm": "node/4779959621",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "OK"
+    },
+    {
+      "name": "Viewpoint – Vahram Papazian street 2nd lane, Arabkir",
+      "nameHy": null,
+      "nameRu": null,
+      "lat": 40.2101219,
+      "lng": 44.4970331,
+      "address": "Vahram Papazian street 2nd lane, Arabkir",
+      "photoEvidence": 12,
+      "image": {
+        "title": "File:Նոր Արաբկիր հուշահամալիր Արաբկիրի զբոսայգում, Երևան 2023, պանորամա օդից.jpg",
+        "thumbUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a1/%D5%86%D5%B8%D6%80_%D4%B1%D6%80%D5%A1%D5%A2%D5%AF%D5%AB%D6%80_%D5%B0%D5%B8%D6%82%D5%B7%D5%A1%D5%B0%D5%A1%D5%B4%D5%A1%D5%AC%D5%AB%D6%80_%D4%B1%D6%80%D5%A1%D5%A2%D5%AF%D5%AB%D6%80%D5%AB_%D5%A6%D5%A2%D5%B8%D5%BD%D5%A1%D5%B5%D5%A3%D5%B8%D6%82%D5%B4%2C_%D4%B5%D6%80%D6%87%D5%A1%D5%B6_2023%2C_%D5%BA%D5%A1%D5%B6%D5%B8%D6%80%D5%A1%D5%B4%D5%A1_%D6%85%D5%A4%D5%AB%D6%81.jpg/1280px-%D5%86%D5%B8%D6%80_%D4%B1%D6%80%D5%A1%D5%A2%D5%AF%D5%AB%D6%80_%D5%B0%D5%B8%D6%82%D5%B7%D5%A1%D5%B0%D5%A1%D5%B4%D5%A1%D5%AC%D5%AB%D6%80_%D4%B1%D6%80%D5%A1%D5%A2%D5%AF%D5%AB%D6%80%D5%AB_%D5%A6%D5%A2%D5%B8%D5%BD%D5%A1%D5%B5%D5%A3%D5%B8%D6%82%D5%B4%2C_%D4%B5%D6%80%D6%87%D5%A1%D5%B6_2023%2C_%D5%BA%D5%A1%D5%B6%D5%B8%D6%80%D5%A1%D5%B4%D5%A1_%D6%85%D5%A4%D5%AB%D6%81.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail",
+        "width": 8000,
+        "height": 5760,
+        "licence": "CC BY-SA 4.0",
+        "author": "Aleksey Chalabyan a.k.a Xelgen",
+        "captured": "2023-09-02 14:40:39"
+      },
+      "source": {
+        "osm": "node/4946035923",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "OK"
+    },
+    {
+      "name": "Viewpoint – Hrazdan Riverbank Road, Arabkir",
+      "nameHy": null,
+      "nameRu": "Балкон примирения",
+      "lat": 40.2112707,
+      "lng": 44.498262,
+      "address": "Hrazdan Riverbank Road, Arabkir",
+      "photoEvidence": 0,
+      "image": null,
+      "source": {
+        "osm": "node/4946036121",
+        "licence": "ODbL (OpenStreetMap contributors)"
+      },
+      "verdict": "SKIP: weak evidence (0 Commons photos)"
+    }
+  ]
+}
