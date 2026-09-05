@@ -943,6 +943,18 @@ router.get('/ai-events', aiEventGate, async (req, res) => {
     try {
         const status = ['new', 'approved', 'hidden', 'all'].includes(req.query.status) ? req.query.status : 'new';
         const q = status === 'all' ? {} : { status };
+        // Past events stay in the queue for their 7-day TTL grace (the window
+        // where staff can still Approve or permanently Hide an annual event),
+        // but they read as "auto-delete is broken" when listed by default
+        // (founder 2026-09-05). Hide them unless ?past=1 asks for them: an
+        // event is upcoming while its end (or start, when no end) is ahead.
+        if (req.query.past !== '1') {
+            const now = new Date();
+            q.$or = [
+                { endDate: { $gte: now } },
+                { endDate: null, startDate: { $gte: new Date(now.getTime() - 24 * 3600 * 1000) } },
+            ];
+        }
         // Queue is TTL-pruned, so it stays small; scope-filter in memory since
         // country/city strings in the doc may be missing for GPS-only areas
         // (admin sees those; scoped staff shouldn't manage what can't be placed).
