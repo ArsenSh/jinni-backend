@@ -715,3 +715,18 @@ describe('interest scoring reads CURATED tags, not just Google types (founder au
         expect(_prefFitScore(['casino'], null, { interests: ['nature'] }, ['nightlife'])).toBe(0);
     });
 });
+
+describe('out-of-town ring (founder 2026-09-06: "outside the city" served downtown bars twice)', () => {
+    test('the ring drops in-city rows, keeps unknown distances, fails open when thin', () => {
+        const src = require('fs').readFileSync(require.resolve('../engine/places/../retrieval/index.js'), 'utf8');
+        expect(src).toMatch(/params\.minDistanceKm/);
+        expect(src).toMatch(/out-of-town ring skipped/); // the honest fail-open exists
+        // unknown distance survives: the filter only drops FINITE distances inside the ring
+        expect(src).toMatch(/!\(Number\.isFinite\(c\?\.distanceKm\) && c\.distanceKm < params\.minDistanceKm\)/);
+    });
+    test('service types never reach a leisure pool', () => {
+        const src = require('fs').readFileSync(require.resolve('../engine/places/canonicalStore.js'), 'utf8');
+        expect(src).toMatch(/SERVICE_TYPES = new Set\(\['parking'/);
+        expect(src).toMatch(/service-type row\(s\) dropped/);
+    });
+});

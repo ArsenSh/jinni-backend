@@ -1,7 +1,7 @@
 // Locks the Shot Spots validation core: sensor honesty (null stays null,
 // never fabricated) and photo payload safety limits.
 const { __testables } = require('../routes/shotSpotRoutes');
-const { decodePhoto, shapeFields } = __testables;
+const { decodePhoto, shapeFields, haversineM } = __testables;
 
 describe('decodePhoto', () => {
     const px = Buffer.from([0xff, 0xd8, 0xff, 0xdb]).toString('base64');
@@ -44,5 +44,17 @@ describe('shapeFields', () => {
         expect(f.shooting.bestTime).toBe('any');
         expect(f.shooting.notes).toBe('hi');
         expect(f.title.length).toBe(120);
+    });
+});
+
+describe('haversineM (recreation presence gate)', () => {
+    const cascade = { lat: 40.19206, lng: 44.51573 };
+    test('same point is 0, nearby is meters not degrees', () => {
+        expect(haversineM(cascade, cascade)).toBe(0);
+        const d = haversineM(cascade, { lat: 40.19296, lng: 44.51573 }); // ~100m north
+        expect(d).toBeGreaterThan(95); expect(d).toBeLessThan(105);
+    });
+    test('across town is far beyond the 200m gate', () => {
+        expect(haversineM(cascade, { lat: 40.1776, lng: 44.5126 })).toBeGreaterThan(1000);
     });
 });

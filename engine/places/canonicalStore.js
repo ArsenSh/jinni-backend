@@ -540,7 +540,20 @@ async function loadCandidates(params = {}, deps = {}) {
         console.log(`[canonicalStore] cache tier: ${cacheDocs.length} row(s) matched the query, 0 survived — dropped by ${why || 'nothing (check the query itself)'}`);
     }
     scoredCache.sort((a, b) => b.score - a.score);
-    const cacheCandidates = scoredCache.slice(0, 40).map(({ d }) => cacheDocToCandidate(d, center));
+    // A parking lot is nobody's evening out (live 2026-09-06: "Aeon / ԷՕՆ —
+    // Parking" carded as a romantic option). Service types are excluded from
+    // recommendation pools by TYPE — a closed Google taxonomy, algorithmic,
+    // not a phrase list.
+    const SERVICE_TYPES = new Set(['parking', 'gas_station', 'car_wash', 'car_repair', 'car_dealer',
+        'atm', 'bank', 'insurance_agency', 'real_estate_agency', 'storage', 'moving_company',
+        'plumber', 'electrician', 'locksmith', 'laundry', 'funeral_home', 'local_government_office']);
+    const _isServiceRow = (d) => {
+        const ts = [d.primaryType, ...(d.types || d.details?.types || [])].filter(Boolean).map(t => String(t).toLowerCase());
+        return ts.length > 0 && ts.some(t => SERVICE_TYPES.has(t)) && !ts.some(t => /tourist|park\b|attraction/.test(t) && t !== 'parking');
+    };
+    const _svcDropped = scoredCache.filter(({ d }) => _isServiceRow(d));
+    if (_svcDropped.length) console.log(`[canonicalStore] service-type row(s) dropped: ${_svcDropped.map(({ d }) => d.name).join(', ')}`);
+    const cacheCandidates = scoredCache.filter(({ d }) => !_isServiceRow(d)).slice(0, 40).map(({ d }) => cacheDocToCandidate(d, center));
 
     // ── Validator/partner tier (fail-open service reuse) ──
     let destinations = [], businesses = [];

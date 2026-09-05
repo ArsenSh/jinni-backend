@@ -87,18 +87,14 @@ const shotSpotSchema = new mongoose.Schema({
         width:       { type: Number, default: null },
         height:      { type: Number, default: null },
         capturedAt:  { type: Date, default: null },
-        source:      { type: String, enum: ['jinni_staff'], default: 'jinni_staff' },
+        source:      { type: String, enum: ['jinni_staff', 'traveler'], default: 'jinni_staff' },
     },
 
     // Stage 3 (admin-only miner) parking space — evidence never becomes the
     // face of a spot, only a lead for staff. Unused in Stage 1.
     evidence: [{ kind: String, url: String, note: String }],
-    // Stage 2 ("I got the shot") parking space. Unused in Stage 1.
-    recreations: [{
-        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        lat: Number, lng: Number, heading: Number, accuracyMeters: Number,
-        capturedAt: Date,
-    }],
+    // Stage 2 recreations live in their OWN collection (ShotRecreation.js) so
+    // popular spots never bloat this doc — the old subdoc parking space is gone.
 
     createdBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdByName: { type: String, default: '' },

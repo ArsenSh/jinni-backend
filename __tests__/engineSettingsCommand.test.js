@@ -474,3 +474,19 @@ describe('Class-3 migration: correction / browse / stated_at are LLM judgements 
         expect(src).toMatch(/intent\.browse === true \|\| isBrowseAsk\(message\)/);
     });
 });
+
+describe('retry-after-self-change is not a settings command (live 2026-09-06: "radius is now greater, try again" got a refusal, no cards)', () => {
+    const { validateIntent } = require('../services/intentService');
+    test('out_of_town survives as a strict boolean', () => {
+        expect(validateIntent({ is_travel: true, action_type: 'general', out_of_town: true }, 'somewhere outside the city').outOfTown).toBe(true);
+        expect(validateIntent({ is_travel: true, action_type: 'general' }, 'bars nearby').outOfTown).toBe(false);
+    });
+    test('the settings arm yields to refill/browse when it only has refusals', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiChatV2.js'), 'utf8');
+        expect(src).toMatch(/settingsRefused\.length && !\(intent\.refill === true \|\| intent\.browse === true\)/);
+    });
+    test('the intent prompt marks self-reports as refills, not commands', () => {
+        const src = require('fs').readFileSync(require.resolve('../services/intentService.js'), 'utf8');
+        expect(src).toMatch(/REPORTING the user already changed a setting THEMSELVES/);
+    });
+});

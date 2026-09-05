@@ -1098,7 +1098,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             meta.answerType = 'getting_around';
             stats.path = 'transport';
             console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
-        } else if (settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted) {
+        } else if (settingsApplied.length || deferredStyle || budgetFiguresWanted
+            // Refusal-ONLY + the user wants results ("the radius is now
+            // greater, try again" — they changed it THEMSELVES) must not
+            // swallow the turn (live 2026-09-06: it answered "I could not
+            // change your radius" and served nothing). The refusal line
+            // stays for pure settings commands; a retry falls through to
+            // the refill/deck path below.
+            || (settingsRefused.length && !(intent.refill === true || intent.browse === true))) {
             // budgetFiguresWanted joined the condition 2026-08-29: a bare "set
             // my budget" (no figures) set the flag but took no branch here —
             // the ask-for-figures reply below could never fire on its own.
@@ -1388,6 +1395,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // same numbers the Preferences slider enforces, stated once.
             const baseRadiusKm = radiusKmFor(mode, intent._preferences?._searchRadius);
             let radiusKm = effectiveRadiusKm({ category, mode, radiusKm: baseRadiusKm });
+            // OUT-OF-TOWN ask (intent LLM, any language): the traveler wants
+            // AWAY from here — widen to day-trip range and let retrieval
+            // drop the in-city ring (live 2026-09-05/06: "somewhere outside
+            // the city" served downtown bars twice).
+            const outOfTown = intent.outOfTown === true;
+            if (outOfTown) radiusKm = Math.max(radiusKm, 100);
             // ONE named town is a boundary, not a bare centre (founder
             // 2026-08-30: "hotels in Dilijan" mixed 20-31km regional places
             // into the deck). Cap to the town's scale; the narrator's
@@ -1602,6 +1615,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 center,
                 mode,
                 radiusKm,
+                // The in-city ring: out-of-town asks drop everything within
+                // ~15km of the centre (fail-open in retrieval when too few
+                // survive — never an empty lie).
+                minDistanceKm: outOfTown ? 15 : null,
                 count: deckCount,
                 // Specific asks shrink the deck to match + alternatives
                 // (battery fix #2) — but never a refill or an explicit

@@ -186,6 +186,20 @@ async function findPlaces(params = {}, deps = {}) {
     if (provenance.cacheHit && Number.isFinite(params.radiusKm)) {
         const beforeR = ordered.length;
         ordered = ordered.filter(c => !(Number.isFinite(c?.distanceKm) && c.distanceKm > params.radiusKm));
+    }
+    // ── OUT-OF-TOWN RING (founder 2026-09-06): "somewhere outside the city"
+    //    means NOT HERE — drop everything inside the ring. Unknown distance
+    //    is kept (the trust rule). Fail-open when almost nothing survives:
+    //    a thin honest pool beats an empty deck, and the narrator already
+    //    says plainly when results are not truly out of town. ──
+    if (Number.isFinite(params.minDistanceKm) && params.minDistanceKm > 0) {
+        const outside = ordered.filter(c => !(Number.isFinite(c?.distanceKm) && c.distanceKm < params.minDistanceKm));
+        if (outside.length >= 2) {
+            console.log(`[retrieval] out-of-town ring: ${ordered.length - outside.length} in-city candidate(s) dropped (<${params.minDistanceKm}km)`);
+            ordered = outside;
+        } else {
+            console.log(`[retrieval] out-of-town ring skipped — only ${outside.length} candidate(s) beyond ${params.minDistanceKm}km`);
+        }
         provenance.outsideRadius = beforeR - ordered.length;
         if (provenance.outsideRadius) {
             console.log(`[retrieval] cached pool re-checked against r=${params.radiusKm}km — ${provenance.outsideRadius} outside`);
