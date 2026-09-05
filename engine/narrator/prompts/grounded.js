@@ -784,7 +784,7 @@ function parseCardsTail(tail, count) {
  * made structural: null = "not listed", point inward (the card's More button),
  * never outward to Google.
  */
-function buildToolAnswerMessages({ message, langName = 'English', history = [], preferences = null, aboutPlace = null, alreadyDescribed = false }) {
+function buildToolAnswerMessages({ message, langName = 'English', history = [], preferences = null, aboutPlace = null, alreadyDescribed = false , sessionDeck = null }) {
     return [
         {
             role: 'system',
@@ -799,6 +799,13 @@ function buildToolAnswerMessages({ message, langName = 'English', history = [], 
               // generic activity word, so the model never checked. Venues are
               // named ANYTHING ("WAKEBOARDING", "Paragliding" are real listed
               // places here).
+              + ((Array.isArray(sessionDeck) && sessionDeck.length)
+                  ? '\nPLACES ALREADY SHOWN IN THIS CONVERSATION (oldest deck first; numbering restarts per deck):\n'
+                    + sessionDeck.map((deck, di) => `Deck ${di + 1}: ` + deck.map((n, i) => `${i + 1}. ${n}`).join(' · ')).join('\n')
+                    + '\n'
+                  : '')
+              + '- REFERENCES: "the first one", "the first two", "the glamping I saved", "the one you mentioned" point at the SHOWN list above — resolve them to the exact names there and use THOSE names in tool calls and in your answer. NEVER pass a reference phrase (e.g. "hotel I saved") to any tool, and never claim you cannot see earlier recommendations: the list above IS them.\n'
+              + '- SEARCHING: when the conversation needs places you do not have, call find_places with a SHORT query you compose (venue type + area, like "restaurants Dsegh") — never the traveler\'s sentence. Own verified data answers first; a place from the results may only be described with the fields returned.\n'
               + '- ALWAYS call get_place_details for whatever the traveler named BEFORE saying you lack data — even when the name looks like an activity or a common word, a listed place may carry exactly that name. Only after the tool returns nothing may you say it is not in the verified data.\n'
               + '- TRAVEL TIME & FEASIBILITY: for any "how far", "how long to drive" or "can I visit X and be back by TIME" question, call get_route for each leg — NEVER estimate a distance or drive time from memory. Judge feasibility from the returned drive_minutes against the traveler\'s window; if it cannot fit, say so plainly and suggest what DOES fit instead. If the tool returns only straight_line_km, say the road is longer and give no drive time.\n'
               + '- DISTANCE FIGURES: km on place cards are STRAIGHT-LINE distances; a road route is always longer. If the traveler compares two different figures, explain both are correct measures (straight-line vs road) — never call our figure a mistake.\n'

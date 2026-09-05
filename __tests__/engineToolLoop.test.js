@@ -352,3 +352,46 @@ describe('get_route is the Reality Check engine (founder 2026-09-05: Tatev by 20
         expect(GET_ROUTE_TOOL.function.description).toMatch(/NEVER estimate/);
     });
 });
+
+describe('find_places: the model composes, the ladder decides (founder 2026-09-05: "ai should decide how to search")', () => {
+    const { makeExecutors, FIND_PLACES_TOOL } = require('../engine/narrator/tools');
+    const owned = async () => [{ name: 'Garun Pool', kind: 'activities', rating: null, address: 'Dilijan', source: 'verified' }];
+    const cache = async () => [{ name: 'Dilibanya', kind: 'spa', rating: 4.7, address: 'Dilijan', source: 'cache' }];
+
+    test('own data answers first; Google not consulted when results suffice', async () => {
+        let googleCalled = false;
+        const ex = makeExecutors({}, { searchFindOwned: owned, searchFindCache: async () => [
+            { name: 'Dilibanya', source: 'cache' }, { name: 'The Bar №1', source: 'cache' }] ,
+            searchFindGoogle: async () => { googleCalled = true; return []; } });
+        const r = await ex.find_places({ query: 'spa Dilijan' });
+        expect(r.results.map(x => x.source)).toEqual(['verified', 'cache', 'cache']);
+        expect(googleCalled).toBe(false);
+    });
+
+    test('thin owned results fall through to Google with the SAME clean query', async () => {
+        let gq = null;
+        const ex = makeExecutors({}, { searchFindOwned: async () => [], searchFindCache: cache,
+            searchFindGoogle: async (q) => { gq = q; return [{ name: 'Cosmo Glamping', rating: 4.7, formatted_address: 'Dsegh' }]; } });
+        const r = await ex.find_places({ query: 'restaurants Dsegh' });
+        expect(gq).toBe('restaurants Dsegh');
+        expect(r.results.some(x => x.source === 'google')).toBe(true);
+    });
+
+    test('a raw sentence is refused — spend cap, not vibes', async () => {
+        const ex = makeExecutors({}, {});
+        const r = await ex.find_places({ query: 'hi i would like to go somewhere outside the city with my girlfriend' });
+        expect(r.error).toBe('query_too_long');
+    });
+
+    test('empty everywhere → honest empty, never invention', async () => {
+        const ex = makeExecutors({}, { searchFindOwned: async () => [], searchFindCache: async () => [], searchFindGoogle: async () => [] });
+        const r = await ex.find_places({ query: 'waterfalls Atlantis' });
+        expect(r.results).toEqual([]);
+        expect(r.note).toMatch(/honestly/);
+    });
+
+    test('tool description forbids sentence and reference-phrase queries', () => {
+        expect(FIND_PLACES_TOOL.function.description).toMatch(/NEVER the traveler/);
+        expect(FIND_PLACES_TOOL.function.description).toMatch(/hotel I saved/);
+    });
+});

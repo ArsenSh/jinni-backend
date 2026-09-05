@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, isReferencePhrase } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -32,7 +32,7 @@ const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French',
 
 const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, lastDeckAction, narrowingMatches } = require('../engine/context/session');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
-const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, makeExecutors } = require('../engine/narrator/tools');
+const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
@@ -504,6 +504,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         //    a Yerevan sofa (live 2026-08-29, Group B battery). Settings
         //    commands and transport/how-to questions never move the centre. ──
         const sessionCards = shownPlaces(sessionPeek?.messages);
+        // Per-deck ledger for the narrator: the AI resolves "the first two" /
+        // "the glamping I saved" from THIS, instead of claiming turns stand
+        // alone or searching reference phrases (live 2026-09-05, the Dsegh
+        // hijack). Last 4 decks keep the prompt small.
+        const sessionDecks = (sessionPeek?.messages || [])
+            .filter(m => Array.isArray(m.recommendations) && m.recommendations.length)
+            .slice(-4)
+            .map(m => m.recommendations.map(r => r && r.name).filter(Boolean));
         const msgLower = String(message).toLowerCase();
         // A geographic name in the message is never card-name evidence: the
         // intent's placeNames tokens are excluded from the matcher so "Cafe
@@ -813,11 +821,19 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (intent._preferences) intent._preferences._here = hereLabel || null;
 
             if (statedName) {
+                // "the glamping I saved" is a REFERENCE, not a name — it may
+                // resolve from this conversation's own cards, never from a
+                // paid Text Search (live 2026-09-05: "Glamping hotel i saved"
+                // matched WOW GLAMPING 80km away and re-centred the session).
+                const _refPhrase = isReferencePhrase(statedName);
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,
                     { sessionCards, near: gpsCenter },
-                    { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) },
+                    _refPhrase ? { findPlaces: null }
+                               : { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) },
                 ).catch(() => null);
+                if (_refPhrase && statedPosition && statedPosition.source === 'gazetteer') statedPosition = null;
+                if (_refPhrase && !statedPosition) console.log(`[destination] reference phrase "${statedName}" — not a name; leaving the centre alone`);
                 if (statedPosition) {
                     meta.statedAt = statedPosition.name;
                     console.log(`[destination] stated position "${statedPosition.name}" via ${statedPosition.source}`);
@@ -1164,8 +1180,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             //    distances and drive times — the model may never invent them. ──
             if (_det.timeBound || hasReturnDeadline(message)) {
                 const loop = await runToolLoop({
-                    messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
-                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
+                    messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences, sessionDeck: sessionDecks }),
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
                     execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                     maxTokens: 500,
                 }, { provider: deepseekProvider });
@@ -1233,10 +1249,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             const fetchedDocs = [];
             const loop = await runToolLoop({
                 messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
+                    sessionDeck: sessionDecks,
                     aboutPlace: (namedCard && namedCard.name) || null,
                     alreadyDescribed: !!(namedCard && namedCard.name && sessionPeek?.lastDiscussed?.name
                         && String(namedCard.name).toLowerCase() === String(sessionPeek.lastDiscussed.name).toLowerCase()) }),
-                tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
+                tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
                 execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}`,
                     onPlace: (d) => fetchedDocs.push(d) }),
                 maxTokens: 400,
@@ -1575,7 +1592,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // engine can actually use.
                 coreQuery: stripRadiusPhrase((modifierTurn
                     ? (ledger.lastCore || intent.searchQuery)
-                    : (refillActive ? (retrievalQuery || intent.searchQuery) : intent.searchQuery)) || ''),
+                    : (refillActive ? (intent.searchQuery || retrievalQuery) : intent.searchQuery)) || ''),
                 category,
                 subType: intent.subType || null,
                 center,
@@ -1731,8 +1748,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 if (sessionCards.length && /[?？՞]\s*$/.test(String(message).trim())) {
                     try {
                         const loop = await runToolLoop({
-                            messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences }),
-                            tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
+                            messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences, sessionDeck: sessionDecks }),
+                            tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
                             execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                             maxTokens: 400,
                         }, { provider: deepseekProvider });
@@ -1837,9 +1854,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             ) {
                 const loop = await runToolLoop({
                     messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences,
+                        sessionDeck: sessionDecks,
                         aboutPlace: (sessionPeek?.lastDiscussed?.name && _placeLive(sessionPeek.lastDiscussed.name))
                             ? sessionPeek.lastDiscussed.name : null }),
-                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL],
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
                     execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v2-${Date.now()}` }),
                     maxTokens: 400,
                 }, { provider: deepseekProvider });

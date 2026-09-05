@@ -831,6 +831,17 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
     if (regionCity && !q.toLowerCase().includes(String(regionCity).toLowerCase())) {
         q = `${q} ${regionCity}`;
     }
+    // HARD SPEND CAP (founder 2026-09-05: "searches correctly, not the whole
+    // message user gave"): a refill recycled an entire chat sentence into a
+    // paid Text Search. Whatever slipped through above, a paid query is at
+    // most 8 words — a search string, never prose.
+    {
+        const words = q.split(/\s+/).filter(Boolean);
+        if (words.length > 8) {
+            q = [...words.slice(0, 7), ...(regionCity && !words.slice(0, 7).join(' ').toLowerCase().includes(String(regionCity).toLowerCase()) ? [regionCity] : [])].join(' ');
+            console.log(`[canonicalStore] paid query capped to "${q}"`);
+        }
+    }
     // ── SAME SEARCH, BOUGHT ONCE (2026-09-04) ──
     // Live 2026-09-03: the restaurant QA chain POSTed the identical Text
     // Search ("armenian restaurant near Republic Square Yerevan", same centre)

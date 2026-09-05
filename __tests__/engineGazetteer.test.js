@@ -738,3 +738,15 @@ describe('return-by deadlines mark feasibility asks (backstop for intent time_bo
             expect(hasReturnDeadline(m)).toBe(false);
     });
 });
+
+describe('reference phrases never become Google queries (live 2026-09-05: "Glamping hotel i saved" → WOW GLAMPING hijack)', () => {
+    const { isReferencePhrase } = require('../engine/retrieval/tuning');
+    test('possessive/deictic phrases are references', () => {
+        for (const m of ['Glamping hotel i saved', 'my hotel', 'the first one', 'отель который я сохранил', 'the one we booked'])
+            expect(isReferencePhrase(m)).toBe(true);
+    });
+    test('real place names are not', () => {
+        for (const m of ['Khor Virap', 'Cosmo Glamping', 'Dilijan Glamping', 'Republic Square'])
+            expect(isReferencePhrase(m)).toBe(false);
+    });
+});

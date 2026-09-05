@@ -51,6 +51,32 @@ const GET_ROUTE_TOOL = {
     },
 };
 
+// AI-DRIVEN SEARCH (founder 2026-09-05: "ai should decide how to search
+// correctly in google, after seeing databases; if nothing found then it
+// searches google — and searches correctly, not the whole message"). The
+// MODEL composes a short clean query; the EXECUTOR guarantees the ladder —
+// own Destinations/Businesses first, PlaceCache second, Google only when
+// those come back thin — and caps what a query may look like. Intelligence
+// in the model, discipline in the pipeline.
+const FIND_PLACES_TOOL = {
+    type: 'function',
+    function: {
+        name: 'find_places',
+        description:
+            'Search for places when the conversation needs options you do not already have. '
+          + 'COMPOSE the query yourself — a short venue-type-plus-area string like "restaurants Dsegh" or '
+          + '"waterfalls near Dilijan" — NEVER the traveler\'s whole sentence and NEVER reference phrases '
+          + 'like "hotel I saved". Results come from the verified databases first, the wider index only on a miss.',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Short search: what + where. Max ~6 words.' },
+            },
+            required: ['query'],
+        },
+    },
+};
+
 // Flights (Arsen 2026-08-23: "can it check airport or trips?"). Prices are
 // FACTS — they may only come from the API, never from the model's memory,
 // which is the same rule that keeps cards honest. The tool is offered to the
@@ -316,6 +342,66 @@ function makeExecutors(ctx = {}, deps = {}) {
             };
         },
 
+        find_places: async ({ query } = {}) => {
+            const q = String(query || '').trim();
+            if (!q) return { error: 'query_required' };
+            // Spend cap, not understanding: the model was told to compose a
+            // short query; a long one is a raw sentence leaking through.
+            if (q.length > 64 || q.split(/\s+/).length > 8) {
+                return { error: 'query_too_long', hint: 'compose a short search: venue type + area, e.g. "restaurants Dsegh"' };
+            }
+            const toks = _sigTokens(transliterate(q));
+            if (!toks.length) return { error: 'query_too_generic' };
+            const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const results = [];
+            const seen = new Set();
+            const push = (name, extra) => {
+                const k = String(name || '').toLowerCase().trim();
+                if (k && !seen.has(k)) { seen.add(k); results.push({ name, ...extra }); }
+            };
+            // 1. OWN corpus — validated data answers before anything paid.
+            try {
+                const searchOwned = deps.searchFindOwned || (async () => {
+                    const cond = toks.map(t => ({ $or: [
+                        { name: new RegExp(esc(t), 'i') },
+                        { address: new RegExp(esc(t), 'i') },
+                        { description: new RegExp(esc(t), 'i') },
+                    ] }));
+                    const Destination = require('../../models/Destination');
+                    const ds = await Destination.find({ $and: cond }).limit(5).lean().catch(() => []);
+                    return ds.map(d => ({ name: d.name, kind: d.type || null, rating: d.rating ?? null, address: d.address || null, source: 'verified' }));
+                });
+                for (const r of await searchOwned()) push(r.name, { ...r, name: undefined });
+            } catch { /* next tier */ }
+            // 2. PlaceCache — already-bought knowledge, $0.
+            try {
+                const searchCache = deps.searchFindCache || (async () => {
+                    const PlaceCache = require('../../models/PlaceCache');
+                    const cond = toks.map(t => ({ $or: [
+                        { name: new RegExp(esc(t), 'i') },
+                        { 'details.formatted_address': new RegExp(esc(t), 'i') },
+                    ] }));
+                    const rows = await PlaceCache.find({ $and: cond, hidden: { $ne: true }, name: { $not: /^mirror:/ } })
+                        .select('name rating details.rating details.formatted_address primaryType').limit(6).lean().catch(() => []);
+                    return rows.map(r => ({ name: r.name, kind: r.primaryType || null, rating: r.rating ?? r.details?.rating ?? null, address: r.details?.formatted_address || null, source: 'cache' }));
+                });
+                for (const r of await searchCache()) push(r.name, { ...r, name: undefined });
+            } catch { /* next tier */ }
+            // 3. Google — LAST, only when our own data came back thin, and
+            //    with the model's clean query, never chat text.
+            if (results.length < 3) {
+                try {
+                    const searchGoogle = deps.searchFindGoogle
+                        || ((qq, near) => require('../../services/googleService').findPlaces(qq, near));
+                    const found = await searchGoogle(q, ctx.center || null) || [];
+                    for (const f of found.slice(0, 5)) {
+                        push(f.name, { kind: (f.types || [])[0] || null, rating: f.rating ?? null, address: f.formatted_address || f.vicinity || null, source: 'google' });
+                    }
+                } catch { /* honest empty below */ }
+            }
+            if (!results.length) return { query: q, results: [], note: 'nothing found — say so honestly, never invent places' };
+            return { query: q, results: results.slice(0, 8) };
+        },
         get_route: async ({ origin, destination } = {}) => {
             if (!origin || !destination) return { error: 'origin_and_destination_required' };
             // Names resolve through the same cheapest-first ladder the stated-
@@ -368,4 +454,4 @@ function makeExecutors(ctx = {}, deps = {}) {
     };
 }
 
-module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, makeExecutors, ownedNameMatches };
+module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, makeExecutors, ownedNameMatches };
