@@ -16,7 +16,11 @@
 // neutral — never as a hard filter — so thin-inventory categories aren't emptied.
 
 const PRICE_LEVEL_TIER = {
-    PRICE_LEVEL_FREE:           1,
+    // FREE is deliberately ABSENT (founder 2026-09-05: "free can be for both
+    // of them"): a free viewpoint or park belongs in a luxury traveler's day
+    // as much as a budget one's. Leaving it out of the map sends FREE places
+    // down the tier=null path — neutral: never dropped, never ranked by price.
+    // (Before this, FREE was tier 1, so the luxury filter DROPPED free places.)
     PRICE_LEVEL_INEXPENSIVE:    1,
     PRICE_LEVEL_MODERATE:       2,
     PRICE_LEVEL_EXPENSIVE:      3,
@@ -69,16 +73,21 @@ function tierFit(tier, travelStyle) {
     return t === 'high' ? (tier - 2.5) / 1.5 : (2.5 - tier) / 1.5;
 }
 
-// HARD filter — true only for the clearest opposite-end mismatch with a KNOWN tier:
-//   luxury  → drop tier 1 (budget: hostels, inexpensive eateries)
-//   budget  → drop tier 4 (very expensive)
-// Unknown tier (null) is NEVER a mismatch, so plain hotels / unpriced places are
-// kept and thin-inventory grids don't empty. The mid tiers (2,3) are only ranked,
-// never dropped.
+// HARD filter — the two styles now split the priced range cleanly (founder
+// 2026-09-05: "expensive and very expensive for Luxury, inexpensive and
+// moderate for budget, free can be for both"):
+//   luxury  → drop tiers 1-2 (INEXPENSIVE, MODERATE)
+//   budget  → drop tiers 3-4 (EXPENSIVE, VERY_EXPENSIVE)
+// Unknown tier (null) — which now includes FREE — is NEVER a mismatch, so free
+// places, plain hotels and unpriced places are kept for both styles and
+// thin-inventory grids don't empty. Calibration caveat worth knowing: Google
+// rarely marks Armenian venues EXPENSIVE, so the luxury style leans on the
+// backfill/shortfall machinery more than before; if luxury grids run thin in
+// practice, the first dial is letting MODERATE back in as ranked-not-dropped.
 function tierMismatch(tier, travelStyle) {
     const t = styleTarget(travelStyle);
     if (!t || !tier) return false;
-    return t === 'high' ? tier <= 1 : tier >= 4;
+    return t === 'high' ? tier <= 2 : tier >= 3;
 }
 
 // Actions that have a real luxury↔budget axis. Others (events, historical,
