@@ -490,3 +490,28 @@ describe('retry-after-self-change is not a settings command (live 2026-09-06: "r
         expect(src).toMatch(/REPORTING the user already changed a setting THEMSELVES/);
     });
 });
+
+describe('out-of-town is a ledger constraint (live 2026-09-06: refill kept the category, dropped the scope, served Yerevan again)', () => {
+    const { mergeConstraints, ledgerLine } = require('../engine/session/constraints');
+    test('the scope is set by the turn that stated it and CARRIES through follow-ups', () => {
+        const t1 = mergeConstraints(null, { outOfTown: true }, { category: null });
+        expect(t1.ledger.outOfTown).toBe(true);
+        // "other results please" — majority-label inheritance flips category to
+        // restaurants; prev category was null so this is NOT a mission change.
+        const t2 = mergeConstraints(t1.ledger, {}, { category: 'restaurants' });
+        expect(t2.reset).toBe(false);
+        expect(t2.ledger.outOfTown).toBe(true);
+        expect(ledgerLine(t2.ledger)).toContain('out-of-town');
+    });
+    test('a real mission change still clears it', () => {
+        const t1 = mergeConstraints({ category: 'restaurants', outOfTown: true }, {}, { category: 'hotels' });
+        expect(t1.reset).toBe(true);
+        expect(t1.ledger.outOfTown).toBeUndefined();
+    });
+    test('the route: ledger feeds the ring, sentences never feed paid search, day trips skip open-now', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiChatV2.js'), 'utf8');
+        expect(src).toMatch(/sessionPeek\?\.constraints\?\.outOfTown === true/);
+        expect(src).toMatch(/_searchQueryIsPrevAsk \? '' : intent\.searchQuery/);
+        expect(src).toMatch(/&& !outOfTown,/);
+    });
+});

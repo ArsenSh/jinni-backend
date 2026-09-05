@@ -939,6 +939,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
         if (refillActive) {
             if (!intent.isTravel) intent.isTravel = true;
             if (!intent.searchQuery || (intent.actionType || 'general') === 'general') {
+                // prevUserAsk feeds free BM25 relevance — but it is a SENTENCE,
+                // and a sentence must never become a paid Text Search ("I am
+                // asking for tomorrow Yerevan" went to Google, 0 results, live
+                // 2026-09-06). The flag keeps it out of coreQuery below.
+                if (!intent.searchQuery) intent._searchQueryIsPrevAsk = true;
                 intent.searchQuery = intent.searchQuery || prevUserAsk;
             }
             // A refill continues the DECK, category included ("give me 10
@@ -1399,7 +1404,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // AWAY from here — widen to day-trip range and let retrieval
             // drop the in-city ring (live 2026-09-05/06: "somewhere outside
             // the city" served downtown bars twice).
-            const outOfTown = intent.outOfTown === true;
+            // …and it is a LEDGER constraint: "other results please" after an
+            // out-of-town deck must stay out of town (live 2026-09-06: the
+            // refill inherited the deck's majority category — restaurants —
+            // but dropped the scope, and served downtown Yerevan again).
+            const outOfTown = intent.outOfTown === true
+                || sessionPeek?.constraints?.outOfTown === true;
             if (outOfTown) radiusKm = Math.max(radiusKm, 100);
             // ONE named town is a boundary, not a bare centre (founder
             // 2026-08-30: "hotels in Dilijan" mixed 20-31km regional places
@@ -1501,6 +1511,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 nowMinutes: timeContext.hour * 60 + timeContext.minute,
             });
             if (_tt != null) _delta.targetTime = _tt;
+            if (intent.outOfTown === true) _delta.outOfTown = true;
             const { ledger, changed, reset: ledgerReset } = mergeConstraints(prevLedger, _delta, { category });
             if (ledgerReset) console.log('[ledger] mission changed -> previous constraints cleared');
             // An inherited constraint acts exactly as if said THIS turn.
@@ -1609,7 +1620,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // engine can actually use.
                 coreQuery: stripRadiusPhrase((modifierTurn
                     ? (ledger.lastCore || intent.searchQuery)
-                    : (refillActive ? (intent.searchQuery || retrievalQuery) : intent.searchQuery)) || ''),
+                    : (refillActive ? (intent._searchQueryIsPrevAsk ? '' : intent.searchQuery) : intent.searchQuery)) || ''),
                 category,
                 subType: intent.subType || null,
                 center,
@@ -1654,7 +1665,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // 'planned' / 'unspecified'); nearby/late-night/now-words are
                 // the degradation path when it abstains. An explicit 'planned'
                 // ALWAYS skips the filter. Unknown hours survive regardless.
-                enforceOpenNow: rightNow || ledger.targetTime != null,
+                // A day-trip destination's "open right now" is meaningless —
+                // arrival is hours away (live 2026-09-06: all 9 out-of-town
+                // places were dropped as closed at 23:00 and the deck came
+                // back empty). Hours still reach the narrator as caveats.
+                enforceOpenNow: (rightNow || ledger.targetTime != null) && !outOfTown,
                 // The ask's nature shifts what evidence matters: right-now →
                 // proximity up; romantic/special → quality prior up.
                 weights: rankingWeights({ rightNow, message,

@@ -78,7 +78,7 @@ function fmtTargetTime(min) {
     return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 }
 
-const LEDGER_KEYS = ['price', 'radiusCapKm', 'partySize', 'targetTime'];
+const LEDGER_KEYS = ['price', 'radiusCapKm', 'partySize', 'targetTime', 'outOfTown'];
 
 /**
  * @param {object|null} prev   the stored ledger (or null)
@@ -111,6 +111,7 @@ function ledgerLine(ledger, changed = []) {
     if (ledger.radiusCapKm) bits.push(`≤${ledger.radiusCapKm}km`);
     if (ledger.partySize) bits.push(`${ledger.partySize}p`);
     if (ledger.targetTime != null) bits.push(`@${fmtTargetTime(ledger.targetTime)}`);
+    if (ledger.outOfTown) bits.push('out-of-town');
     return `[ledger] ${bits.join(' · ')}${changed.length ? ` (changed: ${changed.join(',')})` : ' (carried)'}`;
 }
 
