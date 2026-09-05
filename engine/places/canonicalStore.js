@@ -615,10 +615,17 @@ async function loadCandidates(params = {}, deps = {}) {
         const ints = (c.interests || []).map(s2 => String(s2).toLowerCase());
         const verdict = styleVerdict(ints, rawStyleG);
         if (verdict !== null) return verdict;
-        if (rawStyleG === 'luxury' && isPriceAction(category)) {
+        if (isPriceAction(category)) {
+            // BUG FIX (2026-09-05): this compared the tier to the STRINGS
+            // 'budget'/'luxury', but priceTier() returns 1-4 or null — so the
+            // tier never gated anything and every cache row, $$$$ included,
+            // lived or died on rating alone for luxury users. Now the shared
+            // tierMismatch applies (founder buckets: luxury drops $/$$, budget
+            // drops $$$/$$$$, FREE/unknown neutral), and the rating>=4.2 gate
+            // remains only as luxury's quality proxy for UNPRICED rows.
             const t = priceTier(c.types, c.primaryType, c.priceLevel).tier;
-            if (t === 'budget') return false;
-            if (t !== 'luxury' && (c.rating || 0) < 4.2) return false;
+            if (tierMismatch(t, rawStyleG)) return false;
+            if (rawStyleG === 'luxury' && t === null && (c.rating || 0) < 4.2) return false;
         }
         return true;
     };

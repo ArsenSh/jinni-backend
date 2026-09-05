@@ -1444,7 +1444,8 @@ router.post('/chat-stream', auth, usageTracker, async (req, res) => {
                                 // explicit $5–10 budget; only DB rows respect the budget).
                                 // Two strengths, both keyed off Google's own priceLevel:
                                 //  • travelStyle alone → the app-wide CONSERVATIVE rule
-                                //    (tierMismatch: budget drops only $$$$, luxury only $ —
+                                //    (tierMismatch, founder buckets 2026-09-05: luxury drops
+                                //    $/$$, budget drops $$$/$$$$, FREE + unknown kept for both —
                                 //    same rule the cache backfill applies);
                                 //  • an explicit NUMERIC budget tightens it: max ≤ $15/person
                                 //    also drops $$$ (tier 3), min ≥ $60 also drops $ (tier 1).
