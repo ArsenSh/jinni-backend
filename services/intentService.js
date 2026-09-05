@@ -161,6 +161,9 @@ Return ONLY this JSON object:
 "price_direction":"<cheaper, pricier, or empty string "" — 'cheaper' when the CURRENT message pushes toward lower price ("cheap", "budget-friendly", "any cheaper ones?", "дешевле", "էժան"); 'pricier' when it pushes upscale ("fancier", "more upscale", "подороже"). Judge the message, not the saved style.>",
 "wants_search":<true or false — true ONLY when the user EXPLICITLY asks to search the internet/web/Google for something ("see in internet", "search the web", "поищи в интернете", "погугли")>,
 "info_ask":"<empty string "" whenever the traveler wants to be SHOWN PLACES. Otherwise a short lowercase label for the kind of question asked — 'transport' for anything about getting there or getting around (taxi, ride-hailing, metro, bus, walking, driving, car or scooter rental, ferry, flights, airport transfer, 'how far is it', 'which line do I take'); 'place' when the question is about ONE SPECIFIC named place — its opening hours, price, phone, menu, booking, or whether it is open ('is Cafe X open tonight?', 'how much is entry to Y?', 'does Z take reservations?', 'Ինչքա՞ն արժե X-ը', 'X открыт сегодня вечером?') — and for 'place' questions ALSO fill place_search_query with that place's name EXACTLY as the traveler wrote it, misspellings kept (resolution handles typos); or a label of your own choosing for anything else (visa, tipping, safety, sim_card, currency, packing, booking…).>",
+"correction":<true when the CURRENT message corrects or contradicts what the assistant just said — "no, it is on Monte Melkonyan street", "that's wrong", "actually it's a park", "нет, это не там" — in ANY language or phrasing. False for a new request or an added constraint>,
+"browse":<true when a DECK OF PLACE CARDS is the right answer to the CURRENT message — it asks to be shown options ("show me rooftop bars", "what can I do tonight", "куда сходить", "restaurants?"). False when the right answer is prose: a question about one place, a correction, a how-to, small talk>,
+"stated_at":"<the place NAME the current message says the traveler is AT or near RIGHT NOW ('I am at Khor Virap', 'мы у Каскада', 'standing near the opera') — the name only, exactly as written, misspellings kept. Empty when the message states no position, or points at it through the conversation instead of naming it>",
 "anchor_reference":<true when the CURRENT message points at a place THROUGH THE CONVERSATION rather than by name — "my hotel", "the one I saved", "the first two you showed", "который я сохранил", "այն որ պահպանեցի", in ANY language or phrasing. False when the message names the place outright or anchors to nothing>,
 "needs_weather":<true or false>,
 "itinerary_details":<ONLY when action_type is itinerary, else null. {"days":<number of days the message states, 0 if not stated>,"hotel":"<the hotel/accommodation NAME only when the CURRENT message explicitly says where the user stays ('my hotel is Marriott', 'we are staying at Ibis Yerevan') — NEVER guess or invent one, otherwise an empty string "">","breakfast":<true when the message says breakfast is included, false when it says breakfast is NOT included, null when breakfast is not mentioned>},"time_bound":<true when the message tries to FIT specific named places into a bounded SAME-DAY time window ("visit X and Y and return by 20:00", "I only have 3 hours", "успею ли до 19:00") — that is a FEASIBILITY question, not a plan-building request; false otherwise>}>,
@@ -238,6 +241,16 @@ function validateIntent(raw, message) {
     // LLM's judgement — phrasing lists cannot cover every language (founder
     // 2026-09-05: "dont work with phrases, they dont guarantee in ai app").
     const anchorReference = raw.anchor_reference === true;
+
+    // Class-3 migration (founder 2026-09-06: "logic should be algorithmic
+    // ... rather than giving instance of words"): correction / browse /
+    // stated-position are MEANING, so the LLM judges them; the old phrase
+    // regexes survive only as $0 backstops at the call sites.
+    const correction = raw.correction === true;
+    const browse = raw.browse === true;
+    const statedAt = (!anchorReference && typeof raw.stated_at === 'string'
+        && raw.stated_at.trim().length >= 2 && raw.stated_at.trim().length <= 80)
+        ? raw.stated_at.trim() : null;
 
     // Itinerary extraction — trusted only on an itinerary turn, and only in
     // the exact shape asked for. A hallucinated hotel name is worse than no
@@ -345,6 +358,9 @@ function validateIntent(raw, message) {
         actionType,
         subType,
         anchorReference,
+        correction,
+        browse,
+        statedAt,
         itineraryDetails,
         placeNames,
         when,

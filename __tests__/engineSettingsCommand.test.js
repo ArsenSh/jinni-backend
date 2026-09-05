@@ -447,3 +447,30 @@ describe('anchor_reference: the LLM decides what is a reference, never a phrase 
         expect(tsrc).not.toMatch(/isReferencePhrase/);
     });
 });
+
+describe('Class-3 migration: correction / browse / stated_at are LLM judgements (founder 2026-09-06)', () => {
+    const { validateIntent } = require('../services/intentService');
+    const base = { is_travel: true, action_type: 'general' };
+
+    test('strict booleans — junk shapes collapse to false', () => {
+        expect(validateIntent({ ...base, correction: true }, 'no, it is on Monte Melkonyan').correction).toBe(true);
+        expect(validateIntent({ ...base, correction: 'yes' }, 'x').correction).toBe(false);
+        expect(validateIntent({ ...base, browse: true }, 'show me bars').browse).toBe(true);
+        expect(validateIntent({ ...base, browse: 1 }, 'x').browse).toBe(false);
+    });
+
+    test('stated_at is a bounded name, and yields to anchor_reference', () => {
+        expect(validateIntent({ ...base, stated_at: 'Khor Virap' }, 'I am at Khor Virap').statedAt).toBe('Khor Virap');
+        expect(validateIntent({ ...base, stated_at: 'X' }, 'x').statedAt).toBe(null);
+        expect(validateIntent({ ...base, stated_at: 'a'.repeat(90) }, 'x').statedAt).toBe(null);
+        // A conversational reference is NOT a stated name — the flags are exclusive.
+        expect(validateIntent({ ...base, anchor_reference: true, stated_at: 'my hotel' }, 'near the hotel I saved').statedAt).toBe(null);
+    });
+
+    test('the route uses the LLM first, the regexes only as backstops', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/aiChatV2.js'), 'utf8');
+        expect(src).toMatch(/intent\.statedAt \|\| parseAtLocation\(message\)/);
+        expect(src).toMatch(/intent\.correction === true \|\| isCorrectionLead\(message\)/);
+        expect(src).toMatch(/intent\.browse === true \|\| isBrowseAsk\(message\)/);
+    });
+});

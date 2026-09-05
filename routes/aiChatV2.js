@@ -794,7 +794,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // never puts a landmark in placeNames, so "near Khor Virap" looked
             // identical to "near me" until parseAtLocation was asked (live
             // 2026-09-03).
-            const statedName = parseAtLocation(message);
+            // Stated position: the intent LLM's extraction first (any
+            // language, any phrasing), the "I'm at X" regex as backstop.
+            const statedName = intent.statedAt || parseAtLocation(message);
             if (!effectiveNearbyMode && gpsCenter && !statedName
                 && isNearbyAsk(message) && !(intent.placeNames || []).length) {
                 effectiveNearbyMode = true;
@@ -1850,8 +1852,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // cat=free.
                 !category
                 && result.provenance.lexical === 0 && sessionCards.length > 0
-                && (/[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim()) || isCorrectionLead(message))
-                && !namesVenueType(message) && !isBrowseAsk(message)
+                && (/[?？՞]["'«»“”’)\]]*\s*$/.test(String(message).trim())
+                    || intent.correction === true || isCorrectionLead(message))
+                && !namesVenueType(message) && !(intent.browse === true || isBrowseAsk(message))
                 && !refillActive && !deckAsk && !countOrRefillAsk
             ) {
                 const loop = await runToolLoop({
