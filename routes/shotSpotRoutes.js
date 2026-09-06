@@ -22,8 +22,6 @@ const express = require('express');
 const router = express.Router();
 const ShotSpot = require('../models/ShotSpot');
 const ShotRecreation = require('../models/ShotRecreation');
-const Destination = require('../models/Destination');
-const PlaceCache = require('../models/PlaceCache');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 
@@ -393,167 +391,13 @@ router.delete('/staff/recreations/:rid([0-9a-fA-F]{24})', auth, staffOrAdmin, as
     } catch (err) { res.status(500).json({ error: 'Failed to delete' }); }
 });
 
-// ── Stage 3: leads miner (staff-only, EPHEMERAL) ────────────────────────────
-// Founder rule (2026-09-06, after the Wikimedia rejection): mined data is
-// EVIDENCE for staff scouting, NEVER the face. Nothing here is persisted or
-// shown to travelers, and no third-party imagery is fetched — only
-// coordinates and counts. A dense cluster of geotagged Commons FILE pages
-// means "many photographers stood here": a proven vantage worth scouting.
-const MINE_UA = 'JinniAI-ShotSpots-Leads/1.0 (staff scouting tool)';
-async function mineLeads(lat, lng, radiusM) {
-    // Honest failure per source: 'unavailable' is reported, never faked as
-    // "no results" (the seeder's throttling lesson, 2026-09-05).
-    const out = { viewpoints: [], clusters: [], sources: { osm: 'unavailable', commons: 'unavailable' } };
-
-    try { // OSM viewpoints — where mappers say there is a view
-        const q = `[out:json][timeout:25];node["tourism"="viewpoint"](around:${Math.round(radiusM)},${lat},${lng});out body 80;`;
-        const r = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST', headers: { 'User-Agent': MINE_UA, 'Content-Type': 'text/plain' }, body: q,
-        });
-        if (r.ok) {
-            const d = await r.json();
-            out.viewpoints = (d.elements || []).filter(e => e.lat && e.lon).map(e => ({
-                name: (e.tags && (e.tags.name || e.tags['name:en'])) || 'Unnamed viewpoint',
-                lat: e.lat, lng: e.lon,
-                distanceM: Math.round(haversineM({ lat, lng }, { lat: e.lat, lng: e.lon })),
-            })).sort((a, b) => a.distanceM - b.distanceM).slice(0, 40);
-            out.sources.osm = 'ok';
-        }
-    } catch (e) { /* 'unavailable' stands */ }
-
-    try { // Commons geotagged File pages = (usually) camera positions
-        const url = 'https://commons.wikimedia.org/w/api.php?action=query&list=geosearch&gsnamespace=6'
-            + `&gslimit=500&gsradius=${Math.round(radiusM)}&gscoord=${lat}%7C${lng}&format=json`;
-        const r = await fetch(url, { headers: { 'User-Agent': MINE_UA } });
-        if (r.ok) {
-            const d = await r.json();
-            const files = ((d.query && d.query.geosearch) || []).filter(f => f.lat && f.lon);
-            const cells = new Map(); // ~70m grid cells
-            for (const f of files) {
-                const key = `${Math.round(f.lat / 0.00063)}:${Math.round(f.lon / 0.0009)}`;
-                let c = cells.get(key);
-                if (!c) { c = { lat: 0, lng: 0, n: 0, titles: [] }; cells.set(key, c); }
-                c.lat += f.lat; c.lng += f.lon; c.n += 1;
-                if (c.titles.length < 3) c.titles.push(String(f.title || '').replace(/^File:/, ''));
-            }
-            out.clusters = [...cells.values()].filter(c => c.n >= 3)
-                .map(c => ({ lat: +(c.lat / c.n).toFixed(6), lng: +(c.lng / c.n).toFixed(6), photographers: c.n, sampleTitles: c.titles }))
-                .map(c => ({ ...c, distanceM: Math.round(haversineM({ lat, lng }, c)) }))
-                .sort((a, b) => b.photographers - a.photographers).slice(0, 15);
-            out.sources.commons = 'ok';
-        }
-    } catch (e) { /* 'unavailable' stands */ }
-    return out;
-}
-
-router.get('/staff/mine', auth, staffOrAdmin, async (req, res) => {
-    const lat = num(req.query.lat, -90, 90), lng = num(req.query.lng, -180, 180);
-    if (lat === null || lng === null) return res.status(400).json({ error: 'lat/lng required' });
-    const radiusM = Math.min((num(req.query.radiusKm, 0.2, 15) || 3) * 1000, 10000);
-    res.json(await mineLeads(lat, lng, radiusM));
-});
-
-// ── "Let Jinni hunt" — the AI finds candidates ITSELF; staff only verify ────
-// (founder 2026-09-06: "if ai could find by himself then staff verify that is
-// another thing"). Jinni turns the strongest evidence into draft ShotSpots
-// (aiFound:true, evidence attached). They can NEVER publish themselves —
-// hasPhoto stays false until a human stands there and shoots, so the face of
-// the feature remains real photos while the FINDING is genuinely the AI's.
-// Jinni resolves a city's center from data it ALREADY OWNS (destinations,
-// then cached places) — no typed coordinates, no external geocoder. Average
-// of known points is plenty for a hunt center.
-async function resolveCityCenter(city) {
-    const rx = new RegExp(`^${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
-    let pts = (await Destination.find({ 'location.city': rx })
-        .select('location.coordinates').limit(300).lean())
-        .map(d => d.location && d.location.coordinates)
-        .filter(c => c && Number.isFinite(c.lat) && Number.isFinite(c.lng));
-    if (!pts.length) {
-        pts = (await PlaceCache.find({ city: rx })
-            .select('details.geometry.location').limit(300).lean())
-            .map(r => r.details && r.details.geometry && r.details.geometry.location)
-            .filter(c => c && Number.isFinite(c.lat) && Number.isFinite(c.lng));
-    }
-    if (!pts.length) return null;
-    return {
-        lat: pts.reduce((s, p) => s + p.lat, 0) / pts.length,
-        lng: pts.reduce((s, p) => s + p.lng, 0) / pts.length,
-    };
-}
-
-router.post('/staff/hunt', auth, staffOrAdmin, async (req, res) => {
-    try {
-        let lat = num(req.body.lat, -90, 90), lng = num(req.body.lng, -180, 180);
-        const city = str(req.body.city, 80);
-        if (!city) return res.status(400).json({ error: 'city required (Jinni files candidates under it)' });
-        if (lat === null || lng === null) {
-            const center = await resolveCityCenter(city);
-            if (!center) {
-                return res.status(400).json({ error: `Jinni doesn't know "${city}" yet — no destinations or cached places there. Add a center coordinate for the first hunt.` });
-            }
-            lat = center.lat; lng = center.lng;
-        }
-        const radiusM = Math.min((num(req.body.radiusKm, 0.2, 15) || 5) * 1000, 10000);
-
-        const leads = await mineLeads(lat, lng, radiusM);
-        if (leads.sources.osm !== 'ok' && leads.sources.commons !== 'ok') {
-            return res.status(502).json({ error: 'Evidence sources unavailable right now — try again later', sources: leads.sources });
-        }
-
-        // CLUSTERS FIRST: many photographers at one point is direct evidence
-        // AND carries viewable sample photos for desk pre-filtering (founder
-        // 2026-09-06: "i dont see images how verify?"); viewpoints fill the
-        // rest. First hunt shipped 15/15 viewpoints because they were listed
-        // first — the stronger evidence never made the cap.
-        const candidates = [
-            ...leads.clusters.map(c => ({
-                lat: c.lat, lng: c.lng,
-                title: `Photographers' vantage (${c.photographers} shots)`,
-                kind: 'commons_cluster',
-                note: `${c.photographers} geotagged photos cluster here — tap the evidence links to see them`,
-                // Links to Commons' OWN pages (staff desk research only) —
-                // the images themselves are never imported or shown in-app.
-                urls: c.sampleTitles.map(s => `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(s.replace(/ /g, '_'))}`),
-                titles: c.sampleTitles,
-            })),
-            ...leads.viewpoints.map(v => ({
-                lat: v.lat, lng: v.lng,
-                title: v.name === 'Unnamed viewpoint' ? 'Scenic viewpoint' : v.name,
-                kind: 'osm_viewpoint',
-                note: `Mapped viewpoint (OSM), ${v.distanceM}m from hunt center — check it in Maps/street view`,
-                urls: [], titles: [],
-            })),
-        ];
-
-        // Dedupe: never re-suggest a point a spot (any status) already covers,
-        // and don't create twins within one hunt. 80m ≈ same vantage.
-        const existing = await ShotSpot.find({}).select('camera.lat camera.lng').lean();
-        const taken = existing.map(s => s.camera).filter(c => c && c.lat != null);
-        const created = [];
-        for (const c of candidates) {
-            if (created.length >= 15) break; // one hunt = a reviewable batch
-            const clash = [...taken, ...created].some(p => haversineM(p, c) < 80);
-            if (clash) continue;
-            const spot = await ShotSpot.create({
-                title: c.title.slice(0, 120), city, country: str(req.body.country, 80),
-                status: 'draft', aiFound: true, hasPhoto: false,
-                camera: { lat: c.lat, lng: c.lng, accuracyMeters: null, heading: null, pitch: null, orientation: 'portrait' },
-                access: { nearestPlace: '', point: { lat: null, lng: null }, instructions: '', walkMinutes: null },
-                shooting: { bestTime: 'any', season: '', notes: '' },
-                evidence: [
-                    { kind: c.kind, note: c.note.slice(0, 500) },
-                    ...c.urls.slice(0, 3).map((u, i) => ({ kind: 'sample_photo', url: u, note: (c.titles[i] || 'sample').slice(0, 200) })),
-                ],
-                createdBy: req.user.id, createdByName: 'Jinni (auto-hunt)',
-            });
-            created.push({ lat: c.lat, lng: c.lng, id: spot._id });
-        }
-        res.json({ created: created.length, considered: candidates.length, sources: leads.sources });
-    } catch (err) {
-        console.error('[shotspots] hunt error:', err);
-        res.status(500).json({ error: 'Hunt failed' });
-    }
-});
+// ── Stage 3 (miner/hunt) REMOVED — founder 2026-09-06 ("i give up"):
+// the Commons evidence failed human review AGAIN (one photographer visible
+// in ~99% of a cluster's samples — an upload spree, not a real vantage).
+// Twice-confirmed lesson: mined sources fail on QUALITY in any role, even
+// as staff-only leads. Shot Spots are added by staff only: Capture on site,
+// EXIF Import, or Scout (hand-pinned coordinates). Do not resurrect mining
+// here without explicit founder sign-off.
 
 module.exports = router;
 
