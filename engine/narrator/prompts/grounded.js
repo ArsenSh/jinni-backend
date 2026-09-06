@@ -222,8 +222,19 @@ function travelerRows(preferences) {
     // Budget style with no budget is a gap worth closing, and only the traveler
     // can close it. Arsen 2026-08-24: "if user he wants budget places then
     // should give budget also min and max".
-    if (p.travelStyle === 'budget' && !(p.budget && (p.budget.min > 0 || p.budget.max > 0))) {
+    const _hasRange = !!(p.budget && (p.budget.min > 0 || p.budget.max > 0));
+    if (p.travelStyle === 'budget' && !_hasRange) {
         rows.push('their style is budget but NO budget range is saved — ask for a min and max when it would help');
+    } else if (p.travelStyle) {
+        // Arsen 2026-09-06: "style was luxury so it should ignore budget
+        // always". Asked which countries to visit for a week, Jinni named three
+        // and then hedged — "I don't have your budget range beyond your luxury
+        // style" — as if the saved style were half an answer. It is the whole
+        // answer to the money question, and the hedge reads as Jinni not having
+        // read its own preferences screen.
+        rows.push(`their travel style IS the money answer: ${p.travelStyle} is the spending level to suggest at. `
+            + 'Never say you do not know their budget, never ask for a price range, and never soften a '
+            + 'suggestion because a number is missing');
     }
     return rows;
 }
@@ -260,8 +271,18 @@ function selfBlock(preferences, { knowsLocation = false } = {}) {
             ? 'ROWS ABOUT THIS TRAVELER (from their saved Preferences — you DO see these):\n'
               + rows.map(r => `- ${r}`).join('\n')
               + '\nThese are BACKGROUND. Let them quietly shape WHAT you suggest — never announce them. '
-              + 'State them back only if the CURRENT message asks what you know about the traveler. '
-              + 'Nothing else about them is known to you.\n'
+              + 'State them back only if the CURRENT message asks what you know about the traveler.\n'
+              // Arsen 2026-09-06: asked to recommend countries "based on my
+              // preferences", Jinni answered well and then undercut itself —
+              // "I don't have access to your full travel history or budget
+              // range" — and closed by asking which continent, with style AND
+              // interests both saved. The rows it holds ARE the brief; treating
+              // them as a partial one turns a good answer into a hesitant one.
+              + 'These rows are ENOUGH to answer with. Do not disclaim what is missing from them — no '
+              + '"I do not have your travel history / budget / full profile" caveats — and do not ask a '
+              + 'narrowing question the rows already answer. Answer, then offer to narrow only if the rows '
+              + 'genuinely leave the choice open. (This changes nothing about FACTS: never invent a place, '
+              + 'price, time or distance you were not given.)\n'
             : 'ROWS ABOUT THIS TRAVELER: none — they have saved no preferences. If they ask what their '
               + 'preferences are, say plainly that none are saved yet and that they can set them in Preferences. '
               + 'Do NOT describe any taste, style or budget for them.\n');

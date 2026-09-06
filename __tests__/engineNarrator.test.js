@@ -329,3 +329,48 @@ describe('multi-area decks are framed as areas (live 2026-09-06: "Garni area" cl
         expect(all).not.toContain('in null');
     });
 });
+
+// ── Preferences are a brief, not a partial one ───────────────────────────────
+// Live 2026-09-06: asked which countries to visit for a week "based on my
+// preferences", Jinni named three, then said it lacked the traveler's budget
+// and travel history, then asked which continent — with travel style AND
+// interests both saved. Arsen: "style was luxury so it should ignore budget
+// always"; "interests i have selected, so i think it can understand which
+// countries based on my interests".
+describe('saved preferences answer the money question', () => {
+    const { selfBlock } = require('../engine/narrator/prompts/grounded');
+
+    test('a saved style IS the budget answer — no asking for a range', () => {
+        const block = selfBlock({ travelStyle: 'luxury', interests: ['romantic', 'nature'] });
+        expect(block).toMatch(/travel style IS the money answer: luxury/);
+        expect(block).toMatch(/never ask for a price range/);
+    });
+
+    test('the rows are treated as enough to answer with', () => {
+        const block = selfBlock({ travelStyle: 'luxury', interests: ['romantic'] });
+        expect(block).toMatch(/ENOUGH to answer with/);
+        expect(block).toMatch(/Do not disclaim what is missing/);
+        expect(block).toMatch(/do not ask a narrowing question the rows already answer/);
+        // and the honesty invariant survives the new permission
+        expect(block).toMatch(/never invent a place, price, time or distance/);
+    });
+
+    test('budget style with no range still asks for one — that gap is real', () => {
+        const block = selfBlock({ travelStyle: 'budget' });
+        expect(block).toMatch(/NO budget range is saved — ask for a min and max/);
+        expect(block).not.toMatch(/IS the money answer/);
+    });
+
+    test('a budget style WITH a range stops asking and states the level', () => {
+        const block = selfBlock({ travelStyle: 'budget', budget: { min: 20, max: 60, currency: 'USD' } });
+        expect(block).toMatch(/budget: 20–60 USD/);
+        expect(block).toMatch(/travel style IS the money answer: budget/);
+        expect(block).not.toMatch(/ask for a min and max/);
+    });
+
+    test('a traveler with no saved rows is still told to claim no taste for them', () => {
+        const block = selfBlock({});
+        expect(block).toMatch(/they have saved no preferences/);
+        expect(block).not.toMatch(/IS the money answer/);
+    });
+});
