@@ -421,7 +421,17 @@ app.use('/api/ai', aiRoutes);
 // process exists at all. Mount a persistent volume holding jinni.pmtiles and
 // set TILES_DIR (e.g. /app/tiles); CORS comes from the app-level middleware.
 if (process.env.TILES_DIR) {
-    app.use('/tiles', express.static(process.env.TILES_DIR, { maxAge: '7d' }));
+    app.use('/tiles', express.static(process.env.TILES_DIR, {
+        maxAge: '7d',
+        setHeaders: (res, filePath) => {
+            // The archive keeps ONE name while staff add and remove countries
+            // from the admin Coverage tab, so a 7-day cache would let a browser
+            // mix byte ranges of the old archive with the new one — garbled
+            // tiles, no error. Ranges of the archive itself must revalidate;
+            // the ETag makes that a cheap 304 when nothing was rebuilt.
+            if (filePath.endsWith('.pmtiles')) res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+        },
+    }));
     console.log(`[tiles] serving self-hosted map tiles from ${process.env.TILES_DIR}`);
 }
 app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV2')));   // v2 engine, parallel to v1 — see backend/engine/ENGINE.md

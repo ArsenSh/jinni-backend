@@ -3,6 +3,7 @@ const { parseAddressRegion } = require('../utils/addressRegion');
 const router = express.Router();
 const mongoose = require('mongoose');
 const coverageService = require('../services/coverageService');
+const mapTiles = require('../services/mapTiles');
 const User = require('../models/User');
 const UserAILimit = require('../models/UserAILimit');
 const Business = require('../models/Business');
@@ -2944,6 +2945,49 @@ router.post('/event-sources/discover', async (req, res) => {
                 .map(r => ({ host: r.host, why: r.verdict })),
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Map coverage (self-hosted tiles) ─────────────────────────────────────────
+// Staff pick which COUNTRIES the server holds map tiles for. Jinni serves one
+// PMTiles archive, so a country that is not in it draws a blank map — the
+// founder's rule: "if map is not downloaded Jinni is not there". Sizes and
+// progress below are the extraction tool's own numbers, never our estimates.
+
+// What we hold today, what it costs on disk, and which countries we answer
+// about but cannot draw.
+router.get('/map-tiles', async (req, res) => {
+    try {
+        res.json({ success: true, data: await mapTiles.status() });
+    } catch (err) {
+        console.error('Map tiles status error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Price a selection BEFORE downloading anything (pmtiles --dry-run reads no tiles).
+router.post('/map-tiles/estimate', async (req, res) => {
+    try {
+        res.json({ success: true, data: await mapTiles.estimate(req.body?.codes) });
+    } catch (err) {
+        res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+// Rebuild the served archive for exactly this set of countries. An empty set
+// removes the archive; dropping a country from the set is how it is deleted.
+router.post('/map-tiles/build', async (req, res) => {
+    try {
+        const job = mapTiles.startBuild(req.body?.codes);
+        console.log(`[map-tiles] build requested by ${req.user?.email || 'admin'}: ${job.codes.join(', ') || '(none)'}`);
+        res.json({ success: true, data: job });
+    } catch (err) {
+        res.status(409).json({ success: false, error: err.message });
+    }
+});
+
+// Progress of the running (or last) build, for the panel to poll.
+router.get('/map-tiles/job', (req, res) => {
+    res.json({ success: true, data: mapTiles.jobView() });
 });
 
 module.exports = router;
