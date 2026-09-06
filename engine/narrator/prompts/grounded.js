@@ -225,16 +225,27 @@ function travelerRows(preferences) {
     const _hasRange = !!(p.budget && (p.budget.min > 0 || p.budget.max > 0));
     if (p.travelStyle === 'budget' && !_hasRange) {
         rows.push('their style is budget but NO budget range is saved — ask for a min and max when it would help');
+    } else if (p.travelStyle === 'budget') {
+        // A budget style ALWAYS carries a range — the Preferences screen only
+        // shows the min/max fields for this style and validates them. So the
+        // numbers are a working figure, not decoration. Arsen 2026-09-06: "if
+        // user set logica budget for the question it asks then ai should
+        // consider everything approximately."
+        rows.push(`their budget of ${[p.budget.min, p.budget.max].filter(v => v > 0).join('–')} `
+            + `${p.budget.currency || 'USD'} is PER PERSON and it is a working number: suggest places that `
+            + 'sit inside it, and when the question spans several days, people or stops, do the rough '
+            + 'arithmetic yourself and say what you assumed (e.g. "roughly X a day each"). Approximate is '
+            + 'fine and expected — say it is approximate. Never ask them to repeat a budget you can see');
     } else if (p.travelStyle) {
         // Arsen 2026-09-06: "style was luxury so it should ignore budget
-        // always". Asked which countries to visit for a week, Jinni named three
+        // always" / "if user is luxury then it should be very easy for ai to
+        // work". Asked which countries to visit for a week, Jinni named three
         // and then hedged — "I don't have your budget range beyond your luxury
         // style" — as if the saved style were half an answer. It is the whole
-        // answer to the money question, and the hedge reads as Jinni not having
-        // read its own preferences screen.
-        rows.push(`their travel style IS the money answer: ${p.travelStyle} is the spending level to suggest at. `
-            + 'Never say you do not know their budget, never ask for a price range, and never soften a '
-            + 'suggestion because a number is missing');
+        // answer to the money question.
+        rows.push(`their travel style IS the money answer: ${p.travelStyle} is the spending level to suggest `
+            + 'at, and cost is NOT a constraint on what you may suggest. Never say you do not know their '
+            + 'budget, never ask for a price range, and never hold back or soften a suggestion over price');
     }
     return rows;
 }

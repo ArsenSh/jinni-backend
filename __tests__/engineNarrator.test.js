@@ -361,11 +361,24 @@ describe('saved preferences answer the money question', () => {
         expect(block).not.toMatch(/IS the money answer/);
     });
 
-    test('a budget style WITH a range stops asking and states the level', () => {
+    // Arsen 2026-09-06: "if user sets budget style then user will definitly
+    // have budget range per person with currency, so … ai should consider
+    // everything approximately."
+    test('a budget style WITH a range becomes a working number, not decoration', () => {
         const block = selfBlock({ travelStyle: 'budget', budget: { min: 20, max: 60, currency: 'USD' } });
         expect(block).toMatch(/budget: 20–60 USD/);
-        expect(block).toMatch(/travel style IS the money answer: budget/);
+        expect(block).toMatch(/budget of 20–60 USD is PER PERSON/);
+        expect(block).toMatch(/do the rough arithmetic yourself and say what you assumed/);
+        expect(block).toMatch(/Approximate is fine and expected/);
         expect(block).not.toMatch(/ask for a min and max/);
+    });
+
+    test('luxury is told cost is not a constraint at all', () => {
+        const block = selfBlock({ travelStyle: 'luxury' });
+        expect(block).toMatch(/cost is NOT a constraint/);
+        expect(block).toMatch(/never hold back or soften a suggestion over price/);
+        // and it is never handed budget arithmetic it has no numbers for
+        expect(block).not.toMatch(/rough arithmetic/);
     });
 
     test('a traveler with no saved rows is still told to claim no taste for them', () => {
