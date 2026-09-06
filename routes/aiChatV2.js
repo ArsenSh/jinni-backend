@@ -1693,6 +1693,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             };
             let result = await findPlaces(findArgs, { loadCandidates });
+            // Out-of-town decks: stamp each place's nearest TOWN (local
+            // gazetteer, $0) so the narrator can frame areas honestly and
+            // cards show where a bare street address actually is (live
+            // 2026-09-06: "the Garni area is your best bet" over a deck
+            // spanning Tsaghkadzor, Garni, Sasunik and Ditak).
+            if (outOfTown && Array.isArray(result?.places) && result.places.length) {
+                const { nearestTown } = require('../engine/geo/gazetteer');
+                await Promise.all(result.places.map(async (p) => {
+                    if (p?.geometry) p._town = await nearestTown(p.geometry).catch(() => null);
+                }));
+            }
             // ── NARROWING, not asking for more (live 2026-08-31): "in Dilijan
             //    please" after a deck mixing in-town and regional hotels got
             //    "you've seen everything" — true, and useless. A turn that

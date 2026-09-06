@@ -25,6 +25,10 @@ function placeFactLine(p) {
             .filter(Boolean).filter((t, i, a) => a.indexOf(t) === i)
             .filter(t => !/^(point_of_interest|establishment)$/.test(t))
             .slice(0, 3).join('/') || null,
+        // The place's TOWN (gazetteer reverse lookup) — without it the
+        // narrator generalized a four-town deck into "the Garni area"
+        // (live 2026-09-06).
+        p._town ? `in ${p._town}` : null,
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
         p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
@@ -298,6 +302,7 @@ function buildGroundedMessages({ query, places = [], langName = 'English', timeN
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + 'You are given a VERIFIED list of real places. Rules:\n'
+              + '- AREAS: each place\'s town appears in its facts ("in Tsaghkadzor"). When the list spans MORE THAN ONE town, present it as a choice between areas — never claim the options are all in one area.\n'
               + '- Recommend ONLY from the list, by exact name. NEVER mention any place not on it — including places from earlier in the conversation.\n'
               + '- Only assert the facts given per place (distance, rating, open state). No prices, no hours, no dishes unless given.\n'
               + '- If nothing on the list genuinely fits the request, say so honestly and suggest broadening — do not force a bad match.\n'

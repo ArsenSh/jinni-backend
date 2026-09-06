@@ -314,7 +314,35 @@ async function isSeeded(deps = {}) {
     try { return (await _guard(Model.estimatedDocumentCount())) > 0; } catch { return false; }
 }
 
+/**
+ * Reverse lookup: coordinates → the nearest seeded settlement's name.
+ * $0 (local geonames). Used to annotate out-of-town deck places so the
+ * narrator knows "Zip Line" is in Tsaghkadzor, not "the Garni area"
+ * (live 2026-09-06: prose claimed one area for a four-town deck).
+ * Null on any miss — the caveat simply doesn't render.
+ */
+async function nearestTown({ lat, lng } = {}, deps = {}) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    try {
+        const Model = _pick(deps);
+        if (!Model) return null;
+        const box = 0.2; // ~22km — day-trip places sit near SOME town
+        const rows = await _guard(Model.find({
+            kind: 'city',
+            lat: { $gte: lat - box, $lte: lat + box },
+            lng: { $gte: lng - box, $lte: lng + box },
+        }).select('name lat lng population').limit(30).lean());
+        if (!rows || !rows.length) return null;
+        let best = null, bestKm = Infinity;
+        for (const r of rows) {
+            const km = _km(lat, lng, r.lat, r.lng);
+            if (km < bestKm) { bestKm = km; best = r; }
+        }
+        return (best && bestKm <= 15) ? best.name : null;
+    } catch { return null; }
+}
+
 module.exports = {
-    lookupPlace, regionAt, mainCities, radiusForPopulation,
+    lookupPlace, regionAt, mainCities, radiusForPopulation, nearestTown,
     normalizeName, isSeeded, TYPES_BY_KIND, SUBPLACE_CODES, _toGeo, _km,
 };

@@ -306,3 +306,26 @@ describe('battery fixes 2026-08-30 (second-person empty replies, current-message
         expect(doc.validateSync('branch')).toBeUndefined();
     });
 });
+
+describe('multi-area decks are framed as areas (live 2026-09-06: "Garni area" claimed over a four-town deck)', () => {
+    const { buildGroundedMessages } = require('../engine/narrator/prompts/grounded');
+    test('the town rides each fact line and the AREAS rule is present', () => {
+        const msgs = buildGroundedMessages({
+            query: 'day trip',
+            places: [
+                { name: 'Zip Line', _town: 'Tsaghkadzor', rating: 4.6 },
+                { name: 'Vitrage', _town: 'Garni', rating: 4.5 },
+            ],
+        });
+        const all = msgs.map(m => m.content).join('\n');
+        expect(all).toContain('in Tsaghkadzor');
+        expect(all).toContain('in Garni');
+        expect(all).toMatch(/never claim the options are all in one area/);
+    });
+    test('no town, no noise — the fact line is unchanged for ordinary decks', () => {
+        const msgs = buildGroundedMessages({ query: 'x', places: [{ name: 'Kamancha', rating: 4.9 }] });
+        const all = msgs.map(m => m.content).join('\n');
+        expect(all).not.toContain('in undefined');
+        expect(all).not.toContain('in null');
+    });
+});

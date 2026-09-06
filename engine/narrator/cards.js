@@ -171,10 +171,13 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         category,
         type: category.toLowerCase().replace(' ', '_'),
         description: desc,
-        region: place.city || 'Unknown',
+        region: place.city || place._town || 'Unknown',
         // Full street address when the candidate carries one (cache rows do);
         // city/country only as the fallback.
-        location: place.address || [place.city, place.country].filter(Boolean).join(', ') || 'Location not specified',
+        location: (place.address
+            ? (place._town && !String(place.address).toLowerCase().includes(String(place._town).toLowerCase())
+                ? `${place.address}, ${place._town}` : place.address)
+            : [place.city, place._town, place.country].filter(Boolean).join(', ')) || 'Location not specified',
         image: place.image || cachedImageUrl,
         cachedImageUrl,
         source: place.source === 'cache' ? 'cache' : 'database',
