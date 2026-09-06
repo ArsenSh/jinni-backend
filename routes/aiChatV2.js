@@ -16,7 +16,7 @@ const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
 const { buildTimeContext } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
-const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages } = require('../engine/narrator/prompts/grounded');
+const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages, buildDestinationMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
 const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../engine/narrator/greetingStrip');
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
@@ -1171,7 +1171,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (settingsApplied.length) meta.prefApplied = meta.settingsApplied[0];
             console.log(`[v2] settings: ${done.length ? done.join('; ') : 'nothing applied'}`
                 + `${failed.length ? ` | refused: ${failed.join(', ')}` : ''} — no retrieval, no cards`);
-        } else if (intent.actionType === 'itinerary' || isItineraryAsk(message)) {
+        } else if (intent.actionType === 'itinerary'
+            // isItineraryAsk is a $0 phrase backstop; "one week" in "which
+            // country for one week" is a trip LENGTH, not a plan request. When
+            // the model says this is a destination CHOICE, that judgement wins.
+            || (isItineraryAsk(message) && intent.destinationScope !== true)) {
             // ── ITINERARY-SHAPED ASK → the CLARIFIER, v1's exact contract
             //    (founder 2026-09-05: "it should had triggered itinerary").
             //    "Can you plan 3 day itinerary?" used to fall into the deck
@@ -1241,6 +1245,52 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'chitchat';
             console.log('[v2] itinerary-shaped ask -> clarifier hand-off (days=' + (prefillDays == null ? '?' : prefillDays) + ', hotel=' + (_det.hotel ? 'stated' : '?') + ', breakfast=' + (_det.breakfast == null ? '?' : _det.breakfast) + (_itinDest ? `, dest=${_itinDest.name}` : '') + ') — same build path as the quick action');
             }
+        } else if (intent.destinationScope === true) {
+            // ── WHERE IN THE WORLD ── (founder 2026-09-06, "it is very bad")
+            //    "which countries would you recommend for one week based on my
+            //    preferences" ran as q="countries visit week based preferences"
+            //    at r=50km and dealt six Yerevan venues; the follow-up "No
+            //    please not in armenia" became q="armenia" and dealt a grocery,
+            //    three bars and a helicopter tour. A question about WHERE TO GO
+            //    is not a question about what is nearby, so this lane never
+            //    touches retrieval and ships no cards. The LLM judges the scale
+            //    (destination_scope) — no phrase list decides it.
+            const _prevLedger = sessionPeek?.constraints || null;
+            const { ledger: _destLedger, changed: _destChanged } = mergeConstraints(
+                _prevLedger, intent.exclude?.length ? { excluded: intent.exclude } : {}, { category: null },
+            );
+            // What they have ruled out survives the whole conversation — the
+            // exclusion is a constraint, never a search term.
+            const _excluded = _destLedger.excluded || [];
+            // Where Jinni can actually follow through. Never awaited: an
+            // unwarmed count just means the answer goes out without it.
+            const _coverage = require('../services/mapTiles').contentPeek() || [];
+            // Where they are standing — resolved above from GPS or the saved
+            // city. They are choosing where to travel FROM here, so the prompt
+            // keeps Jinni from proposing the country they are already in.
+            const _hereCountry = hereRegion?.country || center?.country || null;
+            const out = await narrator.stream({
+                messages: buildDestinationMessages({
+                    message, langName, history: recentTurns, preferences: intent._preferences,
+                    excluded: _excluded, coverage: _coverage, here: _hereCountry,
+                }),
+                onToken: (c) => send(res, { type: 'token', content: c }),
+                maxTokens: narrationBudget(4, intent._userLanguage || 'en'),
+                realStream: true,
+                model: providerName,
+                modelName,
+            });
+            reply = out.text;
+            addUsage(out);
+            if (sessionId && _destChanged.includes('excluded')) {
+                require('../models/ChatSession').updateOne(
+                    { _id: sessionId }, { $set: { constraints: _destLedger } },
+                ).catch(() => {});
+            }
+            meta.answerType = 'destination_advice';
+            stats.path = 'chitchat';
+            console.log(`[v2] destination-scale ask -> no deck${_excluded.length ? ` · ruled out: ${_excluded.join(', ')}` : ''}`
+                + ` · coverage ${_coverage.length ? _coverage.slice(0, 4).map(c => c.name).join('/') : 'not warm yet'}`);
         } else if (!namedCard && (() => { meta._fx = parseCurrencyConvert(message); return !!meta._fx; })()) {
             // ── CURRENCY, computed not remembered (live 2026-09-05: the
             //    model quoted 385-400 AMD/$ from memory while currencyService
@@ -1512,6 +1562,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             });
             if (_tt != null) _delta.targetTime = _tt;
             if (intent.outOfTown === true) _delta.outOfTown = true;
+            if (intent.exclude?.length) _delta.excluded = intent.exclude;
             const { ledger, changed, reset: ledgerReset } = mergeConstraints(prevLedger, _delta, { category });
             if (ledgerReset) console.log('[ledger] mission changed -> previous constraints cleared');
             // An inherited constraint acts exactly as if said THIS turn.

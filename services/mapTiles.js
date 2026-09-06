@@ -192,7 +192,7 @@ async function catalog() {
  *  countryCode on every row. Structural, language-independent, $0.
  */
 const CONTENT_TTL_MS = 5 * 60 * 1000;
-let contentMemo = { at: 0, value: {} };
+let contentMemo = { at: 0, value: {}, list: [] };
 
 async function contentByCountry() {
     const mongoose = require('mongoose');
@@ -237,8 +237,28 @@ async function contentByCountry() {
             if (/^[A-Z]{2}$/.test(code)) counts[code] = (counts[code] || 0) + n;
         }
     }));
-    contentMemo = { at: Date.now(), value: counts };
+    // Names, so callers other than the admin table can say "Italy" rather than
+    // "IT". One indexed query, and it happens inside the memoized path.
+    const nameRows = await geo.find(
+        { kind: 'country', countryCode: { $in: Object.keys(counts) } },
+        { projection: { countryCode: 1, name: 1 } },
+    ).toArray().catch(() => []);
+    const byCode = Object.fromEntries(nameRows.map(r => [String(r.countryCode).toUpperCase(), r.name]));
+    const list = Object.entries(counts)
+        .map(([code, places]) => ({ code, name: byCode[code] || code, places }))
+        .sort((a, b) => b.places - a.places);
+    contentMemo = { at: Date.now(), value: counts, list };
     return counts;
+}
+
+/** The same counts, but NEVER awaited by a chat turn. Returns the warm memo or
+ *  null and refreshes in the background: a traveler's answer must not wait ~5s
+ *  on an admin statistic, and an absent count simply means the answer is given
+ *  without it. */
+function contentPeek() {
+    if (Date.now() - contentMemo.at < CONTENT_TTL_MS) return contentMemo.list;
+    contentByCountry().catch(() => {});
+    return null;
 }
 
 // ── Manifest + archive state ────────────────────────────────────────────────
@@ -438,7 +458,7 @@ async function status() {
 }
 
 module.exports = {
-    status, estimate, startBuild, jobView, catalog, contentByCountry,
+    status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
     padBbox, bboxRing, regionGeoJSON, parseProgress, parseExtractSummary, normalizeCodes,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,

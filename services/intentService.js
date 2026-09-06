@@ -166,6 +166,8 @@ Return ONLY this JSON object:
 "browse":<true when a DECK OF PLACE CARDS is the right answer to the CURRENT message — it asks to be shown options ("show me rooftop bars", "what can I do tonight", "куда сходить", "restaurants?"). False when the right answer is prose: a question about one place, a correction, a how-to, small talk>,
 "stated_at":"<the place NAME the current message says the traveler is AT or near RIGHT NOW ('I am at Khor Virap', 'мы у Каскада', 'standing near the opera') — the name only, exactly as written, misspellings kept. Empty when the message states no position, or points at it through the conversation instead of naming it>",
 "anchor_reference":<true when the CURRENT message points at a place THROUGH THE CONVERSATION rather than by name — "my hotel", "the one I saved", "the first two you showed", "который я сохранил", "այն որ պահպանեցի", in ANY language or phrasing. False when the message names the place outright or anchors to nothing>,
+"destination_scope":<true when the CURRENT message asks WHERE IN THE WORLD to go — which country, region, island or city to travel TO ("which countries should I visit for a week", "where should we go in October", "куда поехать на неделю", "ո՞ր երկիրը") — a choice BETWEEN destinations. False when it asks for venues to visit inside a place they are already going to or already in ("what to do in Rome", "restaurants near me"): those are places, not destinations>,
+"exclude":["<a destination the CURRENT message RULES OUT — 'not in Armenia', 'anywhere but Italy', 'not too far', 'не в Армению' — written in English, the place name only. Empty array when nothing is ruled out. This is what they do NOT want: never put it in place_names or place_search_query>"],
 "needs_weather":<true or false>,
 "itinerary_details":<ONLY when action_type is itinerary, else null. {"days":<number of days the message states, 0 if not stated>,"hotel":"<the hotel/accommodation NAME only when the CURRENT message explicitly says where the user stays ('my hotel is Marriott', 'we are staying at Ibis Yerevan') — NEVER guess or invent one, otherwise an empty string "">","breakfast":<true when the message says breakfast is included, false when it says breakfast is NOT included, null when breakfast is not mentioned>},"time_bound":<true when the message tries to FIT specific named places into a bounded SAME-DAY time window ("visit X and Y and return by 20:00", "I only have 3 hours", "успею ли до 19:00") — that is a FEASIBILITY question, not a plan-building request; false otherwise>}>,
 "settings_change":[{"field":"<travelStyle|interests|budget|searchMode|nearbyRadius|discoveryRadius>","value":<see below>}]}
@@ -250,6 +252,20 @@ function validateIntent(raw, message) {
     const correction = raw.correction === true;
     const browse = raw.browse === true;
     const outOfTown = raw.out_of_town === true;
+    // A destination-scale ask ("which countries for a week") is a different
+    // question from a venue ask, and answering it with a 50 km deck dealt six
+    // Yerevan bars under a question about countries (live 2026-09-06).
+    const destinationScope = raw.destination_scope === true;
+    // What the traveler RULED OUT. "No please not in armenia" became the search
+    // query q="armenia" and dealt Yerevan groceries — the exclusion has to be a
+    // constraint, never a keyword. Capped and shape-checked: these names are
+    // carried across turns and compared against retrieved places.
+    const exclude = Array.isArray(raw.exclude)
+        ? [...new Set(raw.exclude
+            .filter(v => typeof v === 'string')
+            .map(v => v.trim())
+            .filter(v => v.length >= 2 && v.length <= 60))].slice(0, 6)
+        : [];
     const statedAt = (!anchorReference && typeof raw.stated_at === 'string'
         && raw.stated_at.trim().length >= 2 && raw.stated_at.trim().length <= 80)
         ? raw.stated_at.trim() : null;
@@ -363,6 +379,8 @@ function validateIntent(raw, message) {
         correction,
         browse,
         outOfTown,
+        destinationScope,
+        exclude,
         statedAt,
         itineraryDetails,
         placeNames,

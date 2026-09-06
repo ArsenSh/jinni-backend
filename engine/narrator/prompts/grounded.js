@@ -472,6 +472,67 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
  * how "book a taxi" became six museums — so we say so instead, in prose, with
  * no cards attached.
  */
+/**
+ * WHERE IN THE WORLD to go — a different question from what to do nearby.
+ *
+ * Live 2026-09-06: "which countries would you recommend for one week based on
+ * my preferences" ran as a 50 km search around Yerevan and dealt six local
+ * venues under a country-scale answer; "No please not in armenia" then became
+ * the search query q="armenia" and dealt a grocery, three bars and a helicopter
+ * agency. A destination question needs no deck at all — it needs the traveler's
+ * saved taste, what they have ruled out, and a real next step.
+ *
+ * @param {string[]} excluded  destinations ruled out so far, from the ledger
+ * @param {object[]} coverage  [{name, places}] where Jinni actually holds data,
+ *   or [] when the count is not warm yet — never blocked on, never guessed
+ * @param {string|null} here   the country they are in now: they are choosing
+ *   where to travel FROM it, so it is not a suggestion unless they ask
+ */
+function buildDestinationMessages({ message, langName = 'English', history = [], preferences = null, excluded = [], coverage = [], here = null }) {
+    const lines = [];
+    if (excluded.length) {
+        lines.push(`RULED OUT by the traveler — never suggest, never mention as an option: ${excluded.join(', ')}. `
+            + 'They have said no to these. Do not argue for them and do not slip them back in as "but if you '
+            + 'changed your mind".');
+    }
+    if (here) {
+        lines.push(`They are in ${here} right now, so they are choosing where to travel FROM it. Do not offer `
+            + `${here} itself unless they ask for something close to home.`);
+    }
+    // A ruled-out country must not come back through the coverage hint.
+    const openCoverage = coverage
+        .filter(c => c && c.name && !excluded.some(x => String(x).toLowerCase() === String(c.name).toLowerCase()))
+        .slice(0, 12);
+    if (openCoverage.length) {
+        // Naming a country Jinni cannot then help with is a dead end: the next
+        // question is always "what should I do there".
+        lines.push('Places Jinni already knows well, in order: '
+            + openCoverage.map(c => c.name).join(', ')
+            + '. Prefer these when they genuinely fit — you can follow through there. Never say this list out '
+            + 'loud, never present it as where you "can" travel, and never rule a destination out for missing '
+            + 'from it.');
+    }
+    return [
+        { role: 'system', content:
+            'You are Jinni. The traveler is choosing WHERE TO GO — a country, region, island or city — not what '
+            + 'to do once there.\n\n'
+            + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
+            + (lines.length ? '\nTHIS CHOICE:\n' + lines.map(l => `- ${l}`).join('\n') + '\n' : '')
+            + '\nHOW TO ANSWER:\n'
+            + '- Name three to five destinations that fit their saved style and interests, each with ONE line '
+            + 'saying why it fits THEM. No lists of sights, no venue names.\n'
+            + '- Say what makes each one right for the trip they described — the length, the season, the pace.\n'
+            + '- NEVER state a price, a flight time, a temperature, a distance or an opening hour. You have not '
+            + 'looked any of them up. Describe character, not quantities.\n'
+            + '- End with ONE concrete next step you can actually take: build a day-by-day plan for one of them, '
+            + 'or show places there. Ask at most one short question, and only if the answer would change '
+            + 'the shortlist.\n'
+            + `- Reply in ${langName}.` },
+        ...historyTurns(history),
+        { role: 'user', content: message },
+    ];
+}
+
 function buildNoMatchMessages({ message, langName = 'English', unmatched = [], cityLabel = null, history = [], preferences = null }) {
     return [
         {
@@ -952,4 +1013,4 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
 }
 
 module.exports = {
-    buildSettingsMessages, buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
+    buildSettingsMessages, buildGroundedMessages, buildDestinationMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };

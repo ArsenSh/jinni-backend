@@ -96,6 +96,19 @@ function mergeConstraints(prev, delta = {}, { category = null } = {}) {
             changed.push(k);
         }
     }
+    // EXCLUSIONS accumulate rather than replace: "not Armenia" then "not Italy"
+    // rules out both. Live 2026-09-06 "No please not in armenia" became the
+    // search query q="armenia" and dealt six Yerevan venues — an exclusion that
+    // lives only in the turn that uttered it is worse than none, because the
+    // next turn reads it as a destination.
+    if (Array.isArray(delta.excluded) && delta.excluded.length) {
+        const seen = new Map((base.excluded || []).map(v => [v.toLowerCase(), v]));
+        for (const v of delta.excluded) {
+            const name = String(v || '').trim();
+            if (name && !seen.has(name.toLowerCase())) { seen.set(name.toLowerCase(), name); changed.push('excluded'); }
+        }
+        base.excluded = [...seen.values()].slice(0, 8);
+    }
     // lastQuery/lastCore ride along untyped — the caller stamps them after a
     // successful deck so a modifier-only follow-up can reuse the real query.
     if (delta.lastQuery) base.lastQuery = delta.lastQuery;
@@ -112,6 +125,7 @@ function ledgerLine(ledger, changed = []) {
     if (ledger.partySize) bits.push(`${ledger.partySize}p`);
     if (ledger.targetTime != null) bits.push(`@${fmtTargetTime(ledger.targetTime)}`);
     if (ledger.outOfTown) bits.push('out-of-town');
+    if (ledger.excluded?.length) bits.push(`not: ${ledger.excluded.join('/')}`);
     return `[ledger] ${bits.join(' · ')}${changed.length ? ` (changed: ${changed.join(',')})` : ' (carried)'}`;
 }
 
