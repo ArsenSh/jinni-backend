@@ -500,18 +500,28 @@ router.post('/staff/hunt', auth, staffOrAdmin, async (req, res) => {
             return res.status(502).json({ error: 'Evidence sources unavailable right now — try again later', sources: leads.sources });
         }
 
+        // CLUSTERS FIRST: many photographers at one point is direct evidence
+        // AND carries viewable sample photos for desk pre-filtering (founder
+        // 2026-09-06: "i dont see images how verify?"); viewpoints fill the
+        // rest. First hunt shipped 15/15 viewpoints because they were listed
+        // first — the stronger evidence never made the cap.
         const candidates = [
-            ...leads.viewpoints.map(v => ({
-                lat: v.lat, lng: v.lng,
-                title: v.name === 'Unnamed viewpoint' ? 'Scenic viewpoint' : v.name,
-                kind: 'osm_viewpoint',
-                note: `Mapped viewpoint (OSM), ${v.distanceM}m from hunt center`,
-            })),
             ...leads.clusters.map(c => ({
                 lat: c.lat, lng: c.lng,
                 title: `Photographers' vantage (${c.photographers} shots)`,
                 kind: 'commons_cluster',
-                note: `${c.photographers} geotagged photos cluster here. Samples: ${c.sampleTitles.join(' · ')}`,
+                note: `${c.photographers} geotagged photos cluster here — tap the evidence links to see them`,
+                // Links to Commons' OWN pages (staff desk research only) —
+                // the images themselves are never imported or shown in-app.
+                urls: c.sampleTitles.map(s => `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(s.replace(/ /g, '_'))}`),
+                titles: c.sampleTitles,
+            })),
+            ...leads.viewpoints.map(v => ({
+                lat: v.lat, lng: v.lng,
+                title: v.name === 'Unnamed viewpoint' ? 'Scenic viewpoint' : v.name,
+                kind: 'osm_viewpoint',
+                note: `Mapped viewpoint (OSM), ${v.distanceM}m from hunt center — check it in Maps/street view`,
+                urls: [], titles: [],
             })),
         ];
 
@@ -530,7 +540,10 @@ router.post('/staff/hunt', auth, staffOrAdmin, async (req, res) => {
                 camera: { lat: c.lat, lng: c.lng, accuracyMeters: null, heading: null, pitch: null, orientation: 'portrait' },
                 access: { nearestPlace: '', point: { lat: null, lng: null }, instructions: '', walkMinutes: null },
                 shooting: { bestTime: 'any', season: '', notes: '' },
-                evidence: [{ kind: c.kind, note: c.note.slice(0, 500) }],
+                evidence: [
+                    { kind: c.kind, note: c.note.slice(0, 500) },
+                    ...c.urls.slice(0, 3).map((u, i) => ({ kind: 'sample_photo', url: u, note: (c.titles[i] || 'sample').slice(0, 200) })),
+                ],
                 createdBy: req.user.id, createdByName: 'Jinni (auto-hunt)',
             });
             created.push({ lat: c.lat, lng: c.lng, id: spot._id });
