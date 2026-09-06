@@ -455,7 +455,9 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               + 'Say you do not have condition data and advise checking locally before setting out.\n'
               + (canQuoteFares
                   ? 'For flights between cities you have a find_flights tool: call it and quote ONLY the fares it '
-                  + 'returns, with its booking link. If it returns nothing, say you have no fares for that route.\n'
+                  + 'returns, with its booking link. For EACH fare always state its departure date (and time when '
+                  + 'given), the airline name and the price — never mention a fare without its date. '
+                  + 'If it returns nothing, say you have no fares for that route.\n'
                   : '')
               + 'Do not name specific venues (none are verified on this turn). '
               + 'If knowing their destination would let you answer better, end by asking where they are heading.'

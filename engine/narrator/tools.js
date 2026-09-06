@@ -89,6 +89,8 @@ const FIND_FLIGHTS_TOOL = {
         description:
             'Real cheapest-fare data for a flight route, with a booking link. '
           + 'Use whenever the traveler asks about flying between cities, flight prices, or when to fly. '
+          + 'Every fare comes with its departure date/time, airline and price — ALWAYS give the traveler all three '
+          + 'for each fare you mention (each offer has a ready `label`). '
           + 'Returns an empty list when no fares are known — say so honestly and NEVER state a price the tool did not return.',
         parameters: {
             type: 'object',
@@ -449,6 +451,17 @@ function makeExecutors(ctx = {}, deps = {}) {
             // No data is an ANSWER ("I don't have fares for that route"), not a
             // licence to quote a remembered price.
             if (!r || !r.offers?.length) return { offers: [], note: 'no fares returned — do not state any price' };
+            // Ready-made per-fare label (founder 2026-09-07: answers must always
+            // carry airline + date + price, not just the route): the model
+            // reliably echoes a prepared label where it may drop raw fields.
+            for (const o of r.offers) {
+                const date = (o.departureAt || '').slice(0, 10);
+                const time = (o.departureAt || '').slice(11, 16);
+                const stops = o.transfers === 0 ? 'direct' : (o.transfers > 0 ? `${o.transfers} stop(s)` : '');
+                o.label = [date && `${date}${time ? ' ' + time : ''}`, o.airlineName || o.airline, o.price != null ? `${o.price} ${r.currency}` : '', stops]
+                    .filter(Boolean).join(' · ');
+            }
+            r.note = 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.';
             return r;
         },
     };
