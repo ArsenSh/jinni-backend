@@ -22,7 +22,7 @@ const { stripLeadingGreeting, makeGreetingGate, messageGreets } = require('../en
 const { toRecommendation, buildContentParts, hoistNarrated, realignBlurbs } = require('../engine/narrator/cards');
 const { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, isRightNowAsk, isTransportAsk, rankingWeights, parseRefillAsk, parseDeckCount,
-    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline } = require('../engine/retrieval/tuning');
+    isEntityQuestion, parseReferentAsk, namesVenueType, isBrowseAsk, parseCurrencyConvert, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, narrationBudget } = require('../engine/retrieval/tuning');
 const { parsePartySize, parseTargetTime, fmtTargetTime, mergeConstraints, ledgerLine } = require('../engine/session/constraints');
 const { getWeather, weatherNote } = require('../engine/context/weather');
 
@@ -2044,7 +2044,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // and only the salvage parser recovered 4 blurbs (blurbs=4/10,
                 // live 2026-08-30). 250 + 50/card keeps 6 cards at the proven
                 // 550 and gives bigger decks room to finish their JSON.
-                const narrationTokens = Math.min(250 + 50 * result.places.length, 1300);
+                // …and with the SCRIPT. 550 tokens was tuned on English; an
+                // Armenian or Russian blurb costs roughly 3x the tokens per
+                // character, so the tail truncated and the last cards fell back
+                // to the factual one-liner (live 2026-09-06: every English turn
+                // logged blurbs=6/6, every Armenian turn 4/6 or 5/6). Output
+                // caps cost nothing when unused — only truncation does.
+                const narrationTokens = narrationBudget(result.places.length, intent._userLanguage || 'en');
                 let intro = '', blurbs = [], streamedOk = false;
                 try {
                     const proseGate = makeGreetingGate((text) => send(res, { type: 'token', content: text }), { enabled: greetGateOn });

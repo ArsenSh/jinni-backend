@@ -738,3 +738,43 @@ describe('return-by deadlines mark feasibility asks (backstop for intent time_bo
             expect(hasReturnDeadline(m)).toBe(false);
     });
 });
+
+describe('geofence follows the destination SCALE (live 2026-09-06: "Sevanavank — 60km from Armenia")', () => {
+    const { geofenceKmForScale } = require('../engine/geo/gazetteer');
+    test('a country is not a town', () => {
+        expect(geofenceKmForScale('country', 60)).toBe(300);   // Sevan 60, Areni 77, Noravank 82 all inside
+        expect(geofenceKmForScale('region', 60)).toBe(150);
+    });
+    test('towns and unknown scales keep the proven cap', () => {
+        expect(geofenceKmForScale('town', 60)).toBe(60);
+        expect(geofenceKmForScale(null, 60)).toBe(60);
+        expect(geofenceKmForScale('nonsense', 60)).toBe(60);
+    });
+    test('the itinerary route asks the gazetteer, and fails open', () => {
+        const src = require('fs').readFileSync(require.resolve('../routes/itineraryRoutes.js'), 'utf8');
+        expect(src).toMatch(/geofenceKmForScale\(geo\.scale, fallbackKm\)/);
+        expect(src).toMatch(/radiusKm = await geofenceRadiusFor\(dest\.name, MAX_STOP_KM\)/);
+        // A build must never charge for slots it could not deliver.
+        expect(src).toMatch(/refunded \$\{refund\} place charge\(s\)/);
+        expect(src).toMatch(/Math\.min\(failedSlots, approxPlaces\)/);
+    });
+});
+
+describe('narration budget follows the script (live 2026-09-06: EN blurbs=6/6, HY 4/6)', () => {
+    const { narrationBudget } = require('../engine/retrieval/tuning');
+    test('English keeps the proven 550 for a 6-card deck', () => {
+        expect(narrationBudget(6, 'en')).toBe(550);
+        expect(narrationBudget(6, 'fr')).toBe(550);
+    });
+    test('token-heavy scripts get room to finish every blurb', () => {
+        expect(narrationBudget(6, 'hy')).toBeGreaterThan(1000);
+        expect(narrationBudget(6, 'ru')).toBeGreaterThan(1000);
+        expect(narrationBudget(6, 'zh')).toBeGreaterThan(1000);
+        expect(narrationBudget(6, 'HY')).toBe(narrationBudget(6, 'hy'));   // case-insensitive
+    });
+    test('bounded at both ends — junk input can never blow the budget', () => {
+        expect(narrationBudget(20, 'hy')).toBeLessThanOrEqual(2600);
+        expect(narrationBudget(0, 'en')).toBeGreaterThan(0);
+        expect(narrationBudget(NaN, null)).toBeGreaterThan(0);
+    });
+});

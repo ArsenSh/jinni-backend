@@ -1134,6 +1134,23 @@ function fillDaysRoundRobin(pickedPerDay, leftovers, opts) {
 
 /** Usage-limit gate shared by both streaming endpoints. Returns true when the
  *  request may proceed; otherwise it has already written the 429/error. */
+// ── HOW BIG IS THE DESTINATION? (founder 2026-09-06) ─────────────────────
+// A country resolves to its CAPITAL's coordinates, and the geofence then
+// applied the town-sized 60km cap around that point — so a 7-day "Armenia"
+// trip rejected Sevanavank (60km), Noravank (82km), Areni (77km) and
+// Haghartsin (76km) for being in Armenia: 7 of 8 stops on day 4 failed.
+// The gazetteer already knows each place's SCALE; the fence now follows it.
+async function geofenceRadiusFor(name, fallbackKm) {
+  try {
+    const { lookupPlace, geofenceKmForScale } = require('../engine/geo/gazetteer');
+    const geo = await lookupPlace(String(name || '').trim(), {});
+    const km = geo ? geofenceKmForScale(geo.scale, fallbackKm) : fallbackKm;
+    if (km !== fallbackKm) console.log(`[itinerary] geofence ${km}km — "${name}" is a ${geo.scale}, not a town`);
+    return km;
+  } catch { /* fail-open: a lookup blip must never shrink a trip */ }
+  return fallbackKm;
+}
+
 async function passUsageGate(req, res, estText, placesCount, { daysCount = 1 } = {}) {
   try {
     // Defence in depth. The middleware now fails closed, so this should be
@@ -1250,6 +1267,8 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     let radiusKm = MAX_STOP_KM;
     if (destination && Number.isFinite(destination.lat) && Number.isFinite(destination.lng)) {
       dest = { name: String(destination.name || '').trim() || 'your destination', lat: destination.lat, lng: destination.lng };
+      // A named destination may be a country or a region — size the fence to it.
+      radiusKm = await geofenceRadiusFor(dest.name, MAX_STOP_KM);
     } else {
       const eff = await resolveEffectiveLocation(user, destination, messages);
       if (!eff || eff.error === 'location_required') {
@@ -1385,6 +1404,23 @@ router.post('/generate-stream', auth, usageTracker, async (req, res) => {
     doc.markModified('days');
     doc.markModified('costEstimate');
     await doc.save();
+    // ── REFUND WHAT WAS NEVER DELIVERED (founder 2026-09-06) ─────────────
+    // The gate charges the daily PLACE budget up front, one per planned slot.
+    // A slot that failed (geofence, staff gate, duplicate, unresolvable) shows
+    // the traveler nothing, so charging for it is wrong — and it is what
+    // drained a premium day's quota before the next build could run ("Daily
+    // place viewing limit reached" on a Rome trip, live 2026-09-06, after an
+    // Armenia build whose day 4 failed 7 of 8 stops). Refund is clamped to
+    // what this build actually charged and never fails the finished trip.
+    try {
+      const failedSlots = (doc.days || []).reduce(
+        (n, d) => n + (d.slots || []).filter(sl => sl && sl.status === 'failed').length, 0);
+      const refund = Math.min(failedSlots, approxPlaces);
+      if (refund > 0) {
+        await req.userLimit.checkAndUpdateUsage(0, -refund, 0);
+        console.log(`[itinerary] refunded ${refund} place charge(s) — slot(s) delivered nothing`);
+      }
+    } catch (err) { console.warn('[itinerary] place refund skipped:', err.message); }
     // Itinerary is one of the chat's quick actions, but unlike the other seven
     // it runs through its own route and was never recorded — so it showed as
     // zero usage in the admin panel no matter how much it was used. Logged

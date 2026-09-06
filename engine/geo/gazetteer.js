@@ -314,6 +314,16 @@ async function isSeeded(deps = {}) {
     try { return (await _guard(Model.estimatedDocumentCount())) > 0; } catch { return false; }
 }
 
+// How wide an itinerary's geofence may be for a destination of this SCALE.
+// A country resolves to its capital's coordinates, so a town-sized cap around
+// that point rejects the country's own sights (live 2026-09-06: Sevanavank
+// "60km from Armenia"). Pure — the caller supplies the town fallback.
+const SCALE_GEOFENCE_KM = { country: 300, region: 150 };
+function geofenceKmForScale(scale, fallbackKm = 60) {
+    const km = SCALE_GEOFENCE_KM[String(scale || '').toLowerCase()];
+    return Number.isFinite(km) ? km : fallbackKm;
+}
+
 /**
  * Reverse lookup: coordinates → the nearest seeded settlement's name.
  * $0 (local geonames). Used to annotate out-of-town deck places so the
@@ -343,6 +353,6 @@ async function nearestTown({ lat, lng } = {}, deps = {}) {
 }
 
 module.exports = {
-    lookupPlace, regionAt, mainCities, radiusForPopulation, nearestTown,
+    lookupPlace, regionAt, mainCities, radiusForPopulation, nearestTown, geofenceKmForScale,
     normalizeName, isSeeded, TYPES_BY_KIND, SUBPLACE_CODES, _toGeo, _km,
 };

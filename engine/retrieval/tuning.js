@@ -442,6 +442,21 @@ function hasReturnDeadline(message) {
     return _RETURN_DEADLINE_RE.test(String(message || ''));
 }
 
+// How many output tokens the card-blurb tail may use. It scales with the
+// deck (250 + 50/card, tuned live) AND with the SCRIPT: Armenian, Russian,
+// Georgian, CJK and Arabic cost roughly 3x the tokens per character, so an
+// English-sized budget truncated the tail and the last cards lost their
+// blurbs (live 2026-09-06: English turns logged blurbs=6/6, Armenian ones
+// 4/6). A language CODE table is structure, not phrasing — it never decides
+// meaning, only how much room the answer gets.
+const NON_LATIN_LANGS = new Set(['hy', 'ru', 'uk', 'bg', 'sr', 'mk', 'be', 'ka', 'el',
+    'he', 'ar', 'fa', 'ur', 'hi', 'bn', 'ta', 'th', 'zh', 'ja', 'ko', 'am', 'km', 'my']);
+function narrationBudget(placeCount = 6, langCode = 'en') {
+    const n = Math.max(1, Math.min(Number(placeCount) || 6, 20));
+    const heavy = NON_LATIN_LANGS.has(String(langCode || 'en').slice(0, 2).toLowerCase());
+    return Math.min(Math.round((250 + 50 * n) * (heavy ? 2.2 : 1)), 2600);
+}
+
 const _IT_LATIN = /\bitinerar|\bitin[eé]rair|\b\d{1,2}\s*[- ]?day (trip|plan|tour|route)|\bplan\b[^.!?]{0,40}\b\d{1,2}\s*days?\b|\bday[- ]by[- ]day\b|\b\d{1,2}\s*jours?\b[^.!?]{0,20}(voyage|plan)|(plan|programme)[^.!?]{0,30}\b\d{1,2}\s*jours?\b/i;
 const _IT_NONLATIN = /(маршрут|план)\w*[^.!?]{0,30}\d{1,2}\s*(дня|дней|день)|\d{1,2}[- ]?дневн\w+ (маршрут|план|поездк)|օրվա (ծրագիր|երթուղի)|\d{1,2}\s*օր\w*[^.!?]{0,15}(ծրագիր|երթուղի|ուղևորություն)|行程|\d{1,2}\s*天[^.!?]{0,10}(计划|行程|旅行)|خط سير|برنامج[^.!?]{0,20}\d{1,2}\s*(يوم|أيام)|رحلة[^.!?]{0,15}\d{1,2}\s*(يوم|أيام)/i;
 function isItineraryAsk(message) {
@@ -522,5 +537,5 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, narrationBudget, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };
