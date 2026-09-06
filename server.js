@@ -450,6 +450,7 @@ app.use('/api/share', shareRouter);
 app.get('/share/:token', shareRouter.ogHandler);
 app.use('/api/staff', staffRoutes);
 app.use('/api/routing', routingRoutes);
+app.use('/api/flightdeals', require('./routes/flightDealsRoutes')); // deals strip — self-contained, deletable
 app.use('/api/itinerary', require('./routes/itineraryRoutes'));
 
 // =============================================
