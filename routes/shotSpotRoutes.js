@@ -22,6 +22,8 @@ const express = require('express');
 const router = express.Router();
 const ShotSpot = require('../models/ShotSpot');
 const ShotRecreation = require('../models/ShotRecreation');
+const Destination = require('../models/Destination');
+const PlaceCache = require('../models/PlaceCache');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 
@@ -457,12 +459,40 @@ router.get('/staff/mine', auth, staffOrAdmin, async (req, res) => {
 // (aiFound:true, evidence attached). They can NEVER publish themselves —
 // hasPhoto stays false until a human stands there and shoots, so the face of
 // the feature remains real photos while the FINDING is genuinely the AI's.
+// Jinni resolves a city's center from data it ALREADY OWNS (destinations,
+// then cached places) — no typed coordinates, no external geocoder. Average
+// of known points is plenty for a hunt center.
+async function resolveCityCenter(city) {
+    const rx = new RegExp(`^${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    let pts = (await Destination.find({ 'location.city': rx })
+        .select('location.coordinates').limit(300).lean())
+        .map(d => d.location && d.location.coordinates)
+        .filter(c => c && Number.isFinite(c.lat) && Number.isFinite(c.lng));
+    if (!pts.length) {
+        pts = (await PlaceCache.find({ city: rx })
+            .select('details.geometry.location').limit(300).lean())
+            .map(r => r.details && r.details.geometry && r.details.geometry.location)
+            .filter(c => c && Number.isFinite(c.lat) && Number.isFinite(c.lng));
+    }
+    if (!pts.length) return null;
+    return {
+        lat: pts.reduce((s, p) => s + p.lat, 0) / pts.length,
+        lng: pts.reduce((s, p) => s + p.lng, 0) / pts.length,
+    };
+}
+
 router.post('/staff/hunt', auth, staffOrAdmin, async (req, res) => {
     try {
-        const lat = num(req.body.lat, -90, 90), lng = num(req.body.lng, -180, 180);
+        let lat = num(req.body.lat, -90, 90), lng = num(req.body.lng, -180, 180);
         const city = str(req.body.city, 80);
-        if (lat === null || lng === null) return res.status(400).json({ error: 'lat/lng required' });
         if (!city) return res.status(400).json({ error: 'city required (Jinni files candidates under it)' });
+        if (lat === null || lng === null) {
+            const center = await resolveCityCenter(city);
+            if (!center) {
+                return res.status(400).json({ error: `Jinni doesn't know "${city}" yet — no destinations or cached places there. Add a center coordinate for the first hunt.` });
+            }
+            lat = center.lat; lng = center.lng;
+        }
         const radiusM = Math.min((num(req.body.radiusKm, 0.2, 15) || 5) * 1000, 10000);
 
         const leads = await mineLeads(lat, lng, radiusM);
