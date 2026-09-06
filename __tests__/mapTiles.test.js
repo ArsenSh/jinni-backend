@@ -155,6 +155,32 @@ describe('builds against a real (throwaway) TILES_DIR', () => {
         expect(st.maxzoom).toBe(15);
     });
 
+    // Live 2026-09-06: the archive predating this panel had no manifest, so the
+    // panel believed nothing was installed, and a build for Italy silently
+    // discarded Armenia's tiles. Tile reads are static file reads — no log, no
+    // error, just a blank map.
+    test('an archive with no manifest is flagged as unknown, not as empty', async () => {
+        fs.writeFileSync(path.join(dir, 'jinni.pmtiles'), Buffer.alloc(1024));
+        const st = await mapTiles.status();
+        expect(st.archive.exists).toBe(true);
+        expect(st.installed).toEqual([]);
+        expect(st.unmanaged).toBe(true);
+    });
+
+    test('an archive this panel built is NOT flagged unknown', async () => {
+        fs.writeFileSync(path.join(dir, 'jinni.pmtiles'), Buffer.alloc(1024));
+        fs.writeFileSync(path.join(dir, 'regions.json'), JSON.stringify({
+            countries: [{ code: 'IT', name: 'Italy', bbox: [6, 35, 19, 47] }], maxzoom: 15,
+        }));
+        const st = await mapTiles.status();
+        expect(st.installed).toEqual(['IT']);
+        expect(st.unmanaged).toBe(false);
+    });
+
+    test('no archive at all is not "unknown" either — there is nothing to lose', async () => {
+        expect((await mapTiles.status()).unmanaged).toBe(false);
+    });
+
     test('status reports the size of an archive that IS there', async () => {
         fs.writeFileSync(path.join(dir, 'jinni.pmtiles'), Buffer.alloc(4096));
         const st = await mapTiles.status();

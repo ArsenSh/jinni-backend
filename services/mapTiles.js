@@ -449,6 +449,12 @@ async function status() {
         job: jobView(),
         installedAt: manifest.updatedAt || null,
         installed: [...installed],
+        // An archive with no manifest was built before this panel existed, so
+        // its contents are UNKNOWN. Live 2026-09-06: the panel showed nothing
+        // ticked, a build for Italy replaced the archive, and Armenia's map
+        // went blank with no error anywhere — tile requests are plain static
+        // file reads and log nothing at all.
+        unmanaged: archive.exists && !(manifest.countries || []).length,
         // Countries we hold content for but cannot draw — the gap the founder
         // named: "if map is not downloaded Jinni is not there".
         blind: Object.keys(content).filter(code => !installed.has(code)).sort(
