@@ -19,7 +19,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { flightsEnabled, searchFlights, _bookUrl, AUTOCOMPLETE_URL } = require('../engine/travel/flights');
+const { flightsEnabled, searchFlights, airlineName, _bookUrl, AUTOCOMPLETE_URL } = require('../engine/travel/flights');
 
 const DIRECTIONS_URL = 'https://api.travelpayouts.com/v1/city-directions';
 const TTL_DEALS = 12 * 3600e3;   // popular-directions feed barely moves
@@ -82,6 +82,7 @@ router.get('/deals', async (req, res) => {
             deals.push({
                 destination: String(r.destination).toUpperCase(), name,
                 price: r.price, airline: r.airline || null,
+                airlineName: r.airline ? await airlineName(r.airline) : null,
                 departureAt: r.departure_at || null, returnAt: r.return_at || null,
                 transfers: typeof r.transfers === 'number' ? r.transfers : null,
                 bookUrl: _bookUrl(`/search/${origin}${ddmm}${String(r.destination).toUpperCase()}1`),
@@ -110,7 +111,7 @@ router.get('/week', async (req, res) => {
         const found = await searchFlights({ origin, destination, departDate: month, currency, limit: 8 });
         const days = (found?.offers || [])
             .filter(o => o.price && o.departureAt)
-            .map(o => ({ date: o.departureAt, price: o.price, transfers: o.transfers, bookUrl: o.bookUrl }))
+            .map(o => ({ date: o.departureAt, price: o.price, transfers: o.transfers, airlineName: o.airlineName || null, bookUrl: o.bookUrl }))
             .sort((a, b) => String(a.date).localeCompare(String(b.date)));
         res.json(put(key, { enabled: true, currency: (found?.currency || currency).toUpperCase(), days }));
     } catch (err) {

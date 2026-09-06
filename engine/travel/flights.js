@@ -20,6 +20,41 @@ const BOOK_HOST = 'https://www.aviasales.com';
 const TIMEOUT_MS = 6000;
 const IATA_CACHE = new Map();       // 'dubai' → 'DXB'; process-lifetime, tiny
 
+// ── Airline code → display name ("W6" → "Wizz Air") ─────────────────────────
+// Travelpayouts ships a free static airlines.json; fetched once per process
+// per day, with a bundled fallback of carriers common out of EVN so cards
+// stay readable even when the fetch fails. Unknown codes fall back to the
+// code itself — an honest label, never a guessed name.
+const AIRLINES_URL = 'https://api.travelpayouts.com/data/en/airlines.json';
+const AIRLINE_FALLBACK = {
+    W6: 'Wizz Air', W4: 'Wizz Air Malta', FZ: 'flydubai', G9: 'Air Arabia',
+    A3: 'Aegean Airlines', QR: 'Qatar Airways', EK: 'Emirates', TK: 'Turkish Airlines',
+    PC: 'Pegasus', LO: 'LOT', BT: 'airBaltic', OS: 'Austrian', LH: 'Lufthansa',
+    AF: 'Air France', KL: 'KLM', BA: 'British Airways', LX: 'SWISS',
+    SU: 'Aeroflot', S7: 'S7 Airlines', U6: 'Ural Airlines', WZ: 'Red Wings',
+    A4: 'Azimuth', UT: 'Utair', N4: 'Nordwind', DP: 'Pobeda',
+    '3F': 'FlyOne Armenia', '5F': 'FlyOne', RM: 'Armenia Airways',
+    B2: 'Belavia', HY: 'Uzbekistan Airways', KC: 'Air Astana', J2: 'AZAL',
+    EY: 'Etihad', WY: 'Oman Air', ME: 'MEA', RJ: 'Royal Jordanian',
+    AZ: 'ITA Airways', IB: 'Iberia', VY: 'Vueling', FR: 'Ryanair', U2: 'easyJet',
+};
+let AIRLINE_NAMES = null;
+let _airlinesTriedAt = 0;
+async function airlineName(code, deps = {}) {
+    if (!code) return null;
+    const c = String(code).toUpperCase();
+    if (!AIRLINE_NAMES && Date.now() - _airlinesTriedAt > 24 * 3600e3) {
+        _airlinesTriedAt = Date.now();
+        const json = await _getJson(AIRLINES_URL, deps);
+        if (Array.isArray(json)) {
+            AIRLINE_NAMES = Object.fromEntries(
+                json.filter(a => a && a.code && a.name).map(a => [String(a.code).toUpperCase(), a.name])
+            );
+        }
+    }
+    return (AIRLINE_NAMES && AIRLINE_NAMES[c]) || AIRLINE_FALLBACK[c] || c;
+}
+
 function flightsEnabled(env = process.env) {
     return !!env.TRAVELPAYOUTS_TOKEN;
 }
@@ -89,7 +124,7 @@ async function searchFlights({ origin, destination, departDate = null, returnDat
     const json = await _getJson(`${PRICES_URL}?${q}`, deps);
     const rows = Array.isArray(json?.data) ? json.data : [];
     if (!rows.length) return null;
-    return {
+    const out = {
         origin: from,
         destination: to,
         currency: String(currency).toUpperCase(),
@@ -104,6 +139,9 @@ async function searchFlights({ origin, destination, departDate = null, returnDat
             bookUrl: _bookUrl(r.link, env),
         })),
     };
+    // Enrich with display names (codes repeat; the lookup is cached).
+    for (const o of out.offers) o.airlineName = await airlineName(o.airline, deps);
+    return out;
 }
 
-module.exports = { searchFlights, resolveIata, flightsEnabled, _bookUrl, PRICES_URL, AUTOCOMPLETE_URL };
+module.exports = { searchFlights, resolveIata, flightsEnabled, airlineName, _bookUrl, PRICES_URL, AUTOCOMPLETE_URL };
