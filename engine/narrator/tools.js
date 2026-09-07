@@ -454,14 +454,43 @@ function makeExecutors(ctx = {}, deps = {}) {
             // Ready-made per-fare label (founder 2026-09-07: answers must always
             // carry airline + date + price, not just the route): the model
             // reliably echoes a prepared label where it may drop raw fields.
+            let anyConnection = false;
             for (const o of r.offers) {
                 const date = (o.departureAt || '').slice(0, 10);
                 const time = (o.departureAt || '').slice(11, 16);
-                const stops = o.transfers === 0 ? 'direct' : (o.transfers > 0 ? `${o.transfers} stop(s)` : '');
+                const stops = o.transfers === 0
+                    ? 'direct'
+                    : (o.transfers > 0 ? `${o.transfers} stop${o.transfers === 1 ? '' : 's'}` : '');
+                if (o.transfers > 0) {
+                    anyConnection = true;
+                    // The fare feed returns a COUNT of transfers and nothing
+                    // else — no connecting airport anywhere in the row. Saying
+                    // "1 stop" and going quiet invites the next question, and
+                    // the only wrong answer is a guessed hub, so the gap is
+                    // marked on the offer itself (founder 2026-09-07: "it says
+                    // 1 stop but doesnt mention where is the stop").
+                    o.connectingAirport = null;
+                    o.connectionNote = 'the fare feed does not say where this connects';
+                }
                 o.label = [date && `${date}${time ? ' ' + time : ''}`, o.airlineName || o.airline, o.price != null ? `${o.price} ${r.currency}` : '', stops]
                     .filter(Boolean).join(' · ');
             }
-            r.note = 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.';
+            // The airline name becomes the tappable thing (founder 2026-09-07:
+            // "underline each company name … after clicking will navigate").
+            // It links to THAT fare's bookUrl — the booking page for the exact
+            // flight, which also shows the routing this feed omits. Never the
+            // airline's homepage: we hold no such URL and would be guessing.
+            const anyLink = r.offers.some(o => o.bookUrl);
+            r.note = 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.'
+                + (anyLink
+                    ? ' Write each airline name as a markdown link to THAT fare\'s bookUrl, exactly as given: [Wizz Air](<bookUrl>). '
+                      + 'Copy the URL character for character and never build, shorten or invent one — a fare with no bookUrl is written as plain text.'
+                    : '')
+                + (anyConnection
+                    ? ' Some of these connect. This feed gives the NUMBER of stops and never the connecting airport, so you do not know '
+                      + 'where they stop: never name a hub, never infer one from the airline, and when asked, say plainly that the fare '
+                      + 'data does not include it and that the airline link on that fare opens the routing.'
+                    : '');
             return r;
         },
     };

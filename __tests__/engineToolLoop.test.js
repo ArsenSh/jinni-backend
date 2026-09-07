@@ -176,6 +176,80 @@ describe('find_flights: real fares or none, never remembered prices', () => {
         expect((await exec.find_flights({ origin: 'Dubai' })).error).toBe('origin_and_destination_required');
     });
 
+    // Founder 2026-09-07: "it says 1 stop but doesnt mention where is the stop".
+    // The feed returns a COUNT of transfers and no connecting airport at all,
+    // so the only wrong answer is a guessed hub.
+    test('a connecting fare says the stop is unknown instead of going quiet', async () => {
+        const exec = makeExecutors({}, {
+            searchFlights: async () => ({
+                currency: 'USD',
+                offers: [{ price: 131, airline: 'W6', airlineName: 'Wizz Air', transfers: 1, departureAt: '2026-12-07T06:30:00+04:00' }],
+            }),
+        });
+        const out = await exec.find_flights({ origin: 'Yerevan', destination: 'Dubai' });
+        expect(out.offers[0].label).toMatch(/1 stop\b/);
+        expect(out.offers[0].label).not.toMatch(/stop\(s\)/);        // no "1 stop(s)"
+        expect(out.offers[0].connectingAirport).toBeNull();
+        expect(out.offers[0].connectionNote).toMatch(/does not say where this connects/);
+        expect(out.note).toMatch(/never name a hub/);
+        // The way to SEE the stop is that fare's own link, so the answer points there.
+        expect(out.note).toMatch(/the airline link on that fare opens the routing/);
+    });
+
+    // Founder 2026-09-07: "underline each company name … after clicking will
+    // navigate". The airline is the tappable thing, pointing at THAT fare's
+    // booking page — route and date already in the URL.
+    test('the airline name is asked for as a link to that fare, never invented', async () => {
+        const exec = makeExecutors({}, {
+            searchFlights: async () => ({
+                currency: 'USD',
+                offers: [{ price: 131, airline: 'W6', airlineName: 'Wizz Air', transfers: 1,
+                    departureAt: '2026-12-07T06:30:00+04:00',
+                    bookUrl: 'https://www.aviasales.com/search/EVN0712DXB1?marker=12345' }],
+            }),
+        });
+        const out = await exec.find_flights({ origin: 'Yerevan', destination: 'Dubai' });
+        expect(out.note).toMatch(/markdown link to THAT fare's bookUrl/);
+        expect(out.note).toMatch(/never build, shorten or invent one/);
+        expect(out.offers[0].bookUrl).toMatch(/^https:\/\/www\.aviasales\.com\/search\/EVN0712DXB1/);
+    });
+
+    test('fares without a booking link are not asked to be linked at all', async () => {
+        const exec = makeExecutors({}, {
+            searchFlights: async () => ({
+                currency: 'USD',
+                offers: [{ price: 131, airline: 'W6', transfers: 0, departureAt: '2026-12-07T06:30:00+04:00' }],
+            }),
+        });
+        expect((await exec.find_flights({ origin: 'Yerevan', destination: 'Dubai' })).note).not.toMatch(/markdown link/);
+    });
+
+    test('two stops reads as stops, and a direct fare carries no connection note', async () => {
+        const exec = makeExecutors({}, {
+            searchFlights: async () => ({
+                currency: 'USD',
+                offers: [
+                    { price: 300, airline: 'TK', transfers: 2, departureAt: '2026-10-01T08:00:00+04:00' },
+                    { price: 134, airline: 'G9', transfers: 0, departureAt: '2026-10-03T12:00:00+04:00' },
+                ],
+            }),
+        });
+        const out = await exec.find_flights({ origin: 'Yerevan', destination: 'Dubai' });
+        expect(out.offers[0].label).toMatch(/2 stops/);
+        expect(out.offers[1].label).toMatch(/direct/);
+        expect(out.offers[1].connectionNote).toBeUndefined();
+    });
+
+    test('an all-direct result is never told about connections it does not have', async () => {
+        const exec = makeExecutors({}, {
+            searchFlights: async () => ({
+                currency: 'USD',
+                offers: [{ price: 134, airline: 'G9', transfers: 0, departureAt: '2026-10-03T12:00:00+04:00' }],
+            }),
+        });
+        expect((await exec.find_flights({ origin: 'Yerevan', destination: 'Dubai' })).note).not.toMatch(/never name a hub/);
+    });
+
     test('no marker configured → plain booking link, still a real one', () => {
         expect(_bookUrl('/search/x', {})).toBe('https://www.aviasales.com/search/x');
     });
