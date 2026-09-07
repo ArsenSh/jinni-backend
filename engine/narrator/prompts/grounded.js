@@ -422,7 +422,7 @@ function localFactsBlock(facts = [], maxChars = 4000) {
         }).join('\n\n') + '\n';
 }
 
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null, priorFlights = null }) {
     return [
         {
             role: 'system',
@@ -430,6 +430,10 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                 'You are Jinni, a warm, concise travel companion. Reply in ' + langName + '.\n'
               + ANSWER_ONLY_CURRENT
               + selfBlock(preferences, { knowsLocation: !!preferences?._knowsLocation })
+              + (priorFlights ? '\nFARES ALREADY FETCHED THIS CONVERSATION (real API results, not memory — '
+                  + 'answer follow-ups about stops, airlines, times and prices from THIS data, and say when '
+                  + 'the question asks about something it does not contain):\n'
+                  + JSON.stringify(priorFlights.result).slice(0, 1800) + '\n' : '')
               + NO_REMEMBERED_EVENTS
               + 'The traveler is asking how to GET AROUND or reach somewhere'
               + (cityLabel ? ` in ${cityLabel}` : '') + '. Answer it directly in 2–4 sentences.\n'

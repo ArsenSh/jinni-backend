@@ -60,7 +60,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, lastDiscussed: 1, messages: { $slice: -30 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, lastDiscussed: 1, lastLane: 1, lastFlights: 1, messages: { $slice: -30 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
@@ -688,7 +688,20 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // (category, place_details, …). Requires BOTH signals, so plain
             // category asks ("hotels near opera") can never trip it.
             || (isTransportAsk(msgLower) && !!namedCard)
-            || forceTransport;
+            || forceTransport
+            // LANE STICKINESS. "can you find flights for October?" right after
+            // a fare list carries no destination and no topic the classifier
+            // can see, so it was read as a place search and dealt six Yerevan
+            // restaurants (live 2026-09-06). A follow-up that names no place,
+            // no venue type and no category belongs to the lane that just
+            // answered — the same "mission" idea the constraint ledger uses.
+            || (sessionPeek?.lastLane === 'transport'
+                && intent.isTravel
+                && intent.destinationScope !== true
+                && !(intent.placeNames || []).length
+                && !namesVenueType(message)
+                && !(intent.browse === true)
+                && !intent.settingsChange?.length);
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
         // "Search the internet for X" is a SEARCH, not a capability quiz
@@ -1023,6 +1036,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             stats.path = 'map';
             console.log(`[v2] map-ask re-served ${recommendations.length} card(s)${target ? ` for "${target.name}"` : ' (newest deck)'}`);
         } else if (transportAsk) {
+            let _laneFlights = null;
             const cityLabel = [center?.city, center?.country].filter(Boolean).join(', ') || null;
             const tz = buildTimeContext({ timezone: userTimezone, lng: center?.lng });
             const weather = center ? await getWeather(center.lat, center.lng).catch(() => null) : null;
@@ -1040,6 +1054,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
                     weatherNote(weather) || null].filter(Boolean).join('; ') || null,
                 canQuoteFares: flightsEnabled(),
+                // Fares fetched on an EARLIER turn, as DATA. Prose is not data:
+                // "At dec 7 where is the stop" was denied because the previous
+                // reply's numbers were only text, and quoting numbers from
+                // memory is forbidden (live 2026-09-06).
+                priorFlights: sessionPeek?.lastFlights || null,
                 localFacts: gaFacts,
                 preferences: intent._preferences,
             });
@@ -1062,6 +1081,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     send(res, { type: 'token', content: chunk });
                 }
                 if (toolCalls) meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                // Keep the LAST fare set the API actually returned, so the next
+                // turn answers from data rather than denying what is on screen.
+                const _flightCall = [...loop.toolCalls].reverse().find(c => c.name === 'find_flights' && c.result);
+                if (_flightCall && sessionId) {
+                    _laneFlights = { args: _flightCall.args, result: _flightCall.result, at: new Date() };
+                }
             }
             if (!reply) {
                 const out = await narrator.stream({
@@ -1099,6 +1124,10 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     }
                 }
                 console.log(`[v2] transport answer routes to shown card "${namedCard.name}"${recommendations.length ? ' (own map attached)' : ''}`);
+            }
+            if (sessionId && _laneFlights) {
+                require('../models/ChatSession')
+                    .updateOne({ _id: sessionId }, { $set: { lastFlights: _laneFlights } }).catch(() => {});
             }
             meta.answerType = 'getting_around';
             stats.path = 'transport';
@@ -2370,6 +2399,14 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             ms: Date.now() - t0,
         });
     } catch (e) { console.warn('[v2][turnlog] skipped:', e.message); }
+
+    // Which lane answered, stamped ONCE for every path — so a topicless
+    // follow-up stays with whoever just answered, and the stickiness ends the
+    // moment a different lane takes the turn.
+    if (sessionId) {
+        require('../models/ChatSession')
+            .updateOne({ _id: sessionId }, { $set: { lastLane: stats.path || null } }).catch(() => {});
+    }
 
     send(res, {
         type: 'complete',

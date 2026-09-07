@@ -108,6 +108,32 @@ function guessLanguageFromScript(text, userLanguage) {
     return userLanguage || 'en';
 }
 
+/** Did the assistant just ASK something?
+ *
+ *  A bare "yes" is small talk on its own — but it is an ANSWER when the last
+ *  thing said was a question. Live 2026-09-06: Jinni offered "Would you like me
+ *  to look up Yerevan to Athens instead?", the traveler said "Yes", and the
+ *  fast path classified it travel=false, general, no history — so the offer was
+ *  dropped and the reply was a generic "I can't book flights". The affirmative
+ *  cost $0 and lost the conversation.
+ *
+ *  The test is punctuation, not vocabulary: a question mark in any script the
+ *  app speaks. Structural, so it cannot rot the way a phrase list does.
+ */
+const QUESTION_END = /[?？՞؟]["'«»“”’)\]]*\s*$/;
+function answersAPendingQuestion(recentTurns = []) {
+    for (let i = recentTurns.length - 1; i >= 0; i--) {
+        const turn = recentTurns[i];
+        if (!turn || turn.sender === 'user') continue;
+        const t = String(turn.text || '').trim();
+        // Armenian marks a question on the stressed VOWEL, not at the end
+        // ("Ուզու՞մ ես"), so an end-anchored test alone would never see one.
+        // The character marks nothing else, so its presence is enough.
+        return QUESTION_END.test(t) || /՞/.test(t);
+    }
+    return false;
+}
+
 function fastPath(message, userLanguage) {
     const normalized = normalizeForFastPath(message);
     // ≤ 2 letters ("Hi", "Ok", "Да", "好") or a known whole-message phrase.
@@ -512,8 +538,10 @@ async function fallbackClassify(message, userLanguage) {
 async function classify({ message, recentTurns = [], userLanguage = 'en', appCfg = {}, timeoutMs = INTENT_TIMEOUT_MS }) {
     const started = Date.now();
 
-    // Tier 0
-    const fp = fastPath(message, userLanguage);
+    // Tier 0 — skipped when the message is answering a question Jinni asked:
+    // "yes" is then a decision, not small talk, and only the LLM tier can see
+    // WHAT was agreed to.
+    const fp = answersAPendingQuestion(recentTurns) ? null : fastPath(message, userLanguage);
     if (fp) {
         console.log(`[intent] source=fastpath travel=false action=general lang=${fp.language} ms=0 msg="${String(message).slice(0, 60)}"`);
         return fp;
@@ -575,4 +603,4 @@ function pinLanguage(message, lang) {
     return NON_LATIN_LANGS.test(lang) ? 'en' : lang;
 }
 
-module.exports = { classify, validateIntent, buildUserPrompt, pinLanguage };
+module.exports = { classify, validateIntent, buildUserPrompt, pinLanguage, answersAPendingQuestion };

@@ -158,6 +158,13 @@ const chatSessionSchema = new mongoose.Schema({
   // mapped to the Dinosaur Park while the prose was about Hatis (QA §12,
   // live 2026-09-04). Never rendered — resolution context only.
   lastDiscussed: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Which lane answered the previous turn, and the fares it was actually
+  // handed. A follow-up ("for October?", "where is the stop?") carries neither
+  // a destination nor a topic of its own — without these it fell out of the
+  // flights lane into a 50 km place search, and Jinni denied fares it had just
+  // listed because prose is not data (live 2026-09-06).
+  lastLane: { type: String, default: null },
+  lastFlights: { type: mongoose.Schema.Types.Mixed, default: null },
   messages: [messageSchema],
   isNearLimit: { type: Boolean, default: false },
   suggestedNewChat: { type: Boolean, default: false },
