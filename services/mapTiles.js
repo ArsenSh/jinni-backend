@@ -404,6 +404,61 @@ function availableMemory() {
     return require('os').freemem();
 }
 
+/** How many z-MAX_ZOOM tiles a box covers, straight from the Web Mercator grid
+ *  pmtiles counts in. Arithmetic, not a guess, and it costs nothing.
+ *
+ *  WHY IT HAS TO EXIST: `--dry-run` downloads no tiles, but it still builds the
+ *  same in-memory index of the region, so PRICING a selection costs the same
+ *  RAM as building it. Every figure in the table above was sampled from a dry
+ *  run. On the live box that is fatal in both directions: the check meant to
+ *  prevent an OOM is itself OOM-killed (live 2026-09-11, AE+AM+FR+GE+IT+RU died
+ *  13s in at the directory-fetch stage with no error text at all — the
+ *  signature of a kill), and the kernel may choose the API process rather than
+ *  pmtiles. So the question "is this measurable here?" has to be answered
+ *  BEFORE anything is spawned.
+ *
+ *  It counts CANDIDATE tiles — every cell the box covers — where the archive
+ *  holds only cells that exist. Checked against the dry run's own counts
+ *  (2026-09-12): Armenia 99,820 predicted vs 101,549 real (0.98×, dense land);
+ *  Russia 96.0M vs 38.6M (2.49×, mostly empty Arctic and sea). So it is
+ *  roughly an upper bound and never wildly low, which is the direction a guard
+ *  must err in — it may refuse something that would have fitted, and it will
+ *  not wave through something that kills the box.
+ */
+const MERCATOR_LAT = 85.05112878;
+function tilesInBox([minLon, minLat, maxLon, maxLat], z = MAX_ZOOM) {
+    if (![minLon, minLat, maxLon, maxLat].every(Number.isFinite)) return 0;
+    const n = 2 ** z;
+    const x = (lon) => (lon + 180) / 360 * n;
+    const y = (lat) => {
+        const r = Math.max(-MERCATOR_LAT, Math.min(MERCATOR_LAT, lat)) * Math.PI / 180;
+        return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n;
+    };
+    // y runs the other way to latitude: the NORTH edge is the smaller number.
+    const cols = Math.ceil(x(maxLon)) - Math.floor(x(minLon));
+    const rows = Math.ceil(y(minLat)) - Math.floor(y(maxLat));
+    return Math.max(0, cols) * Math.max(0, rows);
+}
+
+/** The selection's tiles. Overlapping boxes are counted twice, which again
+ *  errs high rather than low. */
+function tilesInBoxes(boxes = [], z = MAX_ZOOM) {
+    return (Array.isArray(boxes) ? boxes : []).reduce((sum, b) => sum + tilesInBox(b, z), 0);
+}
+
+/** Can this server even MEASURE this selection? Answered from geometry alone,
+ *  before any process is spawned. Returns the sentence to fail with, or null. */
+function checkMeasurable(boxes, availBytes) {
+    const tiles = tilesInBoxes(boxes);
+    if (!tiles || !Number.isFinite(availBytes)) return null;
+    const need = MEM_BASELINE_BYTES + tiles * MEM_BYTES_PER_TILE;
+    if (need <= availBytes) return null;
+    return `too big for this server: the selection covers roughly ${tiles.toLocaleString('en-US')} tiles at zoom ${MAX_ZOOM}, `
+        + `and even PRICING it builds an index of about ${gb(need)} — only ${gb(availBytes)} is free. `
+        + `The size check itself would be killed, so nothing was started. `
+        + `Select fewer countries, or build this one on a bigger machine.`;
+}
+
 /** Refuse, in the tool's own numbers, a build this server cannot finish.
  *  Returns the sentence to fail with, or null when it fits. */
 function checkFits({ archiveBytes, tiles } = {}, { freeBytes, availBytes } = {}) {
@@ -479,8 +534,11 @@ async function writeRegionFile(codes) {
     if (!chosen.length) throw new Error('none of those countries are in the gazetteer');
     const file = path.join(tilesDir(), `.region-${Date.now()}.geojson`);
     // flatMap, not map: a country crossing the date line contributes TWO boxes.
-    await fsp.writeFile(file, JSON.stringify(regionGeoJSON(chosen.flatMap(c => splitAtAntimeridian(c.bbox)))));
-    return { file, chosen };
+    const boxes = chosen.flatMap(c => splitAtAntimeridian(c.bbox));
+    await fsp.writeFile(file, JSON.stringify(regionGeoJSON(boxes)));
+    // The boxes travel back out so the fit check measures EXACTLY the geometry
+    // that was written, rather than recomputing it and drifting from it.
+    return { file, chosen, boxes };
 }
 
 /** Price a selection WITHOUT downloading tiles (pmtiles --dry-run). */
@@ -488,7 +546,22 @@ async function estimate(codesIn) {
     const codes = normalizeCodes(codesIn);
     if (!codes.length) return { codes: [], bytes: null, note: 'nothing selected' };
     const bin = await ensureCli();
-    const { file, chosen } = await writeRegionFile(codes);
+    const { file, chosen, boxes } = await writeRegionFile(codes);
+    // Same question first: pricing costs the same memory as building, so a
+    // selection this box cannot measure must be refused in words rather than
+    // attempted and killed (live 2026-09-11, this returned a bare 400).
+    const unmeasurable = checkMeasurable(boxes, availableMemory());
+    if (unmeasurable) {
+        await fsp.unlink(file).catch(() => {});
+        return {
+            codes,
+            countries: chosen.map(c => c.name),
+            bytes: null, transferBytes: null, tiles: null,
+            freeBytes: (await diskInfo()).freeBytes, availBytes: availableMemory(),
+            wontFit: unmeasurable,
+            planet: PLANET_URL, maxzoom: MAX_ZOOM,
+        };
+    }
     const summary = {};
     const res = await run(bin, ['extract', PLANET_URL, path.join(tilesDir(), '.estimate.pmtiles'),
         `--region=${file}`, `--maxzoom=${MAX_ZOOM}`, '--dry-run'], {
@@ -552,15 +625,28 @@ function startBuild(codesIn) {
             // index and writes no file, so this costs seconds for a small
             // country and a few minutes for a continental one — cheap against an
             // 80 GB download that ends in a killed process.
+            // Can we even ASK? Pricing builds the same index as building, so a
+            // selection too big to build is also too big to measure — and the
+            // kernel may kill the API process rather than pmtiles. Geometry
+            // answers this for free, before anything is spawned.
+            const availBytes = availableMemory();
+            const unmeasurable = checkMeasurable(r.boxes, availBytes);
+            if (unmeasurable) throw new Error(unmeasurable);
+
             say('measuring the selection before downloading anything…');
             const est = {};
             const dry = await run(bin, ['extract', PLANET_URL, tmp,
                 `--region=${region}`, `--maxzoom=${MAX_ZOOM}`, '--dry-run'], {
                 onLine: (l) => { parseExtractSummary(l, est); say(l); },
             });
-            if (!dry.ok) throw new Error(dry.output.slice(-400) || `the size check failed (pmtiles exited with ${dry.code})`);
+            if (!dry.ok) {
+                if (dry.signal === 'SIGKILL' || dry.code === 137) {
+                    throw new Error('the size check itself ran out of memory and was killed — the selection is too big '
+                        + 'for this server to even price. Select fewer countries, or build this one on a bigger machine');
+                }
+                throw new Error(dry.output.slice(-400) || `the size check failed (pmtiles exited with ${dry.code})`);
+            }
             const freeBytes = (await diskInfo()).freeBytes;
-            const availBytes = availableMemory();
             if (est.archiveBytes == null || est.tiles == null) {
                 say('pmtiles quoted no size — building without a fit check');
             } else {
@@ -640,6 +726,6 @@ module.exports = {
     status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes, checkFits,
+    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,
 };

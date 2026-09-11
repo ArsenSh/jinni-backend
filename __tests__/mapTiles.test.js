@@ -10,7 +10,7 @@ const path = require('path');
 const mapTiles = require('../services/mapTiles');
 const {
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes, checkFits,
+    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes,
 } = mapTiles;
 
 // The real numbers the live gazetteer returns, measured 2026-09-12. Each of
@@ -115,6 +115,76 @@ describe('splitAtAntimeridian — two boxes where GeoJSON needs two', () => {
         expect(splitAtAntimeridian([])).toEqual([]);
         expect(splitAtAntimeridian([NaN, 1, 2, 3])).toEqual([]);
         expect(splitAtAntimeridian()).toEqual([]);
+    });
+});
+
+describe('tilesInBox — pricing the selection without spawning anything', () => {
+    // `--dry-run` downloads no tiles but builds the same in-memory index, so
+    // PRICING costs the same RAM as building. Live 2026-09-11 the size check
+    // for AE+AM+FR+GE+IT+RU was itself killed 13s in. These numbers are the
+    // real dry-run counts the prediction is calibrated against.
+    const ARMENIA = [43.3, 38.7, 46.7, 41.4];
+    const RUSSIA = [[19.309, 40.822, 180, 74.108], [-180, 40.822, -170.397, 74.108]];
+
+    test('dense land is predicted almost exactly (Armenia measured 101,549)', () => {
+        const p = tilesInBox(ARMENIA);
+        expect(p / 101549).toBeGreaterThan(0.9);
+        expect(p / 101549).toBeLessThan(1.1);
+    });
+
+    test('a sparse region is OVER-counted, never under (Russia measured 38,568,270)', () => {
+        // Candidate cells, where the archive holds only cells that exist: empty
+        // Arctic and sea inflate this. Erring high is the safe direction.
+        const p = tilesInBoxes(RUSSIA);
+        expect(p).toBeGreaterThan(38568270);
+        expect(p / 38568270).toBeLessThan(4);
+    });
+
+    test('both halves of a date-line country are counted', () => {
+        expect(tilesInBoxes(RUSSIA)).toBeGreaterThan(tilesInBox(RUSSIA[0]));
+    });
+
+    test('latitude runs the opposite way to tile Y, and a box is never negative', () => {
+        // The first cut of this returned 0 for every country by subtracting the
+        // edges the wrong way round.
+        expect(tilesInBox([0, 0, 1, 1])).toBeGreaterThan(0);
+        expect(tilesInBox([0, 50, 1, 51])).toBeGreaterThan(0);
+        expect(tilesInBox([10, 40, 10, 40])).toBeGreaterThanOrEqual(0);
+    });
+
+    test('the poles do not produce infinity', () => {
+        expect(Number.isFinite(tilesInBox([-180, -90, 180, 90]))).toBe(true);
+        expect(tilesInBox([-180, -90, 180, 90])).toBeGreaterThan(0);
+    });
+
+    test('nonsense counts as nothing rather than crashing a build', () => {
+        expect(tilesInBox([NaN, 1, 2, 3])).toBe(0);
+        expect(tilesInBoxes([])).toBe(0);
+        expect(tilesInBoxes(null)).toBe(0);
+    });
+});
+
+describe('checkMeasurable — refusing before anything is spawned', () => {
+    const RUSSIA = [[19.309, 40.822, 180, 74.108], [-180, 40.822, -170.397, 74.108]];
+    const ARMENIA = [[43.3, 38.7, 46.7, 41.4]];
+
+    test('Russia is refused on the live box WITHOUT running pmtiles at all', () => {
+        const msg = checkMeasurable(RUSSIA, 2.3e9);
+        expect(msg).toMatch(/too big for this server/i);
+        expect(msg).toMatch(/nothing was started/i);
+    });
+
+    test('Armenia is measurable on the very same box', () => {
+        expect(checkMeasurable(ARMENIA, 2.3e9)).toBeNull();
+    });
+
+    test('a bigger machine measures what the small one cannot', () => {
+        expect(checkMeasurable(RUSSIA, 32e9)).toBeNull();
+    });
+
+    test('with no memory reading we do not invent a refusal', () => {
+        expect(checkMeasurable(RUSSIA, null)).toBeNull();
+        expect(checkMeasurable([], 1)).toBeNull();
     });
 });
 
