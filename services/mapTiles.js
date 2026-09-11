@@ -389,7 +389,9 @@ const MEM_BYTES_PER_TILE = 96;
 // disk has to hold both, plus room for the machine to keep working.
 const DISK_MARGIN_BYTES = 2e9;
 
-const gb = (n) => `${(n / 1e9).toFixed(n < 1e9 ? 2 : 1)} GB`;
+// statfs can fail and /proc/meminfo can be absent, and a missing reading must
+// SAY so — "0.00 GB free" reads as a full disk rather than as no answer.
+const gb = (n) => (Number.isFinite(n) ? `${(n / 1e9).toFixed(n < 1e9 ? 2 : 1)} GB` : 'an unknown amount');
 
 /** RAM the kernel would actually hand us. MemAvailable, not os.freemem(),
  *  which ignores reclaimable page cache and wildly overstates usage on Linux —

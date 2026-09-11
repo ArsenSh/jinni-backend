@@ -154,6 +154,14 @@ describe('checkFits — refusing a build this server cannot finish', () => {
         expect(checkFits()).toBeNull();
     });
 
+    test('a reading we do not have is never rendered as zero', () => {
+        // statfs can fail and /proc/meminfo can be absent. "0.00 GB free" would
+        // read as a full disk rather than as no answer.
+        const msg = checkFits(RUSSIA, { freeBytes: 1e9, availBytes: null });
+        expect(msg).toMatch(/disk/i);
+        expect(msg).not.toMatch(/0\.00 GB/);
+    });
+
     test('the refusal says what to do next, not merely that it failed', () => {
         expect(checkFits(RUSSIA, LIVE_SERVER)).toMatch(/fewer countries/);
         expect(checkFits(RUSSIA, { freeBytes: 27e9, availBytes: 16e9 })).toMatch(/fewer countries/);
