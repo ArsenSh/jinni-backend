@@ -68,20 +68,74 @@ const cliPath = () => (tilesDir() ? path.join(tilesDir(), 'bin', 'pmtiles') : nu
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────────────
 
+/** Longitude is a CIRCLE, not a number line.
+ *
+ *  The plain min/max of Russia's 5017 seeded settlements is −179.12…179.35,
+ *  because Chukotka sits just PAST the date line (Egvekinot −179.12, Lavrentiya
+ *  −171.00). That box is not Russia: it is a belt round the ENTIRE planet at
+ *  Russia's latitudes — Europe, Japan, northern China, half of North America —
+ *  which is why the rebuild ran out of memory (2026-09-12). Four countries in
+ *  the gazetteer straddle the line: RU, NZ (the Chathams), FJ (Vanua Levu), KI.
+ *
+ *  So the extent is measured TWICE — once on [−180,180), once on [0,360) — and
+ *  the narrower span wins. Russia's second framing is 19.91…188.99: 169° wide,
+ *  the real country. A country straddling the PRIME meridian (the UK, France,
+ *  Ghana) is the mirror case, and there the first framing wins.
+ *
+ *  The winning extent may reach past +180. It stays that way through padding
+ *  and is cut into legal boxes by splitAtAntimeridian() when the region file is
+ *  written — GeoJSON cannot express a ring that crosses the line.
+ */
+function lonExtent({ minLon, maxLon, minLon360, maxLon360 }) {
+    const naive = maxLon - minLon;
+    const shifted = maxLon360 - minLon360;
+    if (!Number.isFinite(shifted) || !(shifted < naive)) return [minLon, maxLon];
+    // Put the west edge back on the map and let the east edge run past +180, so
+    // the pair still reads west → east.
+    const west = minLon360 > 180 ? minLon360 - 360 : minLon360;
+    return [west, west + shifted];
+}
+
 /** A country's seeded settlements give its extent; the pad covers coastline and
  *  border towns the gazetteer never seeded. Proportional, not fixed: a flat
  *  0.6° pad turned Vatican City — a single point — into a 101 MB slab of Italy
  *  (measured 2026-09-06). 5% of each span, floored so a point still gets ~11 km
  *  of context and ceilinged so a wide country does not swallow its neighbours.
+ *
+ *  Longitude is deliberately NOT clamped to ±180: an extent that crosses the
+ *  date line is carried past +180 and made legal later by splitAtAntimeridian().
+ *  Clamping here is precisely what flattened Russia into a planet-wide belt. A
+ *  full circle is the one thing that cannot be padded — there is nowhere left.
  */
 function padBbox([minLon, minLat, maxLon, maxLat]) {
     const pad = (span) => Math.min(0.6, Math.max(0.1, Math.abs(span) * 0.05));
     const padLon = pad(maxLon - minLon);
     const padLat = pad(maxLat - minLat);
+    const full = (maxLon - minLon) + 2 * padLon > 360;
     return [
-        Math.max(-180, minLon - padLon), Math.max(-85, minLat - padLat),
-        Math.min(180, maxLon + padLon), Math.min(85, maxLat + padLat),
+        full ? minLon : minLon - padLon, Math.max(-85, minLat - padLat),
+        full ? minLon + 360 : maxLon + padLon, Math.min(85, maxLat + padLat),
     ];
+}
+
+/** One extent → the 1 or 2 boxes GeoJSON can actually hold.
+ *
+ *  A box whose east edge runs past +180 becomes two: one up to the line, one
+ *  resuming at −180. pmtiles takes a MultiPolygon, so both halves travel in the
+ *  same build and every caller downstream stays exactly as it was.
+ */
+function splitAtAntimeridian([minLon, minLat, maxLon, maxLat] = []) {
+    if (![minLon, minLat, maxLon, maxLat].every(Number.isFinite)) return [];
+    // Already legal — hand it straight back. Every country but four takes this
+    // path, and round-tripping them through the modulo below would buy nothing
+    // but floating-point drift (−5.6 came back as −5.600000000000023).
+    if (minLon >= -180 && maxLon <= 180 && maxLon >= minLon) return [[minLon, minLat, maxLon, maxLat]];
+    const span = Math.min(360, Math.max(0, maxLon - minLon));
+    const west = ((minLon + 180) % 360 + 360) % 360 - 180;
+    const east = west + span;
+    return east <= 180
+        ? [[west, minLat, east, maxLat]]
+        : [[west, minLat, 180, maxLat], [-180, minLat, east - 360, maxLat]];
 }
 
 /** One bbox → a closed GeoJSON ring (lon,lat order, first point repeated). */
@@ -161,6 +215,11 @@ async function catalog() {
                 _id: '$countryCode',
                 countryName: { $max: { $cond: [{ $eq: ['$kind', 'country'] }, '$name', null] } },
                 minLon: { $min: '$lng' }, maxLon: { $max: '$lng' },
+                // The same longitudes on [0,360), so a country that crosses the
+                // date line can be measured without wrapping round the planet.
+                // See lonExtent(). Costs nothing — it rides the same pass.
+                minLon360: { $min: { $mod: [{ $add: ['$lng', 360] }, 360] } },
+                maxLon360: { $max: { $mod: [{ $add: ['$lng', 360] }, 360] } },
                 minLat: { $min: '$lat' }, maxLat: { $max: '$lat' },
                 places: { $sum: 1 },
             },
@@ -170,15 +229,22 @@ async function catalog() {
 
     return rows
         .filter(r => /^[A-Za-z]{2}$/.test(String(r._id || '')))
-        .map(r => ({
-            code: String(r._id).toUpperCase(),
-            name: r.countryName || String(r._id).toUpperCase(),
-            bbox: padBbox([r.minLon, r.minLat, r.maxLon, r.maxLat]),
-            // Unpadded: pads overlap across borders, so the tight extent is what
-            // decides which country a coordinate belongs to.
-            tight: [r.minLon, r.minLat, r.maxLon, r.maxLat],
-            seededPlaces: r.places,
-        }));
+        .map(r => {
+            const [west, east] = lonExtent(r);
+            return {
+                code: String(r._id).toUpperCase(),
+                name: r.countryName || String(r._id).toUpperCase(),
+                bbox: padBbox([west, r.minLat, east, r.maxLat]),
+                // Unpadded: pads overlap across borders, so the tight extent is
+                // what decides which country a coordinate belongs to.
+                tight: [west, r.minLat, east, r.maxLat],
+                // True when the east edge runs past +180 — the country is drawn
+                // in two pieces, and staff deserve to see why the number reads
+                // 189 rather than a silent surprise in the build log.
+                crossesDateLine: east > 180,
+                seededPlaces: r.places,
+            };
+        });
 }
 
 /** Where Jinni actually HOLDS content, by ISO country code.
@@ -345,7 +411,8 @@ async function writeRegionFile(codes) {
     const chosen = all.filter(c => codes.includes(c.code));
     if (!chosen.length) throw new Error('none of those countries are in the gazetteer');
     const file = path.join(tilesDir(), `.region-${Date.now()}.geojson`);
-    await fsp.writeFile(file, JSON.stringify(regionGeoJSON(chosen.map(c => c.bbox))));
+    // flatMap, not map: a country crossing the date line contributes TWO boxes.
+    await fsp.writeFile(file, JSON.stringify(regionGeoJSON(chosen.flatMap(c => splitAtAntimeridian(c.bbox)))));
     return { file, chosen };
 }
 
@@ -466,6 +533,7 @@ async function status() {
 module.exports = {
     status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
-    padBbox, bboxRing, regionGeoJSON, parseProgress, parseExtractSummary, normalizeCodes,
+    lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
+    parseExtractSummary, normalizeCodes,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,
 };

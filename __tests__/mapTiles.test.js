@@ -9,8 +9,22 @@ const path = require('path');
 
 const mapTiles = require('../services/mapTiles');
 const {
-    padBbox, bboxRing, regionGeoJSON, parseProgress, parseExtractSummary, normalizeCodes,
+    lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
+    parseExtractSummary, normalizeCodes,
 } = mapTiles;
+
+// The real numbers the live gazetteer returns, measured 2026-09-12. Each of
+// these four countries has settlements on BOTH sides of the date line, which is
+// the whole reason lonExtent exists.
+const GAZETTEER = {
+    RU: { minLon: -179.12, maxLon: 179.35, minLon360: 19.91, maxLon360: 188.99, minLat: 41.42, maxLat: 73.51 },
+    NZ: { minLon: -176.56, maxLon: 178.30, minLon360: 166.42, maxLon360: 183.44, minLat: -46.60, maxLat: -34.99 },
+    FJ: { minLon: -178.81, maxLon: 179.36, minLon360: 176.92, maxLon360: 181.19, minLat: -18.24, maxLat: -12.50 },
+    KI: { minLon: -159.39, maxLon: 173.26, minLon360: 173.26, maxLon360: 200.61, minLat: 1.33, maxLat: 3.91 },
+    // The mirror case: Britain straddles the PRIME meridian, so the [0,360)
+    // framing is the broken one and the plain one must win.
+    GB: { minLon: -7.56, maxLon: 1.75, minLon360: 1.75, maxLon360: 352.44, minLat: 49.92, maxLat: 60.15 },
+};
 
 describe('padBbox — proportional padding', () => {
     test('a point country stays small (a flat 0.6° pad made Vatican City 101 MB of Italy)', () => {
@@ -33,6 +47,74 @@ describe('padBbox — proportional padding', () => {
         expect(maxLon).toBe(180);
         expect(minLat).toBe(-85);
         expect(maxLat).toBe(85);
+    });
+});
+
+describe('lonExtent — longitude measured on a circle', () => {
+    test('RUSSIA stops being a belt round the planet (the OOM, 2026-09-12)', () => {
+        const [west, east] = lonExtent(GAZETTEER.RU);
+        // Before: -179.12…179.35, a 358° box holding Europe, Japan, north China
+        // and half of North America. After: Kaliningrad eastwards to Chukotka.
+        expect(east - west).toBeCloseTo(169.08, 2);
+        expect(west).toBeCloseTo(19.91, 2);
+        expect(east).toBeGreaterThan(180);            // carried past the line on purpose
+    });
+
+    test('the other three date-line countries shrink the same way', () => {
+        expect(lonExtent(GAZETTEER.NZ)[1] - lonExtent(GAZETTEER.NZ)[0]).toBeCloseTo(17.02, 2);
+        expect(lonExtent(GAZETTEER.FJ)[1] - lonExtent(GAZETTEER.FJ)[0]).toBeCloseTo(4.27, 2);
+        expect(lonExtent(GAZETTEER.KI)[1] - lonExtent(GAZETTEER.KI)[0]).toBeCloseTo(27.35, 2);
+    });
+
+    test('a PRIME-meridian country is left alone — the plain framing wins', () => {
+        expect(lonExtent(GAZETTEER.GB)).toEqual([-7.56, 1.75]);
+    });
+
+    test('an ordinary country is untouched, and a tie keeps the plain framing', () => {
+        // Chile: both framings are 9° wide, so nothing should move.
+        expect(lonExtent({ minLon: -75, maxLon: -66, minLon360: 285, maxLon360: 294 }))
+            .toEqual([-75, -66]);
+    });
+
+    test('a country with no second framing falls back rather than inventing one', () => {
+        expect(lonExtent({ minLon: 4, maxLon: 9 })).toEqual([4, 9]);
+    });
+});
+
+describe('splitAtAntimeridian — two boxes where GeoJSON needs two', () => {
+    test('Russia is handed over as Kaliningrad→line and line→Chukotka', () => {
+        const { minLat, maxLat } = GAZETTEER.RU;
+        const [west, east] = lonExtent(GAZETTEER.RU);
+        const [a, b] = splitAtAntimeridian(padBbox([west, minLat, east, maxLat]));
+        expect(a[0]).toBeCloseTo(19.31, 2);
+        expect(a[2]).toBe(180);
+        expect(b[0]).toBe(-180);
+        expect(b[2]).toBeCloseTo(-170.41, 2);
+        expect(a[1]).toBeCloseTo(b[1], 5);            // same latitudes in both halves
+        expect(a[3]).toBeCloseTo(b[3], 5);
+    });
+
+    test('a box that never reaches the line stays a single box', () => {
+        expect(splitAtAntimeridian([-5.6, 40.5, 10.6, 51.5])).toEqual([[-5.6, 40.5, 10.6, 51.5]]);
+    });
+
+    test('every produced box is legal longitude, even for the whole planet', () => {
+        for (const code of Object.keys(GAZETTEER)) {
+            const g = GAZETTEER[code];
+            const [west, east] = lonExtent(g);
+            for (const box of splitAtAntimeridian(padBbox([west, g.minLat, east, g.maxLat]))) {
+                expect(box[0]).toBeGreaterThanOrEqual(-180);
+                expect(box[2]).toBeLessThanOrEqual(180);
+                expect(box[2]).toBeGreaterThan(box[0]);
+            }
+        }
+        expect(splitAtAntimeridian(padBbox([-180, -85, 180, 85]))).toEqual([[-180, -85, 180, 85]]);
+    });
+
+    test('nonsense in, nothing out — never a malformed ring', () => {
+        expect(splitAtAntimeridian([])).toEqual([]);
+        expect(splitAtAntimeridian([NaN, 1, 2, 3])).toEqual([]);
+        expect(splitAtAntimeridian()).toEqual([]);
     });
 });
 
