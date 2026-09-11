@@ -359,6 +359,68 @@ async function diskInfo() {
     } catch { return { freeBytes: null, totalBytes: null }; }
 }
 
+// ── Will this build survive on this server? ──────────────────────────────────
+//
+//  Fixing the date line made Russia Russia; it did not make Russia SMALL. The
+//  panel will still start a build this box cannot finish, and when the kernel
+//  kills the extract there is nothing to read: tile reads are plain static file
+//  serving and log nothing at all.
+//
+//  MEASURED, not modelled (2026-09-12, pmtiles 1.31.2, planet 20260905, z0-15):
+//
+//      selection              region tiles     archive     peak RSS
+//      Armenia                     101,549      132 MB       48 MB
+//      Russia (split, correct)  38,568,270       26 GB     3.25 GB
+//      Russia (the old belt)    81,979,778       76 GB      >2.8 GB
+//
+//  Peak memory tracks the REGION TILE COUNT, not the archive size: pmtiles
+//  holds the region's tile entries while it plans the fetch. Between the first
+//  two points that is ~84 bytes a tile over a ~48 MB baseline, so we ask for
+//  96 — wrong in the safe direction, without refusing builds that would have
+//  fitted. The live server has 8.1 GB with ~2.3 GB free, so even a correct
+//  Russia does not fit there and staff should be told so in advance.
+//
+//  HONESTY: an UNKNOWN estimate never blocks a build. If pmtiles quoted no
+//  number we say we could not check and let staff decide — an unknown must look
+//  unknown, not act like a refusal.
+const MEM_BASELINE_BYTES = 48e6;
+const MEM_BYTES_PER_TILE = 96;
+// The build writes a SECOND archive beside the one still being served, so the
+// disk has to hold both, plus room for the machine to keep working.
+const DISK_MARGIN_BYTES = 2e9;
+
+const gb = (n) => `${(n / 1e9).toFixed(n < 1e9 ? 2 : 1)} GB`;
+
+/** RAM the kernel would actually hand us. MemAvailable, not os.freemem(),
+ *  which ignores reclaimable page cache and wildly overstates usage on Linux —
+ *  the same correction /server-stats makes for the admin card. */
+function availableMemory() {
+    try {
+        const m = require('fs').readFileSync('/proc/meminfo', 'utf8').match(/MemAvailable:\s+(\d+) kB/);
+        if (m) return parseInt(m[1], 10) * 1024;
+    } catch { /* non-Linux dev machine — os.freemem is the honest answer there */ }
+    return require('os').freemem();
+}
+
+/** Refuse, in the tool's own numbers, a build this server cannot finish.
+ *  Returns the sentence to fail with, or null when it fits. */
+function checkFits({ archiveBytes, tiles } = {}, { freeBytes, availBytes } = {}) {
+    if (Number.isFinite(archiveBytes) && Number.isFinite(freeBytes)
+        && archiveBytes + DISK_MARGIN_BYTES > freeBytes) {
+        return `not enough disk: this selection needs ${gb(archiveBytes)} plus ${gb(DISK_MARGIN_BYTES)} of room `
+            + `beside the archive already being served, and only ${gb(freeBytes)} is free. `
+            + `Select fewer countries, or give the server a bigger volume.`;
+    }
+    if (Number.isFinite(tiles) && Number.isFinite(availBytes)
+        && MEM_BASELINE_BYTES + tiles * MEM_BYTES_PER_TILE > availBytes) {
+        const need = MEM_BASELINE_BYTES + tiles * MEM_BYTES_PER_TILE;
+        return `not enough memory: extracting ${tiles.toLocaleString('en-US')} tiles needs about ${gb(need)}, `
+            + `and only ${gb(availBytes)} is free on this server. The build would be killed partway through. `
+            + `Select fewer countries, or build this one on a bigger machine.`;
+    }
+    return null;
+}
+
 // ── Running the tool ─────────────────────────────────────────────────────────
 
 function run(cmd, args, { onLine } = {}) {
@@ -373,7 +435,10 @@ function run(cmd, args, { onLine } = {}) {
         child.stdout.on('data', feed);
         child.stderr.on('data', feed);
         child.on('error', (err) => resolve({ ok: false, code: -1, output: err.message }));
-        child.on('close', (code) => resolve({ ok: code === 0, code, output: tail }));
+        // The SIGNAL matters as much as the code: a build the kernel kills for
+        // memory reports no error of its own, and "pmtiles exited with null"
+        // tells staff nothing about what to do next.
+        child.on('close', (code, signal) => resolve({ ok: code === 0, code, signal, output: tail }));
     });
 }
 
@@ -429,6 +494,8 @@ async function estimate(codesIn) {
     });
     await fsp.unlink(file).catch(() => {});
     if (!res.ok) throw new Error(res.output.slice(-400) || 'the estimate failed');
+    const freeBytes = (await diskInfo()).freeBytes;
+    const availBytes = availableMemory();
     return {
         codes,
         countries: chosen.map(c => c.name),
@@ -436,6 +503,10 @@ async function estimate(codesIn) {
         bytes: summary.archiveBytes ?? null,
         transferBytes: summary.transferBytes ?? null,
         tiles: summary.tiles ?? null,
+        // The same check the build will run, so staff read it HERE rather than
+        // watching a build fail. Null means it fits, or could not be judged.
+        freeBytes, availBytes,
+        wontFit: checkFits(summary, { freeBytes, availBytes }),
         planet: PLANET_URL, maxzoom: MAX_ZOOM,
     };
 }
@@ -474,9 +545,42 @@ function startBuild(codesIn) {
             const r = await writeRegionFile(codes);
             region = r.file;
             const bin = await ensureCli(say);
+
+            // Price it BEFORE fetching a tile. --dry-run reads only the planet's
+            // index and writes no file, so this costs seconds for a small
+            // country and a few minutes for a continental one — cheap against an
+            // 80 GB download that ends in a killed process.
+            say('measuring the selection before downloading anything…');
+            const est = {};
+            const dry = await run(bin, ['extract', PLANET_URL, tmp,
+                `--region=${region}`, `--maxzoom=${MAX_ZOOM}`, '--dry-run'], {
+                onLine: (l) => { parseExtractSummary(l, est); say(l); },
+            });
+            if (!dry.ok) throw new Error(dry.output.slice(-400) || `the size check failed (pmtiles exited with ${dry.code})`);
+            const freeBytes = (await diskInfo()).freeBytes;
+            const availBytes = availableMemory();
+            if (est.archiveBytes == null || est.tiles == null) {
+                say('pmtiles quoted no size — building without a fit check');
+            } else {
+                say(`selection is ${est.tiles.toLocaleString('en-US')} tiles / ${gb(est.archiveBytes)}; `
+                    + `server has ${gb(freeBytes)} disk and ${gb(availBytes)} memory free`);
+            }
+            const refusal = checkFits(est, { freeBytes, availBytes });
+            if (refusal) throw new Error(refusal);
+            job.percent = 0;   // the dry run drove the bar to 100%; the build starts over
+
             say(`extracting ${r.chosen.map(c => c.name).join(', ')} from the planet (z0-${MAX_ZOOM})…`);
             const res = await run(bin, ['extract', PLANET_URL, tmp, `--region=${region}`, `--maxzoom=${MAX_ZOOM}`], { onLine: say });
-            if (!res.ok) throw new Error(res.output.slice(-400) || `pmtiles exited with ${res.code}`);
+            if (!res.ok) {
+                // 137 is the shell's rendering of SIGKILL; Node reports the
+                // signal directly. Either way the kernel took the process for
+                // memory, and pmtiles never got to say anything about it.
+                if (res.signal === 'SIGKILL' || res.code === 137) {
+                    throw new Error('the server ran out of memory during the build and the process was killed — '
+                        + 'select fewer countries, or build this one on a bigger machine');
+                }
+                throw new Error(res.output.slice(-400) || `pmtiles exited with ${res.code}`);
+            }
             const st = await fsp.stat(tmp);
             // Atomic swap — one syscall, so a reader never sees a partial file.
             await fsp.rename(tmp, archivePath());
@@ -534,6 +638,6 @@ module.exports = {
     status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes,
+    parseExtractSummary, normalizeCodes, checkFits,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,
 };

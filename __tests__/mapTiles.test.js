@@ -10,7 +10,7 @@ const path = require('path');
 const mapTiles = require('../services/mapTiles');
 const {
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes,
+    parseExtractSummary, normalizeCodes, checkFits,
 } = mapTiles;
 
 // The real numbers the live gazetteer returns, measured 2026-09-12. Each of
@@ -115,6 +115,48 @@ describe('splitAtAntimeridian — two boxes where GeoJSON needs two', () => {
         expect(splitAtAntimeridian([])).toEqual([]);
         expect(splitAtAntimeridian([NaN, 1, 2, 3])).toEqual([]);
         expect(splitAtAntimeridian()).toEqual([]);
+    });
+});
+
+describe('checkFits — refusing a build this server cannot finish', () => {
+    // Measured 2026-09-12 with pmtiles --dry-run against the pinned planet, and
+    // peak RSS sampled while each ran. Fixing the date line made Russia Russia;
+    // it did not make Russia small enough for an 8 GB box.
+    const RUSSIA = { archiveBytes: 26e9, tiles: 38_568_270 };   // peaked at 3.25 GB RSS
+    const ARMENIA = { archiveBytes: 132e6, tiles: 101_549 };    // peaked at 48 MB
+    const LIVE_SERVER = { freeBytes: 112e9, availBytes: 2.3e9 };
+
+    test('Armenia fits the live server exactly as it stands today', () => {
+        expect(checkFits(ARMENIA, LIVE_SERVER)).toBeNull();
+    });
+
+    test('Russia is refused for MEMORY, though 112 GB of disk sat free', () => {
+        const msg = checkFits(RUSSIA, LIVE_SERVER);
+        expect(msg).toMatch(/memory/i);
+        expect(msg).toMatch(/38,568,270/);          // the tool's own count, not ours
+        expect(msg).not.toMatch(/disk/i);           // the true reason, not the loudest one
+    });
+
+    test('disk is judged against the archive PLUS room beside the one being served', () => {
+        // 26 GB into 27 GB free leaves nowhere for the archive still in use.
+        expect(checkFits(RUSSIA, { freeBytes: 27e9, availBytes: 16e9 })).toMatch(/disk/i);
+        expect(checkFits(RUSSIA, { freeBytes: 40e9, availBytes: 16e9 })).toBeNull();
+    });
+
+    test('given room for both, nothing is refused', () => {
+        expect(checkFits(RUSSIA, { freeBytes: 112e9, availBytes: 16e9 })).toBeNull();
+    });
+
+    test('an UNKNOWN estimate never blocks a build — unknown must look unknown', () => {
+        expect(checkFits({ archiveBytes: null, tiles: null }, { freeBytes: 1e6, availBytes: 1e6 })).toBeNull();
+        expect(checkFits({}, {})).toBeNull();
+        expect(checkFits(RUSSIA, { freeBytes: null, availBytes: null })).toBeNull();
+        expect(checkFits()).toBeNull();
+    });
+
+    test('the refusal says what to do next, not merely that it failed', () => {
+        expect(checkFits(RUSSIA, LIVE_SERVER)).toMatch(/fewer countries/);
+        expect(checkFits(RUSSIA, { freeBytes: 27e9, availBytes: 16e9 })).toMatch(/fewer countries/);
     });
 });
 
