@@ -237,22 +237,47 @@ const { namesPlausiblyMatch } = require('../places/matching');
  * only the fallback. Conservative: ambiguous or nameless blurbs never move. */
 const _GENERIC_NAME_TOKENS = new Set(['restaurant', 'cafe', 'cafes', 'bar', 'hotel', 'museum', 'park',
     'tavern', 'grill', 'house', 'club', 'lounge', 'kitchen', 'garden', 'center', 'centre', 'place']);
+const _fold = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+const _tokens = s => _fold(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 function _distinctiveTokens(name) {
-    return String(name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-        .split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 4 && !_GENERIC_NAME_TOKENS.has(t));
+    return _tokens(name).filter(t => t.length >= 4 && !_GENERIC_NAME_TOKENS.has(t));
 }
+// Whole-word test; tokens are letters/digits only, so no escaping needed. Not
+// ASCII \b \u2014 it treats every Cyrillic/Armenian letter as a boundary.
+const _namesWord = (low, t) => new RegExp(`(?<![\\p{L}\\p{N}])${t}(?![\\p{L}\\p{N}])`, 'u').test(low);
 function realignBlurbs(places, blurbs = []) {
     const n = places?.length || 0;
     if (!n || !blurbs.some(Boolean)) return blurbs;
-    const toks = places.map(p => _distinctiveTokens(p?.name));
+    // A city in a NAME is not identity. Live 2026-09-11: "STEAKARAR YEREVAN"
+    // made "yerevan" its distinctive token, so Koyo's "Pan-Asian in central
+    // Yerevan" blurb was seated on STEAKARAR and STEAKARAR's own blurb fell
+    // onto Koyo. Any word that is part of the deck's geography (a city field,
+    // or another place's address) never counts as naming a place.
+    const geo = new Set();
+    places.forEach(p => [p?.city, p?._town, p?.country].forEach(f => _tokens(f).forEach(t => geo.add(t))));
+    const addrToks = places.map(p => new Set(_tokens(p?.address)));
+    const toks = places.map((p, j) => _distinctiveTokens(p?.name)
+        .filter(t => !geo.has(t) && !addrToks.some((a, k) => k !== j && a.has(t))));
+    const hitsFor = b => {
+        const low = _fold(b);
+        const hits = [];
+        for (let j = 0; j < n; j++) if (toks[j].some(t => _namesWord(low, t))) hits.push(j);
+        return hits;
+    };
     const out = new Array(n).fill(null);
-    const claimed = new Set(), leftovers = [];
+    const claimed = new Set(), pending = [], leftovers = [];
+    // Pass 1: a blurb that names its OWN card stays there \u2014 the model's index
+    // backed by the name is the strongest evidence there is, and no other
+    // blurb may take that seat.
     for (let i = 0; i < Math.min(blurbs.length, n); i++) {
         const b = blurbs[i];
         if (!b) continue;
-        const low = String(b).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
-        const hits = [];
-        for (let j = 0; j < n; j++) if (toks[j].length && toks[j].some(t => low.includes(t))) hits.push(j);
+        const hits = hitsFor(b);
+        if (hits.includes(i)) { out[i] = b; claimed.add(i); continue; }
+        pending.push({ i, b, hits });
+    }
+    // Pass 2: a blurb that uniquely names ANOTHER free card moves there.
+    for (const { i, b, hits } of pending) {
         if (hits.length === 1 && !claimed.has(hits[0])) { out[hits[0]] = b; claimed.add(hits[0]); continue; }
         leftovers.push({ i, b });
     }

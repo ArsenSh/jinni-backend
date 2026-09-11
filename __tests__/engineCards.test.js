@@ -240,4 +240,39 @@ describe('realignBlurbs: blurbs seat on the card they NAME (live 2026-09-04)', (
         const blurbs = places.map(p => `${p.name} is lovely.`);
         expect(realignBlurbs(places, blurbs)).toEqual(blurbs);
     });
+    // Live 2026-09-11 steak deck: the model's blurbs were all on the right
+    // cards; the realigner itself swapped Koyo and STEAKARAR via "Yerevan".
+    const steakDeck = [
+        { name: 'Fabrica Restaurant & More', address: '9 Martiros Saryan St, Yerevan 0002, Armenia' },
+        { name: 'Black Angus Signature', address: '34 Tumanyan St, Yerevan, Armenia' },
+        { name: 'Koyo', address: '5 Northern Avenue' },
+        { name: 'STEAKARAR YEREVAN', address: '6 Martiros Saryan St, Yerevan 0002, Armenia' },
+        { name: 'Kamancha', address: 'Tumanyan 23' },
+        { name: 'Mare Seafood Restaurant & Bar', address: '7 Sayat-Nova Ave, Yerevan 0001, Armenia' },
+    ];
+    const steakBlurbs = [
+        'A steakhouse about 5.5 km out, rated 4.4 — a solid pick for a straightforward grill dinner.',
+        'A steakhouse around 5.2 km away and the highest rated of the three at 4.8.',
+        "Pan-Asian in central Yerevan, open now — not a steakhouse, but a good late option.",
+        'STEAKARAR YEREVAN is a steakhouse roughly 5.4 km away, also rated 4.8.',
+        'A long-standing Yerevan favourite, open now, serving Armenian food rather than steak.',
+        "Mare is a seafood restaurant and bar about 5 km away, rated 4.8."];
+    test('a city word inside a name never pulls a blurb (the Koyo ↔ STEAKARAR swap)', () => {
+        expect(realignBlurbs(steakDeck, steakBlurbs)).toEqual(steakBlurbs);
+    });
+    test('a blurb naming its own card keeps it even if another blurb claims it first', () => {
+        const deck = [{ name: 'Koyo' }, { name: 'Steakarar Grill' }];
+        const blurbs = ['Pan-Asian, a quieter alternative to Steakarar.', 'Steakarar is the steak specialist.'];
+        expect(realignBlurbs(deck, blurbs)).toEqual(blurbs);
+    });
+    test('names match as whole words, not substrings ("More" is not in "moreover")', () => {
+        const deck = [{ name: 'Fabrica Restaurant & More' }, { name: 'Kamancha' }];
+        const blurbs = ['Great grill, moreover open late.', 'Kamancha serves Armenian food.'];
+        expect(realignBlurbs(deck, blurbs)).toEqual(blurbs);
+    });
+    test('the city field also counts as geography', () => {
+        const deck = [{ name: 'Dilijan Hotel' }, { name: 'Kchuch', city: 'Dilijan' }];
+        const blurbs = ['A resort-style stay with pool views.', 'Wood-fired food in the Dilijan forest.'];
+        expect(realignBlurbs(deck, blurbs)).toEqual(blurbs);
+    });
 });
