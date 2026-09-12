@@ -506,12 +506,24 @@ function tilesInBoxes(boxes = [], z = MAX_ZOOM) {
     return (Array.isArray(boxes) ? boxes : []).reduce((sum, b) => sum + tilesInBox(b, z), 0);
 }
 
+// Per GEOMETRIC tile, not per real one. tilesInBox counts every candidate cell
+// — 2.49x the real count for Russia, 2.15x for Russia+USA — so charging the
+// per-REAL-tile rate to that count over-counted twice, and refused Russia+USA
+// even on a 16 GB box where the build fits (measured 2026-09-13: 78,338,594
+// real tiles / 56 GB, ~7.6 GB by the post-dry-run check against ~9.9 GB free).
+// Calibrated instead against Russia's own dry run: 3.25 GB peak over 96.0M
+// geometric tiles = 33.3 B each; 40 keeps ~20% above it. A DENSE region, where
+// geometric ~= real, can still read low — survivable only because
+// protectFromOom makes pmtiles, never the API, the process that dies; the
+// post-dry-run checkFits then prices the real tiles exactly.
+const MEM_BYTES_PER_GEO_TILE = 40;
+
 /** Can this server even MEASURE this selection? Answered from geometry alone,
  *  before any process is spawned. Returns the sentence to fail with, or null. */
 function checkMeasurable(boxes, availBytes) {
     const tiles = tilesInBoxes(boxes);
     if (!tiles || !Number.isFinite(availBytes)) return null;
-    const need = MEM_BASELINE_BYTES + tiles * MEM_BYTES_PER_TILE;
+    const need = MEM_BASELINE_BYTES + tiles * MEM_BYTES_PER_GEO_TILE;
     if (need <= availBytes) return null;
     return `too big for this server: the selection covers roughly ${tiles.toLocaleString('en-US')} tiles at zoom ${MAX_ZOOM}, `
         + `and even PRICING it builds an index of about ${gb(need)} — only ${gb(availBytes)} is free. `
@@ -538,11 +550,30 @@ function checkFits({ archiveBytes, tiles } = {}, { freeBytes, availBytes } = {})
     return null;
 }
 
+/** Make a child the kernel's FIRST choice when memory runs out.
+ *
+ *  Every memory figure in this file is an estimate, and an estimate can be
+ *  wrong. When it is, the OOM killer picks its victim by size — and on this
+ *  box the API is a large, long-lived process. RAISING a child's oom_score_adj
+ *  needs no privilege (only lowering it does), so at the maximum a misjudged
+ *  extract kills pmtiles and the API keeps serving. It is written the instant
+ *  the child exists: pmtiles grows its index over tens of seconds (sampled
+ *  0.9 -> 2.2 GB across a minute), long after this lands. Linux only; with no
+ *  /proc there is nothing to do. Returns whether it took effect. */
+function protectFromOom(pid) {
+    if (!pid) return false;
+    try {
+        require('fs').writeFileSync(`/proc/${pid}/oom_score_adj`, '1000');
+        return true;
+    } catch { return false; }
+}
+
 // ── Running the tool ─────────────────────────────────────────────────────────
 
 function run(cmd, args, { onLine } = {}) {
     return new Promise((resolve) => {
         const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        protectFromOom(child.pid);   // if memory runs out, this dies — not the API
         let tail = '';
         const feed = (buf) => {
             const text = buf.toString();
@@ -792,6 +823,6 @@ module.exports = {
     status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes,
+    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes, protectFromOom,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,
 };

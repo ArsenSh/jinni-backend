@@ -10,7 +10,7 @@ const path = require('path');
 const mapTiles = require('../services/mapTiles');
 const {
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
-    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes,
+    parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes, protectFromOom,
 } = mapTiles;
 
 // The real numbers the live gazetteer returns, measured 2026-09-12. Each of
@@ -182,9 +182,40 @@ describe('checkMeasurable — refusing before anything is spawned', () => {
         expect(checkMeasurable(RUSSIA, 32e9)).toBeNull();
     });
 
+    test('Russia + USA fits a 16 GB box — priced as measured, not over-counted twice', () => {
+        // Live 2026-09-13: RU+US priced at 78,338,594 real tiles / 56 GB. The
+        // first calibration charged the per-REAL-tile rate to 168M GEOMETRIC
+        // tiles and refused this even on CPX41, where it fits.
+        const US = [[-167.142, 18.444, -66.384, 71.891]];
+        const CPX41_FREE = 16.0e9 - 6.1e9;   // the same 6.1 GB of tenants, on 16 GB
+        expect(checkMeasurable(RUSSIA.concat(US), CPX41_FREE)).toBeNull();
+        expect(checkMeasurable(RUSSIA.concat(US), 2.3e9)).toMatch(/too big/i);
+    });
+
+    test('never prices Russia below its own measured 3.25 GB peak', () => {
+        // The calibration point itself. If the per-tile cost ever drifts low,
+        // a box with exactly the measured peak free must still be refused.
+        expect(checkMeasurable(RUSSIA, 3.25e9)).toMatch(/too big/i);
+    });
+
     test('with no memory reading we do not invent a refusal', () => {
         expect(checkMeasurable(RUSSIA, null)).toBeNull();
         expect(checkMeasurable([], 1)).toBeNull();
+    });
+});
+
+describe('protectFromOom — a misjudged extract must never take the API with it', () => {
+    // A pid that cannot exist, so nothing real is touched on any platform.
+    const NO_SUCH_PID = 2 ** 22 + 12345;
+
+    test('never throws, whatever the platform', () => {
+        expect(() => protectFromOom(NO_SUCH_PID)).not.toThrow();
+        expect(() => protectFromOom(undefined)).not.toThrow();
+    });
+
+    test('reports honestly whether it took effect', () => {
+        expect(protectFromOom(undefined)).toBe(false);
+        expect(protectFromOom(NO_SUCH_PID)).toBe(false);
     });
 });
 
