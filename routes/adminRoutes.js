@@ -2967,7 +2967,10 @@ router.get('/map-tiles', async (req, res) => {
 // Price a selection BEFORE downloading anything (pmtiles --dry-run reads no tiles).
 router.post('/map-tiles/estimate', async (req, res) => {
     try {
-        res.json({ success: true, data: await mapTiles.estimate(req.body?.codes) });
+        // `world: true` prices the whole planet as one copy; otherwise the
+        // ticked countries are priced as an extract.
+        const data = req.body?.world ? await mapTiles.estimatePlanet() : await mapTiles.estimate(req.body?.codes);
+        res.json({ success: true, data });
     } catch (err) {
         res.status(400).json({ success: false, error: err.message });
     }
@@ -2977,8 +2980,8 @@ router.post('/map-tiles/estimate', async (req, res) => {
 // removes the archive; dropping a country from the set is how it is deleted.
 router.post('/map-tiles/build', async (req, res) => {
     try {
-        const job = mapTiles.startBuild(req.body?.codes);
-        console.log(`[map-tiles] build requested by ${req.user?.email || 'admin'}: ${job.codes.join(', ') || '(none)'}`);
+        const job = req.body?.world ? mapTiles.startPlanetBuild() : mapTiles.startBuild(req.body?.codes);
+        console.log(`[map-tiles] build requested by ${req.user?.email || 'admin'}: ${job.world ? 'the whole planet' : (job.codes.join(', ') || '(none)')}`);
         res.json({ success: true, data: job });
     } catch (err) {
         res.status(409).json({ success: false, error: err.message });

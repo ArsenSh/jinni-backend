@@ -11,6 +11,7 @@ const mapTiles = require('../services/mapTiles');
 const {
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
     parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes, protectFromOom,
+    checkPlanetFits, looksLikePmtiles,
 } = mapTiles;
 
 // The real numbers the live gazetteer returns, measured 2026-09-12. Each of
@@ -419,6 +420,142 @@ describe('builds against a real (throwaway) TILES_DIR', () => {
         const st = await mapTiles.status();
         expect(st.archive.exists).toBe(true);
         expect(st.archive.bytes).toBe(4096);
+    });
+});
+
+describe('the whole planet — a copy, not an extract', () => {
+    // Measured 2026-09-13: planet 20260912 is 138.0 GB; the live Volume had
+    // 163 GB free after the 25 GB country archive moved onto it.
+    test('a disk that cannot hold the planet plus its margin is refused in words', () => {
+        const msg = checkPlanetFits(138e9, 120e9);
+        expect(msg).toMatch(/not enough disk/i);
+        expect(msg).toMatch(/138\.0 GB/);
+        expect(msg).toMatch(/bigger volume/i);
+    });
+
+    test('the live Volume holds it', () => {
+        expect(checkPlanetFits(138e9, 163e9)).toBeNull();
+    });
+
+    test('the margin is the same room a country build keeps beside the served archive', () => {
+        expect(checkPlanetFits(100e9, 101.9e9)).toMatch(/not enough disk/);
+        expect(checkPlanetFits(100e9, 102e9)).toBeNull();
+    });
+
+    test('an unknown size or an unknown disk never refuses — unknown must look unknown', () => {
+        expect(checkPlanetFits(null, 163e9)).toBeNull();
+        expect(checkPlanetFits(138e9, null)).toBeNull();
+        expect(checkPlanetFits(undefined, undefined)).toBeNull();
+    });
+
+    describe('only a real archive may be renamed into service', () => {
+        let dir;
+        beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jinni-planet-')); });
+        afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+        test('the PMTiles header is recognised', async () => {
+            const f = path.join(dir, 'ok.pmtiles');
+            fs.writeFileSync(f, Buffer.concat([Buffer.from('PMTiles'), Buffer.alloc(120)]));
+            expect(await looksLikePmtiles(f)).toBe(true);
+        });
+
+        test('a CDN error page saved as the archive is not', async () => {
+            const f = path.join(dir, 'html.pmtiles');
+            fs.writeFileSync(f, '<!DOCTYPE html><html><body>404 Not Found</body></html>');
+            expect(await looksLikePmtiles(f)).toBe(false);
+        });
+
+        test('a file cut off inside the header, or missing entirely, is not', async () => {
+            const f = path.join(dir, 'short.pmtiles');
+            fs.writeFileSync(f, 'PMT');
+            expect(await looksLikePmtiles(f)).toBe(false);
+            expect(await looksLikePmtiles(path.join(dir, 'nope.pmtiles'))).toBe(false);
+        });
+    });
+
+    describe('against a throwaway TILES_DIR, with the planet server unreachable', () => {
+        // The module reads its planet URL once, at load. Pinning it to a port
+        // nothing listens on makes every build fail FAST and in words — and
+        // guarantees no test ever starts a 138 GB download on a laptop.
+        let dir, planet;
+        const prev = { dir: process.env.TILES_DIR, url: process.env.PMTILES_PLANET_URL };
+        beforeEach(() => {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jinni-planet-'));
+            process.env.TILES_DIR = dir;
+            process.env.PMTILES_PLANET_URL = 'http://127.0.0.1:9/never.pmtiles';
+            jest.isolateModules(() => { planet = require('../services/mapTiles'); });
+        });
+        afterEach(() => {
+            fs.rmSync(dir, { recursive: true, force: true });
+            for (const [k, v] of [['TILES_DIR', prev.dir], ['PMTILES_PLANET_URL', prev.url]]) {
+                if (v === undefined) delete process.env[k]; else process.env[k] = v;
+            }
+        });
+        const settle = async () => {
+            for (let i = 0; i < 100; i++) {
+                if (planet.jobView()?.state !== 'running') return planet.jobView();
+                await new Promise(r => setTimeout(r, 20));
+            }
+            return planet.jobView();
+        };
+
+        test('a planet copy that cannot start leaves the served archive untouched', async () => {
+            const archive = path.join(dir, 'jinni.pmtiles');
+            fs.writeFileSync(archive, 'known good tiles');
+            fs.writeFileSync(path.join(dir, 'regions.json'), JSON.stringify({ countries: [{ code: 'AM', name: 'Armenia' }] }));
+            const started = planet.startPlanetBuild();
+            expect(started.world).toBe(true);
+            expect(started.codes).toEqual([]);          // the panel reads codes.length
+            const job = await settle();
+            expect(job.state).toBe('failed');
+            expect(job.error).toMatch(/planet build/i);
+            expect(fs.readFileSync(archive, 'utf8')).toBe('known good tiles');
+            expect(JSON.parse(fs.readFileSync(path.join(dir, 'regions.json'), 'utf8')).countries[0].code).toBe('AM');
+            expect(fs.readdirSync(dir).filter(f => f.startsWith('.build-'))).toEqual([]);
+        });
+
+        test('a country build is refused while a planet copy is running, and vice versa', async () => {
+            planet.startPlanetBuild();
+            expect(() => planet.startBuild(['AM'])).toThrow(/already running/i);
+            expect(() => planet.startPlanetBuild()).toThrow(/already running/i);
+            await settle();
+        });
+
+        test('pricing the planet says the build server is unreachable rather than inventing a size', async () => {
+            await expect(planet.estimatePlanet()).rejects.toThrow(/planet build/i);
+        });
+
+        test('a leftover temp file from a build the process died in is swept — the estimate scratch file is not', async () => {
+            fs.writeFileSync(path.join(dir, '.build-1700000000000.pmtiles'), Buffer.alloc(64));
+            fs.writeFileSync(path.join(dir, '.estimate.pmtiles'), Buffer.alloc(64));
+            await planet.sweepStaleBuilds();
+            expect(fs.existsSync(path.join(dir, '.build-1700000000000.pmtiles'))).toBe(false);
+            expect(fs.existsSync(path.join(dir, '.estimate.pmtiles'))).toBe(true);
+        });
+
+        test('status reports a planet archive as the whole world, never as unknown', async () => {
+            fs.writeFileSync(path.join(dir, 'jinni.pmtiles'), Buffer.alloc(1024));
+            fs.writeFileSync(path.join(dir, 'regions.json'), JSON.stringify({ mode: 'planet', countries: [], maxzoom: 15 }));
+            const st = await planet.status();
+            expect(st.mode).toBe('planet');
+            expect(st.unmanaged).toBe(false);
+            expect(st.blind).toEqual([]);
+        });
+
+        test('a planet manifest over a MISSING archive is history, not coverage', async () => {
+            fs.writeFileSync(path.join(dir, 'regions.json'), JSON.stringify({ mode: 'planet', countries: [], maxzoom: 15 }));
+            const st = await planet.status();
+            expect(st.mode).toBe('countries');
+            expect(st.installed).toEqual([]);
+        });
+
+        test('a country manifest is still a country manifest', async () => {
+            fs.writeFileSync(path.join(dir, 'jinni.pmtiles'), Buffer.alloc(1024));
+            fs.writeFileSync(path.join(dir, 'regions.json'), JSON.stringify({ countries: [{ code: 'IT', name: 'Italy' }], maxzoom: 15 }));
+            const st = await planet.status();
+            expect(st.mode).toBe('countries');
+            expect(st.installed).toEqual(['IT']);
+        });
     });
 });
 

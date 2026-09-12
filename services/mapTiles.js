@@ -550,6 +550,65 @@ function checkFits({ archiveBytes, tiles } = {}, { freeBytes, availBytes } = {})
     return null;
 }
 
+// ── The whole planet: a COPY, not an extract ─────────────────────────────────
+//
+//  Picking countries extracts byte ranges out of the planet, and the extract
+//  tool first indexes every tile of the selection in memory — which is what
+//  put Russia (41.9M tiles, ~4 GB of index) out of reach of an 8 GB box. The
+//  planet ITSELF needs none of that: it is one file, copied as it is, so memory
+//  never enters into it and only disk does. Measured 2026-09-13: build
+//  20260912 is 138.0 GB, z0-15, every country on earth.
+//
+//  Same doctrine as a country build — the copy lands beside the served archive
+//  and is swapped in with one rename — plus a check the extract never needed:
+//  the file must BE a PMTiles archive (magic bytes) and be the size the server
+//  announced, because a truncated copy or a CDN error page renamed into
+//  service would draw garbage with no error anywhere.
+
+/** Bytes the planet server announces for a build, or null when it says nothing. */
+async function planetSize(url) {
+    try {
+        const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+        const n = Number(res.headers.get('content-length'));
+        return res.ok && Number.isFinite(n) && n > 0 ? n : null;
+    } catch { return null; }
+}
+
+/** Refuse, in words, a planet copy this disk cannot hold. Null when it fits —
+ *  or when it could not be judged: an unknown must look unknown. */
+function checkPlanetFits(planetBytes, freeBytes) {
+    if (!Number.isFinite(planetBytes) || !Number.isFinite(freeBytes)) return null;
+    if (planetBytes + DISK_MARGIN_BYTES <= freeBytes) return null;
+    return `not enough disk: the whole planet is ${gb(planetBytes)} and needs ${gb(DISK_MARGIN_BYTES)} of room `
+        + `beside the archive already being served, and only ${gb(freeBytes)} is free. `
+        + `Give the server a bigger volume, or pick countries instead.`;
+}
+
+/** Every PMTiles archive opens with the same seven bytes. A cut-off download
+ *  or an HTML error page does not, and must never be renamed into service. */
+const PMTILES_MAGIC = Buffer.from('PMTiles');
+async function looksLikePmtiles(file) {
+    let fh = null;
+    try {
+        fh = await fsp.open(file, 'r');
+        const buf = Buffer.alloc(PMTILES_MAGIC.length);
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        return bytesRead === buf.length && buf.equals(PMTILES_MAGIC);
+    } catch { return false; }
+    finally { if (fh) await fh.close().catch(() => {}); }
+}
+
+/** A build the process died in the middle of leaves its temp file behind, and
+ *  a planet copy can be 100 GB of it. Swept only when no job is running, so
+ *  the file being written right now is never touched. */
+async function sweepStaleBuilds() {
+    if (!tilesDir() || (job && job.state === 'running')) return;
+    const names = await fsp.readdir(tilesDir()).catch(() => []);
+    for (const n of names) {
+        if (/^\.build-\d+\.pmtiles$/.test(n)) await fsp.unlink(path.join(tilesDir(), n)).catch(() => {});
+    }
+}
+
 /** Make a child the kernel's FIRST choice when memory runs out.
  *
  *  Every memory figure in this file is an estimate, and an estimate can be
@@ -788,13 +847,107 @@ function startBuild(codesIn) {
     return jobView();
 }
 
+/** Price the whole planet: its announced size against the free disk. No CLI
+ *  and no memory question — a copy indexes nothing. */
+async function estimatePlanet() {
+    if (!tilesDir()) throw new Error('TILES_DIR is not set on this server');
+    const planet = await resolvePlanet();
+    const bytes = await planetSize(planet);
+    const freeBytes = (await diskInfo()).freeBytes;
+    return {
+        world: true, codes: [], countries: ['the whole world'],
+        bytes, transferBytes: bytes, tiles: null,
+        freeBytes, availBytes: availableMemory(),
+        wontFit: checkPlanetFits(bytes, freeBytes),
+        planet, maxzoom: MAX_ZOOM,
+    };
+}
+
+/** Copy the newest planet build into service — every country at once. */
+function startPlanetBuild() {
+    if (job && job.state === 'running') throw new Error('a map build is already running');
+    if (!tilesDir()) throw new Error('TILES_DIR is not set on this server');
+    job = { state: 'running', codes: [], world: true, startedAt: new Date(), finishedAt: null, percent: 0, bytes: null, log: [], error: null };
+    const say = (line) => job.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+
+    (async () => {
+        const tmp = path.join(tilesDir(), `.build-${Date.now()}.pmtiles`);
+        let ticker = null;
+        try {
+            await sweepStaleBuilds();
+            const planet = await resolvePlanet(say);
+            const total = await planetSize(planet);
+            const freeBytes = (await diskInfo()).freeBytes;
+            say(`the whole planet is ${gb(total)}; server has ${gb(freeBytes)} disk free`);
+            const refusal = checkPlanetFits(total, freeBytes);
+            if (refusal) throw new Error(refusal);
+
+            say(`downloading ${planet.split('/').pop()} — every country, nothing extracted…`);
+            // Progress is the file growing on disk. curl is asked to be quiet,
+            // and the bytes it has written are the one number that cannot lie.
+            let lastMark = -1;
+            ticker = setInterval(async () => {
+                const size = (await fsp.stat(tmp).catch(() => null))?.size;
+                if (!Number.isFinite(size)) return;
+                job.bytes = size;
+                if (!total) return;
+                job.percent = Math.min(99, Math.floor(size / total * 100));
+                const mark = Math.floor(job.percent / 10);
+                if (mark > lastMark) { lastMark = mark; say(`${gb(size)} of ${gb(total)} (${job.percent}%)`); }
+            }, 2000);
+            // --retry rides out a dropped connection and -C - resumes the same
+            // file rather than starting 100 GB over; --speed-limit/-time gives
+            // up on a transfer stalled below 1 kB/s for a minute instead of
+            // holding the job open forever.
+            const res = await run('curl', ['-fsSL', '--retry', '5', '--retry-all-errors', '--retry-delay', '15',
+                '--speed-limit', '1000', '--speed-time', '60', '-C', '-', '-o', tmp, planet], { onLine: say });
+            clearInterval(ticker); ticker = null;
+            if (!res.ok) throw new Error(res.output.slice(-400) || `curl exited with ${res.code}`);
+
+            const st = await fsp.stat(tmp);
+            if (total && st.size !== total) {
+                throw new Error(`the download is incomplete: ${gb(st.size)} arrived of the ${gb(total)} announced`);
+            }
+            if (!(await looksLikePmtiles(tmp))) {
+                throw new Error('the downloaded file is not a PMTiles archive — the planet server answered with something else');
+            }
+            // Atomic swap — one syscall, so a reader never sees a partial file.
+            await fsp.rename(tmp, archivePath());
+            await writeManifest({
+                mode: 'planet', countries: [],
+                planet, maxzoom: MAX_ZOOM, updatedAt: new Date(), archiveBytes: st.size,
+            });
+            job.bytes = st.size;
+            say(`done — the served archive is now the whole planet, ${gb(st.size)}`);
+            job.state = 'done'; job.percent = 100;
+        } catch (err) {
+            if (ticker) clearInterval(ticker);
+            await fsp.unlink(tmp).catch(() => {});
+            job.state = 'failed';
+            job.error = err.message;
+            say(`failed: ${err.message}`);
+        } finally {
+            job.finishedAt = new Date();
+        }
+    })();
+
+    return jobView();
+}
+
 async function status() {
     const [archive, disk, manifest, cat, content] = await Promise.all([
         archiveStat(), diskInfo(), readManifest(), catalog(), contentByCountry(),
     ]);
-    const installed = new Set((manifest.countries || []).map(c => c.code));
+    // A planet archive holds EVERY country, so the catalog is what is installed
+    // and nothing is blind. A manifest that says planet over a missing archive
+    // is history, not coverage.
+    const mode = manifest.mode === 'planet' && archive.exists ? 'planet' : 'countries';
+    const installed = new Set(mode === 'planet'
+        ? cat.map(c => c.code)
+        : (manifest.countries || []).map(c => c.code));
     return {
         enabled: !!tilesDir(),
+        mode,
         dir: tilesDir(),
         // The build this archive was actually made from — not what the next
         // one would use. Falls back to the policy when nothing is installed.
@@ -810,7 +963,7 @@ async function status() {
         // ticked, a build for Italy replaced the archive, and Armenia's map
         // went blank with no error anywhere — tile requests are plain static
         // file reads and log nothing at all.
-        unmanaged: archive.exists && !(manifest.countries || []).length,
+        unmanaged: mode !== 'planet' && archive.exists && !(manifest.countries || []).length,
         // Countries we hold content for but cannot draw — the gap the founder
         // named: "if map is not downloaded Jinni is not there".
         blind: Object.keys(content).filter(code => !installed.has(code)).sort(
@@ -820,9 +973,10 @@ async function status() {
 }
 
 module.exports = {
-    status, estimate, startBuild, jobView, catalog, contentByCountry, contentPeek,
+    status, estimate, startBuild, estimatePlanet, startPlanetBuild, jobView, catalog, contentByCountry, contentPeek,
     // pure, for tests
     lonExtent, padBbox, splitAtAntimeridian, bboxRing, regionGeoJSON, parseProgress,
     parseExtractSummary, normalizeCodes, checkFits, checkMeasurable, tilesInBox, tilesInBoxes, protectFromOom,
+    checkPlanetFits, looksLikePmtiles, sweepStaleBuilds,
     PLANET_URL, MAX_ZOOM, ARCHIVE_NAME,
 };
