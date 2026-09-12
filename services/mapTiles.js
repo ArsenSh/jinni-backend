@@ -55,9 +55,69 @@ const CLI_ASSET = (() => {
 })();
 const CLI_URL = `https://github.com/protomaps/go-pmtiles/releases/download/v${CLI_VERSION}/${CLI_ASSET.name}`;
 
-// Planet builds are dated; pinning one keeps rebuilds reproducible until staff
-// deliberately move to a newer planet.
-const PLANET_URL = process.env.PMTILES_PLANET_URL || 'https://build.protomaps.com/20260905.pmtiles';
+// Protomaps publishes a DAILY planet and keeps only a rolling window of them —
+// measured 2026-09-12: 0906…0911 present, 0905 and everything older gone, today
+// not yet published. So a pinned date ROTS, in about a week, and it rots in the
+// worst possible way: `--dry-run` reads only directory chunks, which Cloudflare
+// serves from its edge after any earlier run, so PRICING still succeeds while
+// the build that follows 404s on its first uncached byte range. Live
+// 2026-09-12 00:00: AE+AM+CY+FR+GE+IT priced at 5,281,514 tiles / 16 GB, then
+// died 9s later on `HTTP error: 404` — which reads like a bad country and is
+// nothing of the sort.
+//
+// So the build is RESOLVED, newest first, and the one actually used is written
+// into the manifest. That keeps the traceability the pin was for without a date
+// that expires. PMTILES_PLANET_URL still overrides, and is then verified rather
+// than trusted.
+const PLANET_BASE = process.env.PMTILES_PLANET_BASE || 'https://build.protomaps.com';
+const PLANET_PINNED = process.env.PMTILES_PLANET_URL || null;
+const PLANET_LOOKBACK_DAYS = 14;
+// There is no planet URL until a build resolves one, so this describes the
+// POLICY rather than pretending to be an address.
+const PLANET_URL = PLANET_PINNED || 'newest available, resolved at build time';
+
+const planetUrlForDay = (ms) => {
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${PLANET_BASE}/${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}.pmtiles`;
+};
+
+/** Is this build actually published? A HEAD costs nothing and answers the
+ *  question the extract would otherwise answer 9 seconds in.
+ *
+ *  Retried once, because a DROPPED CONNECTION is not the same answer as a 404
+ *  and must not read like one: observed 2026-09-12, a single blip on the newest
+ *  build silently resolved the day before it instead. Retrying costs one HEAD
+ *  and keeps a transient failure from quietly aging the planet. */
+async function planetExists(url) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+            return res.ok;                       // 404 is an ANSWER — never retried
+        } catch { /* network, not upstream — try once more before believing it */ }
+    }
+    return false;
+}
+
+/** The newest planet build that exists right now, or the pinned one if it is
+ *  still published. Throws — in words — rather than letting a build discover a
+ *  404 halfway through. */
+async function resolvePlanet(onLine) {
+    if (PLANET_PINNED) {
+        if (await planetExists(PLANET_PINNED)) return PLANET_PINNED;
+        throw new Error(`the pinned planet build is no longer published (${PLANET_PINNED}). Protomaps keeps only about `
+            + `a week of daily builds. Unset PMTILES_PLANET_URL to use the newest one automatically, or pin a build that still exists.`);
+    }
+    for (let i = 0; i <= PLANET_LOOKBACK_DAYS; i++) {
+        const url = planetUrlForDay(Date.now() - i * 86400000);
+        if (await planetExists(url)) {
+            onLine?.(`planet build: ${url.split('/').pop()}`);
+            return url;
+        }
+    }
+    throw new Error(`no Protomaps planet build could be reached in the last ${PLANET_LOOKBACK_DAYS} days `
+        + `(${PLANET_BASE}). The build server may be down, or this server may have no outbound access.`);
+}
 const MAX_ZOOM = Number(process.env.PMTILES_MAX_ZOOM) || 15;
 const ARCHIVE_NAME = 'jinni.pmtiles';
 
@@ -546,6 +606,7 @@ async function estimate(codesIn) {
     const codes = normalizeCodes(codesIn);
     if (!codes.length) return { codes: [], bytes: null, note: 'nothing selected' };
     const bin = await ensureCli();
+    const planet = await resolvePlanet();
     const { file, chosen, boxes } = await writeRegionFile(codes);
     // Same question first: pricing costs the same memory as building, so a
     // selection this box cannot measure must be refused in words rather than
@@ -559,11 +620,11 @@ async function estimate(codesIn) {
             bytes: null, transferBytes: null, tiles: null,
             freeBytes: (await diskInfo()).freeBytes, availBytes: availableMemory(),
             wontFit: unmeasurable,
-            planet: PLANET_URL, maxzoom: MAX_ZOOM,
+            planet, maxzoom: MAX_ZOOM,
         };
     }
     const summary = {};
-    const res = await run(bin, ['extract', PLANET_URL, path.join(tilesDir(), '.estimate.pmtiles'),
+    const res = await run(bin, ['extract', planet, path.join(tilesDir(), '.estimate.pmtiles'),
         `--region=${file}`, `--maxzoom=${MAX_ZOOM}`, '--dry-run'], {
         onLine: (l) => parseExtractSummary(l, summary),
     });
@@ -582,7 +643,7 @@ async function estimate(codesIn) {
         // watching a build fail. Null means it fits, or could not be judged.
         freeBytes, availBytes,
         wontFit: checkFits(summary, { freeBytes, availBytes }),
-        planet: PLANET_URL, maxzoom: MAX_ZOOM,
+        planet, maxzoom: MAX_ZOOM,
     };
 }
 
@@ -610,7 +671,7 @@ function startBuild(codesIn) {
                 // An empty selection means "serve no tiles" — remove the archive
                 // rather than keep a stale one that lies about coverage.
                 await fsp.unlink(archivePath()).catch(() => {});
-                await writeManifest({ countries: [], planet: PLANET_URL, maxzoom: MAX_ZOOM, updatedAt: new Date() });
+                await writeManifest({ countries: [], planet: null, maxzoom: MAX_ZOOM, updatedAt: new Date() });
                 say('archive removed — no countries selected');
                 job.state = 'done'; job.percent = 100;
                 return;
@@ -620,6 +681,9 @@ function startBuild(codesIn) {
             const r = await writeRegionFile(codes);
             region = r.file;
             const bin = await ensureCli(say);
+            // Resolved once and shared by the dry run and the build: pricing one
+            // planet and extracting another would be worse than either failing.
+            const planet = await resolvePlanet(say);
 
             // Price it BEFORE fetching a tile. --dry-run reads only the planet's
             // index and writes no file, so this costs seconds for a small
@@ -635,7 +699,7 @@ function startBuild(codesIn) {
 
             say('measuring the selection before downloading anything…');
             const est = {};
-            const dry = await run(bin, ['extract', PLANET_URL, tmp,
+            const dry = await run(bin, ['extract', planet, tmp,
                 `--region=${region}`, `--maxzoom=${MAX_ZOOM}`, '--dry-run'], {
                 onLine: (l) => { parseExtractSummary(l, est); say(l); },
             });
@@ -658,7 +722,7 @@ function startBuild(codesIn) {
             job.percent = 0;   // the dry run drove the bar to 100%; the build starts over
 
             say(`extracting ${r.chosen.map(c => c.name).join(', ')} from the planet (z0-${MAX_ZOOM})…`);
-            const res = await run(bin, ['extract', PLANET_URL, tmp, `--region=${region}`, `--maxzoom=${MAX_ZOOM}`], { onLine: say });
+            const res = await run(bin, ['extract', planet, tmp, `--region=${region}`, `--maxzoom=${MAX_ZOOM}`], { onLine: say });
             if (!res.ok) {
                 // 137 is the shell's rendering of SIGKILL; Node reports the
                 // signal directly. Either way the kernel took the process for
@@ -674,7 +738,7 @@ function startBuild(codesIn) {
             await fsp.rename(tmp, archivePath());
             await writeManifest({
                 countries: r.chosen.map(c => ({ code: c.code, name: c.name, bbox: c.bbox })),
-                planet: PLANET_URL, maxzoom: MAX_ZOOM, updatedAt: new Date(), archiveBytes: st.size,
+                planet, maxzoom: MAX_ZOOM, updatedAt: new Date(), archiveBytes: st.size,
             });
             job.bytes = st.size;
             say(`done — the served archive is now ${(st.size / 1e6).toFixed(1)} MB`);
@@ -701,7 +765,9 @@ async function status() {
     return {
         enabled: !!tilesDir(),
         dir: tilesDir(),
-        planet: PLANET_URL,
+        // The build this archive was actually made from — not what the next
+        // one would use. Falls back to the policy when nothing is installed.
+        planet: manifest.planet || PLANET_URL,
         maxzoom: MAX_ZOOM,
         archive,
         disk,
