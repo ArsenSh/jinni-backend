@@ -175,7 +175,11 @@ async function complete({
     const baseParams = {
         model,
         max_tokens: effectiveMaxTokens,
-        temperature,          // NOTE: Anthropic has no frequency_penalty / presence_penalty.
+        // NOTE: Anthropic has no frequency_penalty / presence_penalty. The
+        // Claude 5 family REJECTS `temperature` ("deprecated for this model",
+        // live 2026-09-14) — a caller passes null to omit it; the default
+        // stays 0.3 so every existing v1/v2 call is byte-identical.
+        ...(temperature === null ? {} : { temperature }),
         ...(sys !== undefined ? { system: sys } : {}),
         ...(tools ? { tools } : {}),
     };

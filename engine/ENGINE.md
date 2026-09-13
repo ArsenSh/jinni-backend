@@ -165,3 +165,14 @@ engine/
       multi-centre country search over `mainCities()`, `retrieval/diversify`,
       the `_prefFitScore` pure-bonus change, and 2dsphere/$geoNear on
       PlaceCache (kills the unsorted CACHE_SCAN_LIMIT=200 truncation).
+- [x] **V3 chat route + conversation controller** (2026-09-14, founder decision — V3 doc §12):
+      `routes/aiChatV3.js` (a copy of v2, mounted at /chat-stream-v3, chosen in Settings;
+      v2 untouched and default) + `engine/controller/conversationController.js` — ONE
+      state-aware Claude Sonnet 5 call (last 10 turns head+tail clipped, the traveler's
+      date line, lastLane / lastReply / lastFlights / deck / preferences) returns the v2
+      intent object PLUS lane · answers_pending_question · topic_changed · a resolved
+      flights object · clarify_question. `engine/controller/laneOverride.js` maps the lane
+      onto v2's own branch flags. Fail-open: any controller failure → the v2 classifier,
+      no lane. 12 tests. NOTE: the Claude 5 family rejects `temperature` — claudeService
+      now omits it when passed null (defaults unchanged for every other caller).
+

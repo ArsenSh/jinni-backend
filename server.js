@@ -435,6 +435,7 @@ if (process.env.TILES_DIR) {
     console.log(`[tiles] serving self-hosted map tiles from ${process.env.TILES_DIR}`);
 }
 app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV2')));   // v2 engine, parallel to v1 — see backend/engine/ENGINE.md
+app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV3')));   // v3 engine: v2 + the conversation controller — V3 doc §12; chosen in Settings
 app.use('/auth', authRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/business', businessRoutes);

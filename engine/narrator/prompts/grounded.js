@@ -426,7 +426,7 @@ function localFactsBlock(facts = [], maxChars = 4000) {
         }).join('\n\n') + '\n';
 }
 
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, dateNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null, priorFlights = null }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, dateNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null, priorFlights = null, flightPlan = null }) {
     return [
         {
             role: 'system',
@@ -452,6 +452,9 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
               // The model has no clock. Without this line "tomorrow" and "this
               // week" became guessed dates in the fare lookup (live 2026-09-13).
               + (dateNote ? `DATE for the traveler: ${dateNote}. Resolve every relative date ("tomorrow", "this week", "next weekend", "in October") from THIS line, never from memory.\n` : '')
+              // V3 only: the controller already resolved the ask; the
+              // narrator executes it rather than re-deriving it.
+              + (flightPlan ? `THE FLIGHT ASK, ALREADY RESOLVED (call find_flights with exactly these — cities, dates, windows — and never re-ask for anything listed here): ${JSON.stringify(flightPlan)}\n` : '')
               + 'Answer the MODE they actually asked about — walking, taxi or ride-hailing, metro or bus, '
               + 'driving or renting, ferry, or flying between cities — and name what a local would name: '
               + 'the apps that genuinely operate there, the official taxi, the line or route that serves the trip. '
