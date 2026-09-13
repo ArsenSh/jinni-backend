@@ -4,12 +4,18 @@
 // for intent/narration, and already-shown places so follow-ups ("more
 // hotels") surface new ones instead of repeats.
 
-/** Last few conversational turns, trimmed — same shape v1 feeds intentService. */
+const { clipTurn } = require('../utils/clipTurn');
+
+/** Last few conversational turns, trimmed — same shape v1 feeds intentService.
+ *  Trimmed with the ENDING kept: answersAPendingQuestion() reads these to
+ *  decide whether a bare "yes" answers Jinni's own question, and that question
+ *  is the last thing in a long reply (live 2026-09-13: cut off, so "yes" went
+ *  to the small-talk fast path and the flight offer was dropped). */
 function recentTurnsFromMessages(messages, limit = 4) {
     return (messages || [])
         .filter(m => m && m.text)
         .slice(-limit)
-        .map(m => ({ sender: m.sender, text: String(m.text).slice(0, 300) }));
+        .map(m => ({ sender: m.sender, text: clipTurn(m.text) }));
 }
 
 /** Places already shown in this session → retrieval excludes. */

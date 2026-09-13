@@ -13,11 +13,14 @@ const MSGS = [
 ];
 
 describe('recentTurnsFromMessages', () => {
-    test('keeps sender, trims text to 300 chars, respects the limit', () => {
-        const turns = recentTurnsFromMessages([...MSGS, { sender: 'ai', text: 'x'.repeat(500) }], 2);
+    test('keeps sender, trims long text to ~300 chars WITH its ending, respects the limit', () => {
+        const turns = recentTurnsFromMessages([...MSGS, { sender: 'ai', text: 'x'.repeat(500) + ' Shall I?' }], 2);
         expect(turns).toHaveLength(2);
         expect(turns[0]).toEqual({ sender: 'user', text: 'any cheaper ones?' });
-        expect(turns[1].text).toHaveLength(300);
+        expect(turns[1].text.length).toBeLessThanOrEqual(300);
+        // The ending survives: the classifier reads it to see a pending question.
+        expect(turns[1].text).toMatch(/Shall I\?$/);
+        expect(turns[1].text).toMatch(/^x{140} … /);
     });
     test('textless messages are skipped; empty/null safe', () => {
         expect(recentTurnsFromMessages([{ sender: 'ai' }, null])).toEqual([]);

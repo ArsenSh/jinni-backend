@@ -10,6 +10,7 @@
 //                                  could see → 50 km place search → six Yerevan
 //                                  restaurants under a flights question
 const { answersAPendingQuestion } = require('../services/intentService');
+const { recentTurnsFromMessages } = require('../engine/context/session');
 const { buildGettingAroundMessages, clipTurn, historyTurns } = require('../engine/narrator/prompts/grounded');
 
 describe('an answer to Jinni’s own question is not small talk', () => {
@@ -112,5 +113,26 @@ describe('"yes please" to Jinni’s own offer (live 2026-09-13: it re-listed the
         expect(msgs[0].content).toMatch(/answers YES/);
         expect(msgs[0].content).toMatch(/never repeat fares already shown/);
         expect(msgs[0].content).toMatch(/Which day would you fly back\?/);
+    });
+});
+
+describe('a bare "yes" after a LONG offer (live 2026-09-13: filed as small talk)', () => {
+    const longReply = 'Here are the fares I have for Yerevan–Moscow this week, all direct:\n\n'
+        + '[FLYONE Armenia](https://api.jinni.travel/go/f/X74GsbY0) — departs 2026-09-15 at 07:00, 99 USD.\n'
+        + '[FLYONE Armenia](https://api.jinni.travel/go/f/FamkdJo0) — departs 2026-09-17 at 06:10, 102 USD.\n'
+        + '[FLYONE Armenia](https://api.jinni.travel/go/f/tyQlIJEf) — departs 2026-09-16 at 23:20, 105 USD.\n'
+        + '[Utair](https://api.jinni.travel/go/f/lRZgrqWC) — departs 2026-09-18 at 02:45, 106 USD.\n\n'
+        + 'Want me to check a return date as well?';
+
+    test('the recent turns handed to the classifier keep the closing question', () => {
+        expect(longReply.length).toBeGreaterThan(300);
+        const turns = recentTurnsFromMessages([{ sender: 'user', text: 'Find tickets to Moscow in this week' }, { sender: 'ai', text: longReply }]);
+        expect(turns[1].text).toMatch(/return date as well\?$/);
+        expect(turns[1].text.length).toBeLessThanOrEqual(300);
+    });
+
+    test('so the pending-question guard fires and "yes" never reaches the small-talk fast path', () => {
+        const turns = recentTurnsFromMessages([{ sender: 'user', text: 'Find tickets to Moscow in this week' }, { sender: 'ai', text: longReply }]);
+        expect(answersAPendingQuestion(turns)).toBe(true);
     });
 });

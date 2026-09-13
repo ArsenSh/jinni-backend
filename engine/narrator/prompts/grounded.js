@@ -313,16 +313,9 @@ const NO_REMEMBERED_EVENTS =
   + 'verified is a guess a traveler can act on. If you hold nothing for the place or period asked, say '
   + 'that plainly and stop there; do not soften it by listing something anyway.\n';
 
-/** An earlier turn, clipped for the prompt WITHOUT losing its ending. The
- *  question Jinni asks sits at the END of its reply, and a flat 300-char cut
- *  dropped it: live 2026-09-13, "…Want me to check a specific return date
- *  too?" was cut, so "yes please" arrived with no visible offer to accept and
- *  the fares were simply repeated. Head keeps the topic, tail keeps the ask. */
-function clipTurn(text, max = 300) {
-    const s = String(text);
-    if (s.length <= max) return s;
-    return `${s.slice(0, 140).trimEnd()} … ${s.slice(-(max - 145)).trimStart()}`;
-}
+// Shared with the intent classifier's recent turns — the same cut lived in
+// both places and lost Jinni's closing question twice (see utils/clipTurn).
+const { clipTurn } = require('../../utils/clipTurn');
 
 function historyTurns(history) {
     return (history || [])
