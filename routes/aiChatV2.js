@@ -30,7 +30,8 @@ const send = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const LANG_NAMES = { en: 'English', ru: 'Russian', hy: 'Armenian', fr: 'French', ar: 'Arabic', zh: 'Chinese' };
 
-const { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, lastDeckAction, narrowingMatches } = require('../engine/context/session');
+const { recentTurnsFromMessages, withServerReply, sameCitiesAsLastFlights, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels, lastDeckAction, narrowingMatches } = require('../engine/context/session');
+const { clipTurn } = require('../engine/utils/clipTurn');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
@@ -60,14 +61,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     if (sessionId) {
         sessionPeek = await require('../models/ChatSession')
             .findById(sessionId)
-            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, lastDiscussed: 1, lastLane: 1, lastFlights: 1, messages: { $slice: -30 } })
+            .select({ userId: 1, activeDestination: 1, pendingPrefChange: 1, constraints: 1, lastDiscussed: 1, lastLane: 1, lastFlights: 1, lastReply: 1, messages: { $slice: -30 } })
             .lean()
             .catch(() => null);
         if (sessionPeek && String(sessionPeek.userId) !== String(req.user.id)) {
             return res.status(403).json({ error: 'forbidden', message: 'You do not have access to this conversation.' });
         }
     }
-    const recentTurns = recentTurnsFromMessages(sessionPeek?.messages);
+    // Jinni's own last reply rides along even when the frontend has not saved
+    // it yet — a quick "yes" must see the question it answers (live 2026-09-13).
+    const recentTurns = withServerReply(recentTurnsFromMessages(sessionPeek?.messages), sessionPeek?.lastReply);
     const shown = shownFromMessages(sessionPeek?.messages);
     // Deterministic greeting-strip (polish 2026-08-31): mid-chat replies kept
     // opening with "Привет! 😊" despite the prompt ban — the opener is now
@@ -701,7 +704,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 && !(intent.placeNames || []).length
                 && !namesVenueType(message)
                 && !(intent.browse === true)
-                && !intent.settingsChange?.length);
+                && !intent.settingsChange?.length)
+            // The same two cities the fares were just fetched for, named
+            // again ("you helped Yerevan to Moscow and not vice versa?") is
+            // still that conversation — not a place search along the road
+            // between them (live 2026-09-13: four Russian villages, no places).
+            || (sessionPeek?.lastLane === 'transport'
+                && intent.isTravel
+                && sameCitiesAsLastFlights(intent.placeNames, sessionPeek?.lastFlights?.args)
+                && !namesVenueType(message)
+                && !(intent.browse === true));
         const settingsTurn = !!(settingsApplied.length || settingsRefused.length || deferredStyle || budgetFiguresWanted);
         const infoTurn = !intent.isTravel || intent.infoAsk === 'how_to';
         // "Search the internet for X" is a SEARCH, not a capability quiz
@@ -2408,7 +2420,12 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
     // moment a different lane takes the turn.
     if (sessionId) {
         require('../models/ChatSession')
-            .updateOne({ _id: sessionId }, { $set: { lastLane: stats.path || null } }).catch(() => {});
+            .updateOne({ _id: sessionId }, { $set: {
+                lastLane: stats.path || null,
+                // Stamped by the server, so the next turn's classifier can see
+                // the question this reply ends with before the frontend saves it.
+                ...(reply ? { lastReply: { text: clipTurn(reply), at: new Date() } } : {}),
+            } }).catch(() => {});
     }
 
     send(res, {

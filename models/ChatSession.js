@@ -165,6 +165,13 @@ const chatSessionSchema = new mongoose.Schema({
   // listed because prose is not data (live 2026-09-06).
   lastLane: { type: String, default: null },
   lastFlights: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Jinni's own previous reply, written by the SERVER the moment the turn
+  // ends. The messages array is persisted by the frontend after the stream,
+  // so a quick "yes" can arrive before Jinni's question is in it — and the
+  // pending-question guard then sees no question at all (live 2026-09-13,
+  // twice: "yes" became small talk and the flight offer was dropped).
+  // { text: <clipped>, at: Date }. Never rendered — classification context.
+  lastReply: { type: mongoose.Schema.Types.Mixed, default: null },
   messages: [messageSchema],
   isNearLimit: { type: Boolean, default: false },
   suggestedNewChat: { type: Boolean, default: false },

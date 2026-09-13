@@ -18,6 +18,38 @@ function recentTurnsFromMessages(messages, limit = 4) {
         .map(m => ({ sender: m.sender, text: clipTurn(m.text) }));
 }
 
+/** The server's own record of Jinni's last reply, folded into the recent
+ *  turns when the frontend has not persisted it yet. The frontend saves the
+ *  messages array after the stream ends; the server stamps lastReply the
+ *  moment the turn finishes. If the stored turns already end with that reply
+ *  nothing is added — the two agree, and a duplicate would skew nothing but
+ *  is not wanted either. */
+function withServerReply(turns, lastReply) {
+    const out = Array.isArray(turns) ? [...turns] : [];
+    const text = String(lastReply?.text || '').trim();
+    if (!text) return out;
+    const last = out[out.length - 1];
+    if (last && last.sender === 'ai' && String(last.text || '').trim() === text) return out;
+    // The stored turns may end on the traveler's message Jinni was answering;
+    // the reply belongs after it either way.
+    out.push({ sender: 'ai', text });
+    return out;
+}
+
+/** Are these the SAME two cities the last fares were fetched for, in either
+ *  order? "You helped Yerevan to Moscow and not vice versa?" names both again
+ *  and is still the flights conversation. A message naming one of them, or a
+ *  third place, is not. Name match is loose (case, whitespace) and never
+ *  geographic — a wrong yes here only keeps a lane, a wrong no costs the
+ *  conversation. */
+function sameCitiesAsLastFlights(placeNames, lastArgs) {
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const asked = [...new Set((Array.isArray(placeNames) ? placeNames : []).map(norm).filter(Boolean))];
+    const pair = [norm(lastArgs?.origin), norm(lastArgs?.destination)].filter(Boolean);
+    if (asked.length !== 2 || pair.length !== 2) return false;
+    return asked.every(a => pair.some(p => p === a || p.includes(a) || a.includes(p)));
+}
+
 /** Places already shown in this session → retrieval excludes. */
 function shownFromMessages(messages) {
     const placeIds = [], names = [];
@@ -159,5 +191,5 @@ function narrowingMatches(message, shownNames = [], { excludeTokens = [] } = {})
     return [...new Set(toks.filter(t => names.some(n => n.includes(t))))];
 }
 
-module.exports = { recentTurnsFromMessages, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels,
+module.exports = { recentTurnsFromMessages, withServerReply, sameCitiesAsLastFlights, shownFromMessages, shownPlaces, lastCardAsk, lastDeckLabels,
     lastDeckAction, narrowingMatches };

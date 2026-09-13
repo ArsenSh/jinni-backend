@@ -10,7 +10,7 @@
 //                                  could see → 50 km place search → six Yerevan
 //                                  restaurants under a flights question
 const { answersAPendingQuestion } = require('../services/intentService');
-const { recentTurnsFromMessages } = require('../engine/context/session');
+const { recentTurnsFromMessages, withServerReply, sameCitiesAsLastFlights } = require('../engine/context/session');
 const { buildGettingAroundMessages, clipTurn, historyTurns } = require('../engine/narrator/prompts/grounded');
 
 describe('an answer to Jinni’s own question is not small talk', () => {
@@ -134,5 +134,43 @@ describe('a bare "yes" after a LONG offer (live 2026-09-13: filed as small talk)
     test('so the pending-question guard fires and "yes" never reaches the small-talk fast path', () => {
         const turns = recentTurnsFromMessages([{ sender: 'user', text: 'Find tickets to Moscow in this week' }, { sender: 'ai', text: longReply }]);
         expect(answersAPendingQuestion(turns)).toBe(true);
+    });
+});
+
+describe('the server remembers its own last reply (live 2026-09-13: "yes" arrived before the frontend saved it)', () => {
+    const offer = 'Here are the fares I have… Want me to check a return date too?';
+
+    test('with nothing persisted yet, the reply is folded in and the guard fires', () => {
+        const turns = withServerReply(recentTurnsFromMessages([{ sender: 'user', text: 'Find tickets to Moscow in this week' }]), { text: offer, at: new Date() });
+        expect(turns[turns.length - 1]).toEqual({ sender: 'ai', text: offer });
+        expect(answersAPendingQuestion(turns)).toBe(true);
+    });
+
+    test('once the frontend HAS persisted it, nothing is duplicated', () => {
+        const turns = withServerReply(recentTurnsFromMessages([
+            { sender: 'user', text: 'Find tickets to Moscow in this week' }, { sender: 'ai', text: offer },
+        ]), { text: offer, at: new Date() });
+        expect(turns).toHaveLength(2);
+    });
+
+    test('no server reply, or an empty one, changes nothing', () => {
+        const base = recentTurnsFromMessages([{ sender: 'user', text: 'hi' }]);
+        expect(withServerReply(base, null)).toEqual(base);
+        expect(withServerReply(base, { text: '   ' })).toEqual(base);
+        expect(withServerReply(null, { text: 'x' })).toEqual([{ sender: 'ai', text: 'x' }]);
+    });
+});
+
+describe('naming the same two cities again stays in the flights lane (live 2026-09-13: a road-trip search instead)', () => {
+    const last = { origin: 'Yerevan', destination: 'Moscow', depart_from: '2026-09-14', depart_to: '2026-09-20' };
+    test('"Yerevan to Moscow and not vice versa" — both cities, either order', () => {
+        expect(sameCitiesAsLastFlights(['Moscow', 'Yerevan'], last)).toBe(true);
+        expect(sameCitiesAsLastFlights(['yerevan', 'MOSCOW'], last)).toBe(true);
+    });
+    test('one city, a third city, or no fares before → not the same conversation', () => {
+        expect(sameCitiesAsLastFlights(['Moscow'], last)).toBe(false);
+        expect(sameCitiesAsLastFlights(['Moscow', 'Tbilisi'], last)).toBe(false);
+        expect(sameCitiesAsLastFlights(['Moscow', 'Yerevan'], null)).toBe(false);
+        expect(sameCitiesAsLastFlights([], last)).toBe(false);
     });
 });
