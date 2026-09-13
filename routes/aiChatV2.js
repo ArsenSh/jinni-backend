@@ -705,6 +705,16 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 && !namesVenueType(message)
                 && !(intent.browse === true)
                 && !intent.settingsChange?.length)
+            // An ANSWER to the question the flights lane just asked belongs to
+            // the flights lane, whatever words it uses: "I need to stay 4 days,
+            // haven't planned which day" answered "Which day would you fly
+            // back?" and became a Yerevan nightlife deck (live 2026-09-13).
+            || (sessionPeek?.lastLane === 'transport'
+                && intent.isTravel
+                && intentService.answersAPendingQuestion(recentTurns)
+                && !(intent.placeNames || []).length
+                && !(intent.browse === true)
+                && !intent.settingsChange?.length)
             // The same two cities the fares were just fetched for, named
             // again ("you helped Yerevan to Moscow and not vice versa?") is
             // still that conversation — not a place search along the road

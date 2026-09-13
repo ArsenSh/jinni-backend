@@ -174,3 +174,22 @@ describe('naming the same two cities again stays in the flights lane (live 2026-
         expect(sameCitiesAsLastFlights([], last)).toBe(false);
     });
 });
+
+describe('"I need to stay 4 days" is a duration, not a hotel ask (live 2026-09-13: became a nightlife deck)', () => {
+    const { namesVenueType } = require('../engine/retrieval/tuning');
+    test('stay + a number of days/nights does not name a venue type', () => {
+        expect(namesVenueType('I need to stay 4 days have not planned which day specifically to travel')).toBe(false);
+        expect(namesVenueType('staying for two nights')).toBe(false);
+        expect(namesVenueType('we stay a few days')).toBe(false);
+    });
+    test('lodging asks still do', () => {
+        expect(namesVenueType('where can I stay in Moscow')).toBe(true);
+        expect(namesVenueType('a hotel to stay 4 nights')).toBe(true);
+        expect(namesVenueType('good bars near the hotel')).toBe(true);
+    });
+    test('the prompt tells the narrator what to do with a stay length', () => {
+        const msgs = buildGettingAroundMessages({ message: 'I need to stay 4 days', canQuoteFares: true });
+        expect(msgs[0].content).toMatch(/LENGTH of stay/);
+        expect(msgs[0].content).toMatch(/never ask again for a date they said they have not chosen/);
+    });
+});

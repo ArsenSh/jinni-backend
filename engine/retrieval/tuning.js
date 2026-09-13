@@ -306,8 +306,13 @@ const VENUE_NOUN_RE = new RegExp([
 ].join('|'), 'i');
 const VENUE_NOUN_NONLATIN_RE = /(ресторан|кафе|бар|отел|гостиниц|музе|монастыр|церк|храм|крепост|рынок|парк|озер|водопад|каньон|пещер|гор|смотровая|фестивал|концерт|выстав|спа|клуб|кино|театр|ռեստորան|սրճարան|հյուրանոց|թանգարան|վանք|եկեղեց|ամրոց|շուկա|այգի|լիճ|ջրվեժ|քարանձավ|լեռ|փառատոն|համերգ|թատրոն)/i;
 
+// "stay 4 days" / "staying for two nights" is a DURATION, not a request for
+// lodging — the bare noun test read it as "hotel" and threw an answer to
+// Jinni's own flight question into a place search (live 2026-09-13).
+const STAY_DURATION_RE = /\bstay(?:ing)?\s+(?:for\s+|about\s+|around\s+)?(?:\d+|a|an|one|two|three|four|five|six|seven|ten|a couple of|a few|several)\s*(?:-|\s)?(?:days?|nights?|weeks?)\b/gi;
+
 function namesVenueType(message) {
-    const m = String(message || '');
+    const m = String(message || '').replace(STAY_DURATION_RE, ' ');
     return VENUE_NOUN_RE.test(m) || VENUE_NOUN_NONLATIN_RE.test(m);
 }
 
