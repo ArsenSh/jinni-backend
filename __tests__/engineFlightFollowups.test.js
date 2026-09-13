@@ -10,7 +10,7 @@
 //                                  could see → 50 km place search → six Yerevan
 //                                  restaurants under a flights question
 const { answersAPendingQuestion } = require('../services/intentService');
-const { buildGettingAroundMessages } = require('../engine/narrator/prompts/grounded');
+const { buildGettingAroundMessages, clipTurn, historyTurns } = require('../engine/narrator/prompts/grounded');
 
 describe('an answer to Jinni’s own question is not small talk', () => {
     const asked = (text) => [{ sender: 'user', text: 'find flights' }, { sender: 'ai', text }];
@@ -78,5 +78,39 @@ describe('fares already fetched are handed back as DATA', () => {
         const t = text({ priorFlights: many });
         expect(t).toMatch(/FARES ALREADY FETCHED/);
         expect(t.length).toBeLessThan(9000);
+    });
+});
+
+describe('"yes please" to Jinni’s own offer (live 2026-09-13: it re-listed the fares)', () => {
+    const longReply = 'Here are the fares I have for Yerevan–Moscow this week, all direct: [FLYONE Armenia](https://api.jinni.travel/go/f/IAYtyZmG) on 15 September at 07:00 for 99 USD; '
+        + '[FLYONE Armenia](https://api.jinni.travel/go/f/7bGwHOVE) on 16 September at 23:20 for 100 USD; [FLYONE Armenia](https://api.jinni.travel/go/f/R7mmwDVY) on 17 September at 22:40 for 100 USD; '
+        + 'and [Utair](https://api.jinni.travel/go/f/DskrOuEV) on 18 September at 02:45 for 105 USD. Nothing showed for today or the weekend in what I have. Want me to check a specific return date too?';
+
+    test('a long earlier turn keeps its ENDING — the question Jinni asked survives the clip', () => {
+        expect(longReply.length).toBeGreaterThan(300);
+        const clipped = clipTurn(longReply);
+        expect(clipped.length).toBeLessThanOrEqual(305);
+        expect(clipped).toMatch(/Want me to check a specific return date too\?$/);
+        expect(clipped).toMatch(/^Here are the fares I have/);
+        expect(clipped).toContain(' … ');
+    });
+
+    test('short turns are untouched', () => {
+        expect(clipTurn('yes please')).toBe('yes please');
+        expect(historyTurns([{ sender: 'user', text: 'hi' }, { sender: 'ai', text: 'hello' }])).toEqual([
+            { role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' },
+        ]);
+    });
+
+    test('the prompt sees the offer, and is told to act on a yes by asking for the missing detail', () => {
+        const msgs = buildGettingAroundMessages({
+            message: 'yes please', canQuoteFares: true,
+            history: [{ sender: 'user', text: 'Find tickets to Moscow in this week' }, { sender: 'ai', text: longReply }],
+        });
+        const assistantTurn = msgs.find(m => m.role === 'assistant');
+        expect(assistantTurn.content).toMatch(/return date too\?$/);
+        expect(msgs[0].content).toMatch(/answers YES/);
+        expect(msgs[0].content).toMatch(/never repeat fares already shown/);
+        expect(msgs[0].content).toMatch(/Which day would you fly back\?/);
     });
 });

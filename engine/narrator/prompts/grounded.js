@@ -313,10 +313,21 @@ const NO_REMEMBERED_EVENTS =
   + 'verified is a guess a traveler can act on. If you hold nothing for the place or period asked, say '
   + 'that plainly and stop there; do not soften it by listing something anyway.\n';
 
+/** An earlier turn, clipped for the prompt WITHOUT losing its ending. The
+ *  question Jinni asks sits at the END of its reply, and a flat 300-char cut
+ *  dropped it: live 2026-09-13, "…Want me to check a specific return date
+ *  too?" was cut, so "yes please" arrived with no visible offer to accept and
+ *  the fares were simply repeated. Head keeps the topic, tail keeps the ask. */
+function clipTurn(text, max = 300) {
+    const s = String(text);
+    if (s.length <= max) return s;
+    return `${s.slice(0, 140).trimEnd()} … ${s.slice(-(max - 145)).trimStart()}`;
+}
+
 function historyTurns(history) {
     return (history || [])
         .filter(t => t && t.text)
-        .map(t => ({ role: t.sender === 'ai' ? 'assistant' : 'user', content: String(t.text).slice(0, 300) }));
+        .map(t => ({ role: t.sender === 'ai' ? 'assistant' : 'user', content: clipTurn(t.text) }));
 }
 
 /**
@@ -465,6 +476,13 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                   + 'returns, with its booking link. For EACH fare always state its departure date (and time when '
                   + 'given), the airline name and the price — never mention a fare without its date. '
                   + 'They are the fares you HAVE, not proof of the cheapest: do not call them cheapest unless asked. '
+                  // "Yes please" to Jinni's own offer must MOVE the conversation:
+                  // live 2026-09-13 it re-listed the same four fares.
+                  + 'When the traveler answers YES (or "please", "ok", "sure") to something YOU offered in your last turn, '
+                  + 'do what you offered: if it needs a detail you do not have — a return date, a day, a city — ask for '
+                  + 'exactly that in ONE short sentence and nothing else; never repeat fares already shown. '
+                  + 'When you end with an offer, make it one a bare "yes" can act on, or ask for the detail itself '
+                  + '("Which day would you fly back?"). '
                   + 'Pass one day as depart_date, a range ("this week", "next ten days") as depart_from + depart_to, a month as YYYY-MM. '
                   + 'If it returns nothing, say you have no fares for that route. If it says the fares are the NEAREST to the asked dates, '
                   + 'say first that the asked dates have none, then offer those fares with their dates.\n'
@@ -1025,4 +1043,5 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
 }
 
 module.exports = {
+    clipTurn, historyTurns,
     buildSettingsMessages, buildGroundedMessages, buildDestinationMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };
