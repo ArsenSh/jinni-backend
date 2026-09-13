@@ -863,12 +863,16 @@ async function estimatePlanet() {
     const planet = await resolvePlanet();
     const bytes = await planetSize(planet);
     const freeBytes = (await diskInfo()).freeBytes;
+    const [manifest, archive] = await Promise.all([readManifest(), archiveStat()]);
+    // "Update" must not quietly re-copy 138 GB the server already holds.
+    const upToDate = manifest.mode === 'planet' && manifest.planet === planet && archive.exists;
     return {
         world: true, codes: [], countries: ['the whole world'],
         bytes, transferBytes: bytes, tiles: null,
         freeBytes, availBytes: availableMemory(),
         wontFit: checkPlanetFits(bytes, freeBytes),
-        planet, maxzoom: MAX_ZOOM,
+        planet, installedPlanet: manifest.mode === 'planet' ? manifest.planet : null, upToDate,
+        maxzoom: MAX_ZOOM,
     };
 }
 
@@ -884,6 +888,12 @@ function startPlanetBuild() {
         let ticker = null;
         try {
             const planet = await resolvePlanet(say);
+            const current = await readManifest();
+            if (current.mode === 'planet' && current.planet === planet && (await archiveStat()).exists) {
+                say(`the server already holds the newest planet build (${planet.split('/').pop()}) — nothing to download`);
+                job.state = 'done'; job.percent = 100;
+                return;
+            }
             tmp = planetPartPath(planet);
             await sweepStaleBuilds(tmp);
             const total = await planetSize(planet);
