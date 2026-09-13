@@ -87,7 +87,7 @@ const FIND_FLIGHTS_TOOL = {
     function: {
         name: 'find_flights',
         description:
-            'Real cheapest-fare data for a flight route, with a booking link. '
+            'Real fare data for a flight route — the fares currently known for it, each with a booking link. '
           + 'Use whenever the traveler asks about flying between cities, flight prices, or when to fly. '
           + 'Every fare comes with its departure date/time, airline and price — ALWAYS give the traveler all three '
           + 'for each fare you mention (each offer has a ready `label`). '
@@ -501,6 +501,12 @@ function makeExecutors(ctx = {}, deps = {}) {
                 o.label = [date && `${date}${time ? ' ' + time : ''}`, o.airlineName || o.airline, o.price != null ? `${o.price} ${r.currency}` : '', stops]
                     .filter(Boolean).join(' · ');
             }
+            // Short links, not the ~400-character tracking URLs: copied
+            // verbatim those ate the reply's token budget (four fares, answer
+            // stopped mid-URL) and the chat's `_x_` italics rule broke them
+            // (live 2026-09-13). /go/f/<id> redirects to the real one.
+            const shorten = deps.shortenBookUrl || require('../travel/flightLinks').shortenBookUrl;
+            for (const o of r.offers) if (o.bookUrl) o.bookUrl = await shorten(o.bookUrl);
             // The airline name becomes the tappable thing (founder 2026-09-07:
             // "underline each company name … after clicking will navigate").
             // It links to THAT fare's bookUrl — the booking page for the exact
@@ -510,7 +516,9 @@ function makeExecutors(ctx = {}, deps = {}) {
             r.note = (r.nearestOnly
                     ? `NONE of these fall on the asked dates (${r.asked.from}${r.asked.to !== r.asked.from ? ' to ' + r.asked.to : ''}) — say plainly that you have no fares for those dates, then offer these as the NEAREST dated fares this route has. `
                     : '')
-                + 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.'
+                + 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready. '
+                + 'These are the fares the feed KNOWS for the route, not a full search: call them "the fares I have", never "the cheapest", '
+                + 'unless the traveler asked for the cheapest. For a range of dates give ONE fare per day (the best) unless asked for more.'
                 + (anyLink
                     ? ' Write each airline name as a markdown link to THAT fare\'s bookUrl, exactly as given: [Wizz Air](<bookUrl>). '
                       + 'Copy the URL character for character and never build, shorten or invent one — a fare with no bookUrl is written as plain text.'

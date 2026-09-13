@@ -448,6 +448,9 @@ app.use('/api/share', shareRouter);
 // here ONLY for crawler user-agents (WhatsApp/Facebook/Twitter/etc.) so link
 // previews render rich cards; human browsers keep hitting the static SPA.
 app.get('/share/:token', shareRouter.ogHandler);
+// Short booking links for fares (engine/travel/flightLinks.js): the narrator
+// writes api.jinni.travel/go/f/<id>, this redirects to the real Aviasales URL.
+app.use('/go', require('./routes/goRoutes'));
 app.use('/api/staff', staffRoutes);
 app.use('/api/routing', routingRoutes);
 app.use('/api/flightdeals', require('./routes/flightDealsRoutes')); // deals strip — self-contained, deletable

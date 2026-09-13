@@ -1073,7 +1073,9 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                     messages: gaMessages,
                     tools: [FIND_FLIGHTS_TOOL],
                     execute: makeExecutors({ center, requestId: `v2f-${Date.now()}` }),
-                    maxTokens: 320,
+                    // Four dated fares with short links and a sentence each fit
+                    // here; the old ~400-char URLs did not (live 2026-09-13).
+                    maxTokens: 420,
                 }, { provider: deepseekProvider });
                 reply = loop.text || 'I couldn\'t verify that just now — ask me again in a moment.';
                 toolCalls = loop.toolCalls.length;

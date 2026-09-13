@@ -464,6 +464,7 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                   ? 'For flights between cities you have a find_flights tool: call it and quote ONLY the fares it '
                   + 'returns, with its booking link. For EACH fare always state its departure date (and time when '
                   + 'given), the airline name and the price — never mention a fare without its date. '
+                  + 'They are the fares you HAVE, not proof of the cheapest: do not call them cheapest unless asked. '
                   + 'Pass one day as depart_date, a range ("this week", "next ten days") as depart_from + depart_to, a month as YYYY-MM. '
                   + 'If it returns nothing, say you have no fares for that route. If it says the fares are the NEAREST to the asked dates, '
                   + 'say first that the asked dates have none, then offer those fares with their dates.\n'
