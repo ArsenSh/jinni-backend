@@ -128,20 +128,129 @@ async function searchFlights({ origin, destination, departDate = null, returnDat
         origin: from,
         destination: to,
         currency: String(currency).toUpperCase(),
-        offers: rows.slice(0, limit).map(r => ({
-            price: r.price ?? null,
-            airline: r.airline || null,
-            flightNumber: r.flight_number ? `${r.airline || ''}${r.flight_number}` : null,
-            departureAt: r.departure_at || null,
-            returnAt: r.return_at || null,
-            transfers: typeof r.transfers === 'number' ? r.transfers : null,
-            durationMin: typeof r.duration === 'number' ? r.duration : null,
-            bookUrl: _bookUrl(r.link, env),
-        })),
+        offers: rows.slice(0, limit).map(r => _rowToOffer(r, env)),
     };
     // Enrich with display names (codes repeat; the lookup is cached).
     for (const o of out.offers) o.airlineName = await airlineName(o.airline, deps);
     return out;
 }
 
-module.exports = { searchFlights, resolveIata, flightsEnabled, airlineName, _bookUrl, PRICES_URL, AUTOCOMPLETE_URL };
+function _rowToOffer(r, env) {
+    return {
+        price: r.price ?? null,
+        airline: r.airline || null,
+        flightNumber: r.flight_number ? `${r.airline || ''}${r.flight_number}` : null,
+        departureAt: r.departure_at || null,
+        returnAt: r.return_at || null,
+        transfers: typeof r.transfers === 'number' ? r.transfers : null,
+        durationMin: typeof r.duration === 'number' ? r.duration : null,
+        bookUrl: _bookUrl(r.link, env),
+    };
+}
+
+// ── A date WINDOW, and the nearest fares when the window has none ────────────
+//
+//  The fare feed is a CACHE of prices other travelers were recently shown, not
+//  a schedule: on Yerevan–Moscow it held one dated fare (15 Sep) and nothing
+//  for the 14th (live 2026-09-13). Asked for one day, the day query answers
+//  "no fares" and the traveler learns nothing; asked for "this week", a day
+//  query cannot even be formed. So a window is served from the MONTH queries
+//  that cover it: everything inside the window is the answer, and when that
+//  is empty the closest dated fares the route DOES have are handed back,
+//  labeled as such — "nothing on the 14th; the nearest I have is the 15th".
+//  Never a price the feed did not return.
+
+const _isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+const _isMonth = (s) => /^\d{4}-\d{2}$/.test(String(s || ''));
+const _dayOf = (s) => String(s || '').slice(0, 10);
+
+/** The YYYY-MM strings that cover [from, to] — usually one, two across a month end. */
+function monthsCovering(from, to) {
+    const out = [];
+    let [y, m] = from.slice(0, 7).split('-').map(Number);
+    const end = to.slice(0, 7);
+    for (let i = 0; i < 12; i++) {
+        const ym = `${y}-${String(m).padStart(2, '0')}`;
+        out.push(ym);
+        if (ym >= end) break;
+        m++; if (m > 12) { m = 1; y++; }
+    }
+    return out;
+}
+
+/** Split fare rows into those inside the window (cheapest first) and, for the
+ *  rest, the closest to it (nearest first, then cheapest). Rows without a
+ *  usable date belong to neither — an undated fare cannot answer a dated ask. */
+function pickWindow(rows, from, to) {
+    const dayMs = 86400000;
+    const t = (s) => Date.parse(`${s}T00:00:00Z`);
+    const lo = t(from), hi = t(to);
+    const inWindow = [], outside = [];
+    for (const r of rows || []) {
+        const d = _dayOf(r?.departure_at);
+        if (!_isDay(d)) continue;
+        const x = t(d);
+        if (x >= lo && x <= hi) inWindow.push(r);
+        else outside.push({ r, dist: Math.round((x < lo ? lo - x : x - hi) / dayMs) });
+    }
+    const price = (r) => (Number.isFinite(r?.price) ? r.price : Infinity);
+    inWindow.sort((a, b) => price(a) - price(b));
+    outside.sort((a, b) => a.dist - b.dist || price(a.r) - price(b.r));
+    return { inWindow, nearest: outside.map(o => o.r) };
+}
+
+/** Last calendar day of a YYYY-MM. */
+const _monthEnd = (ym) => {
+    const [y, m] = ym.split('-').map(Number);
+    return `${ym}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+};
+
+/**
+ * Fares inside a departure window, or the nearest dated fares when it holds
+ * none. `from`/`to` are YYYY-MM-DD (a single day when equal). Returns null only
+ * when the feature is off or a city cannot be resolved — an EMPTY window is an
+ * answer and comes back as { offers: [], nearest: [...] }.
+ */
+async function searchFlightsWindow({ origin, destination, from, to = from, currency = 'usd', limit = 4, nearestLimit = 3 } = {}, deps = {}) {
+    const env = deps.env || process.env;
+    if (!flightsEnabled(env)) return null;
+    if (!_isDay(from) || !_isDay(to)) return null;
+    if (to < from) [from, to] = [to, from];
+    const [f, t] = await Promise.all([resolveIata(origin, deps), resolveIata(destination, deps)]);
+    if (!f || !t) return null;
+
+    const rows = [];
+    for (const ym of monthsCovering(from, to)) {
+        const q = new URLSearchParams({
+            origin: f, destination: t, currency: String(currency).toLowerCase(),
+            sorting: 'price', limit: '100', one_way: 'true', departure_at: ym, token: env.TRAVELPAYOUTS_TOKEN,
+        });
+        const json = await _getJson(`${PRICES_URL}?${q}`, deps);
+        if (Array.isArray(json?.data)) rows.push(...json.data);
+    }
+    const { inWindow, nearest } = pickWindow(rows, from, to);
+    const out = {
+        origin: f, destination: t, currency: String(currency).toUpperCase(),
+        window: { from, to },
+        offers: inWindow.slice(0, limit).map(r => _rowToOffer(r, env)),
+        // Only offered when the window itself is empty — otherwise a fare from
+        // another week would sit beside the real answer and blur it.
+        nearest: inWindow.length ? [] : nearest.slice(0, nearestLimit).map(r => _rowToOffer(r, env)),
+    };
+    for (const o of [...out.offers, ...out.nearest]) o.airlineName = await airlineName(o.airline, deps);
+    return out;
+}
+
+/** A tool argument → a [from, to] window: a day, or a whole YYYY-MM month. */
+function windowFor({ departDate = null, departFrom = null, departTo = null } = {}) {
+    if (_isDay(departFrom) || _isDay(departTo)) {
+        const a = _isDay(departFrom) ? departFrom : departTo;
+        const b = _isDay(departTo) ? departTo : departFrom;
+        return { from: a < b ? a : b, to: a < b ? b : a };
+    }
+    if (_isDay(departDate)) return { from: departDate, to: departDate };
+    if (_isMonth(departDate)) return { from: `${departDate}-01`, to: _monthEnd(departDate) };
+    return null;
+}
+
+module.exports = { searchFlights, searchFlightsWindow, windowFor, monthsCovering, pickWindow, resolveIata, flightsEnabled, airlineName, _bookUrl, PRICES_URL, AUTOCOMPLETE_URL };

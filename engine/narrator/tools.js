@@ -97,7 +97,9 @@ const FIND_FLIGHTS_TOOL = {
             properties: {
                 origin: { type: 'string', description: 'Departure city name or IATA code (e.g. "Dubai" or "DXB").' },
                 destination: { type: 'string', description: 'Arrival city name or IATA code (e.g. "Yerevan" or "EVN").' },
-                depart_date: { type: 'string', description: 'YYYY-MM-DD for a specific day, or YYYY-MM for the cheapest day that month. Omit if the traveler gave no date.' },
+                depart_date: { type: 'string', description: 'YYYY-MM-DD for ONE specific day, or YYYY-MM for a whole month ("in October"). Omit if the traveler gave no date at all.' },
+                depart_from: { type: 'string', description: 'YYYY-MM-DD start of a date RANGE — "this week", "next week", "in the next ten days", "this weekend". Give depart_to with it. Resolve the dates from the DATE line in your instructions, never from memory.' },
+                depart_to: { type: 'string', description: 'YYYY-MM-DD end of the range (inclusive).' },
                 return_date: { type: 'string', description: 'YYYY-MM-DD for a round trip. Omit for one-way.' },
                 currency: { type: 'string', description: 'ISO currency the traveler thinks in, e.g. usd, eur, amd, aed. Default usd.' },
             },
@@ -439,18 +441,42 @@ function makeExecutors(ctx = {}, deps = {}) {
                      road_km: Math.round(route.km * 10) / 10, drive_minutes: Math.round(route.minutes),
                      straight_line_km: straightKm, source: 'osrm' };
         },
-        find_flights: async ({ origin, destination, depart_date: departDate, return_date: returnDate, currency } = {}) => {
+        find_flights: async ({ origin, destination, depart_date: departDate, depart_from: departFrom, depart_to: departTo, return_date: returnDate, currency } = {}) => {
             if (!origin || !destination) return { error: 'origin_and_destination_required' };
-            const search = deps.searchFlights || require('../travel/flights').searchFlights;
+            const flights = require('../travel/flights');
+            const search = deps.searchFlights || flights.searchFlights;
+            const searchWindow = deps.searchFlightsWindow || flights.searchFlightsWindow;
+            // Any dated ask — one day, a range, a month — is served as a
+            // WINDOW so the traveler hears about the nearest fares the route
+            // has when the asked dates hold none (live 2026-09-13: "tomorrow"
+            // → "no fares", while the 15th had one). A round trip keeps the
+            // plain query: the feed prices the pair, not a departure window.
+            const win = returnDate ? null : flights.windowFor({ departDate, departFrom, departTo });
             let r;
             try {
-                r = await search({ origin, destination, departDate, returnDate, currency: currency || 'usd' });
+                r = win
+                    ? await searchWindow({ origin, destination, from: win.from, to: win.to, currency: currency || 'usd' })
+                    : await search({ origin, destination, departDate, returnDate, currency: currency || 'usd' });
             } catch (err) {
                 return { error: `flight_search_failed: ${err.message}` };
             }
             // No data is an ANSWER ("I don't have fares for that route"), not a
             // licence to quote a remembered price.
-            if (!r || !r.offers?.length) return { offers: [], note: 'no fares returned — do not state any price' };
+            if (!r || (!r.offers?.length && !r.nearest?.length)) {
+                return { offers: [], asked: win || null, note: 'no fares returned — do not state any price' };
+            }
+            if (!r.offers.length && r.nearest?.length) {
+                // The asked dates have nothing; the route has dated fares near
+                // them. Say the first plainly, then offer the second AS
+                // alternatives — never as if they were what was asked.
+                r.asked = win;
+                r.offers = r.nearest;
+                r.nearestOnly = true;
+                delete r.nearest;
+            } else {
+                r.asked = win || null;
+                delete r.nearest;
+            }
             // Ready-made per-fare label (founder 2026-09-07: answers must always
             // carry airline + date + price, not just the route): the model
             // reliably echoes a prepared label where it may drop raw fields.
@@ -481,7 +507,10 @@ function makeExecutors(ctx = {}, deps = {}) {
             // flight, which also shows the routing this feed omits. Never the
             // airline's homepage: we hold no such URL and would be guessing.
             const anyLink = r.offers.some(o => o.bookUrl);
-            r.note = 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.'
+            r.note = (r.nearestOnly
+                    ? `NONE of these fall on the asked dates (${r.asked.from}${r.asked.to !== r.asked.from ? ' to ' + r.asked.to : ''}) — say plainly that you have no fares for those dates, then offer these as the NEAREST dated fares this route has. `
+                    : '')
+                + 'For EVERY fare you mention, state its departure date (and time), airline and price — the label field has them ready.'
                 + (anyLink
                     ? ' Write each airline name as a markdown link to THAT fare\'s bookUrl, exactly as given: [Wizz Air](<bookUrl>). '
                       + 'Copy the URL character for character and never build, shorten or invent one — a fare with no bookUrl is written as plain text.'

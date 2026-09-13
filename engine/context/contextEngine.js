@@ -187,8 +187,36 @@ function scheduleToPeriods(openingHours) {
     return periods.length ? { periods } : null;
 }
 
+/** The traveler's date, spelled out for the narrator, with the relative
+ *  words it will meet already resolved. Live 2026-09-13: "tickets to Moscow
+ *  this week" and "tomorrow" both came back "no fares" while "15 September"
+ *  found one — the prompt never said what day it was, so the model guessed
+ *  the dates it asked the fare API for. A date the model resolves from THIS
+ *  line is a date; one it resolves from memory is a guess.
+ *
+ *  Weeks: "this week" runs from today to the coming Sunday (a full seven days
+ *  when today IS Sunday); "next week" is the Monday–Sunday after that. */
+function describeDate(tz) {
+    const iso = String(tz?.localISO || '');
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso)) return null;
+    const today = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+    const add = (d, n) => { const x = new Date(d.getTime()); x.setUTCDate(x.getUTCDate() + n); return x; };
+    const ymd = (d) => d.toISOString().slice(0, 10);
+    const dow = Number.isFinite(tz.dayOfWeek) ? tz.dayOfWeek : today.getUTCDay();
+    const toSunday = (7 - dow) % 7 || 7;
+    const thisWeekEnd = add(today, toSunday);
+    const nextWeekStart = add(thisWeekEnd, 1);
+    const nextWeekEnd = add(thisWeekEnd, 7);
+    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dow];
+    const where = tz.timezone ? ` (${tz.timezone})` : (tz.source === 'utc' ? ' (UTC — the traveler\'s zone is unknown)' : ' (estimated from location)');
+    return `${dayName} ${ymd(today)}, ${iso.slice(11, 16)} local time${where}. `
+        + `"today" = ${ymd(today)}, "tomorrow" = ${ymd(add(today, 1))}, "this week" = ${ymd(today)} to ${ymd(thisWeekEnd)}, `
+        + `"next week" = ${ymd(nextWeekStart)} to ${ymd(nextWeekEnd)}, "this weekend" = ${ymd(add(today, ((6 - dow) % 7)))} to ${ymd(add(today, ((6 - dow) % 7) + 1))}`;
+}
+
 module.exports = {
     buildTimeContext,
+    describeDate,
     isOpenAt,
     annotateOpenNow,
     shouldDropWhenClosed,

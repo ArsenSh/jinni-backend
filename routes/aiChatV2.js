@@ -14,7 +14,7 @@ const auth = require('../middleware/auth');
 const { usageTracker } = require('../middleware/usageTracker');
 const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
-const { buildTimeContext } = require('../engine/context/contextEngine');
+const { buildTimeContext, describeDate } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages, buildDestinationMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
@@ -1053,6 +1053,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 destination: namedCard ? { name: namedCard.name } : null,
                 timeNote: [tz.isLateNight ? `late night (${String(tz.hour).padStart(2, '0')}:00 local)` : null,
                     weatherNote(weather) || null].filter(Boolean).join('; ') || null,
+                dateNote: describeDate(tz),
                 canQuoteFares: flightsEnabled(),
                 // Fares fetched on an EARLIER turn, as DATA. Prose is not data:
                 // "At dec 7 where is the stop" was denied because the previous
@@ -1131,7 +1132,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             }
             meta.answerType = 'getting_around';
             stats.path = 'transport';
-            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
+            console.log(`[v2] getting-around answered in ${Date.now() - t0}ms src=${intent.infoAsk === 'transport' ? 'llm' : 'regex'} flights=${flightsEnabled() ? `on(${toolCalls} call${toolCalls === 1 ? '' : 's'}${_laneFlights ? ` ${JSON.stringify(_laneFlights.args)} → ${_laneFlights.result?.offers?.length ?? 0} fare(s)${_laneFlights.result?.nearestOnly ? ' nearest-only' : ''}` : ''})` : 'off'} region=${[region.city, region.country].filter(Boolean).join('/') || 'unknown'} facts=${gaFacts.length ? gaFacts.map(f => f.sourceName).join('+') : 'none'}`);
         } else if (settingsApplied.length || deferredStyle || budgetFiguresWanted
             // Refusal-ONLY + the user wants results ("the radius is now
             // greater, try again" — they changed it THEMSELVES) must not

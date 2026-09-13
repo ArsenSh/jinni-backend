@@ -422,7 +422,7 @@ function localFactsBlock(facts = [], maxChars = 4000) {
         }).join('\n\n') + '\n';
 }
 
-function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null, priorFlights = null }) {
+function buildGettingAroundMessages({ message, langName = 'English', cityLabel = null, timeNote = null, dateNote = null, history = [], canQuoteFares = false, localFacts = [], preferences = null, destination = null, priorFlights = null }) {
     return [
         {
             role: 'system',
@@ -445,6 +445,9 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                   ? `The destination is "${destination.name}" — already shown to the traveler as a card, attached again under this reply. Speak about reaching THAT place by name; NEVER say you cannot find or verify it.\n`
                   : '')
               + (timeNote ? `Right now: ${timeNote} — factor it in (heat, late hour) when it matters.\n` : '')
+              // The model has no clock. Without this line "tomorrow" and "this
+              // week" became guessed dates in the fare lookup (live 2026-09-13).
+              + (dateNote ? `DATE for the traveler: ${dateNote}. Resolve every relative date ("tomorrow", "this week", "next weekend", "in October") from THIS line, never from memory.\n` : '')
               + 'Answer the MODE they actually asked about — walking, taxi or ride-hailing, metro or bus, '
               + 'driving or renting, ferry, or flying between cities — and name what a local would name: '
               + 'the apps that genuinely operate there, the official taxi, the line or route that serves the trip. '
@@ -461,7 +464,9 @@ function buildGettingAroundMessages({ message, langName = 'English', cityLabel =
                   ? 'For flights between cities you have a find_flights tool: call it and quote ONLY the fares it '
                   + 'returns, with its booking link. For EACH fare always state its departure date (and time when '
                   + 'given), the airline name and the price — never mention a fare without its date. '
-                  + 'If it returns nothing, say you have no fares for that route.\n'
+                  + 'Pass one day as depart_date, a range ("this week", "next ten days") as depart_from + depart_to, a month as YYYY-MM. '
+                  + 'If it returns nothing, say you have no fares for that route. If it says the fares are the NEAREST to the asked dates, '
+                  + 'say first that the asked dates have none, then offer those fares with their dates.\n'
                   : '')
               + 'Do not name specific venues (none are verified on this turn). '
               + 'If knowing their destination would let you answer better, end by asking where they are heading.'
