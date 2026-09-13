@@ -1154,6 +1154,10 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 preferences: intent._preferences,
             });
             if (gaFacts.length) meta.localFacts = gaFacts.map(f => ({ source: f.sourceName, url: f.sourceUrl, topic: f.topic }));
+            // V3: a reply that lists two routes × four fares ran out of budget
+            // mid-sentence (live 2026-09-14, Mykonos via Athens). Cap the fares
+            // and give the caveats room.
+            gaMessages[0].content += 'Name at most FOUR fares in one reply — the best per day or per route — and say there are more if there are. Finish every sentence.\n';
             let toolCalls = 0;
             if (flightsEnabled()) {
                 // Flights configured → the model may fetch REAL fares. It
@@ -1163,9 +1167,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     messages: gaMessages,
                     tools: [FIND_FLIGHTS_TOOL],
                     execute: makeExecutors({ center, requestId: `v3f-${Date.now()}` }),
-                    // Four dated fares with short links and a sentence each fit
-                    // here; the old ~400-char URLs did not (live 2026-09-13).
-                    maxTokens: 420,
+                    // Four fares, their caveats and a closing sentence.
+                    maxTokens: 560,
                 }, { provider: deepseekProvider });
                 reply = loop.text || 'I couldn\'t verify that just now — ask me again in a moment.';
                 toolCalls = loop.toolCalls.length;
