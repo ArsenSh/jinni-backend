@@ -600,14 +600,23 @@ async function looksLikePmtiles(file) {
 
 /** A build the process died in the middle of leaves its temp file behind, and
  *  a planet copy can be 100 GB of it. Swept only when no job is running, so
- *  the file being written right now is never touched. */
-async function sweepStaleBuilds() {
-    if (!tilesDir() || (job && job.state === 'running')) return;
+ *  the file being written right now is never touched. `keep` is the one part
+ *  file a planet copy is about to RESUME — that one is worth every byte. */
+async function sweepStaleBuilds(keep = null) {
+    if (!tilesDir() || (job && job.state === 'running' && !keep)) return;
     const names = await fsp.readdir(tilesDir()).catch(() => []);
     for (const n of names) {
-        if (/^\.build-\d+\.pmtiles$/.test(n)) await fsp.unlink(path.join(tilesDir(), n)).catch(() => {});
+        if (keep && path.join(tilesDir(), n) === keep) continue;
+        if (/^\.build-\d+\.pmtiles$/.test(n) || /^\.planet-.+\.part$/.test(n)) {
+            await fsp.unlink(path.join(tilesDir(), n)).catch(() => {});
+        }
     }
 }
+
+/** The part file for ONE planet build, named after it so that a copy cut off
+ *  by a redeploy or a dropped connection resumes from the bytes already on
+ *  disk — and never resumes into a different day's build. */
+const planetPartPath = (planet) => path.join(tilesDir(), `.planet-${String(planet).split('/').pop().replace(/\.pmtiles$/, '')}.part`);
 
 /** Make a child the kernel's FIRST choice when memory runs out.
  *
@@ -871,11 +880,12 @@ function startPlanetBuild() {
     const say = (line) => job.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
 
     (async () => {
-        const tmp = path.join(tilesDir(), `.build-${Date.now()}.pmtiles`);
+        let tmp = null;
         let ticker = null;
         try {
-            await sweepStaleBuilds();
             const planet = await resolvePlanet(say);
+            tmp = planetPartPath(planet);
+            await sweepStaleBuilds(tmp);
             const total = await planetSize(planet);
             const freeBytes = (await diskInfo()).freeBytes;
             say(`the whole planet is ${gb(total)}; server has ${gb(freeBytes)} disk free`);
@@ -895,20 +905,42 @@ function startPlanetBuild() {
                 const mark = Math.floor(job.percent / 10);
                 if (mark > lastMark) { lastMark = mark; say(`${gb(size)} of ${gb(total)} (${job.percent}%)`); }
             }, 2000);
-            // --retry rides out a dropped connection and -C - resumes the same
-            // file rather than starting 100 GB over; --speed-limit/-time gives
-            // up on a transfer stalled below 1 kB/s for a minute instead of
-            // holding the job open forever.
-            const res = await run('curl', ['-fsSL', '--retry', '5', '--retry-all-errors', '--retry-delay', '15',
-                '--speed-limit', '1000', '--speed-time', '60', '-C', '-', '-o', tmp, planet], { onLine: say });
+            // The retries are OURS, not curl's. Live 2026-09-13: curl --retry
+            // threw 83 GB away on an HTTP/2 stream error — on retry it
+            // truncates the output back to where THAT invocation began, which
+            // is zero — and Cloudflare cut the stream again at 30 GB. So each
+            // attempt is a fresh curl with -C -, which resumes from the bytes
+            // already on disk; HTTP/1.1 sidesteps the h2 INTERNAL_ERROR that
+            // large transfers through Cloudflare keep hitting; --speed-limit/
+            // -time gives up on a transfer stalled below 1 kB/s for a minute
+            // rather than holding the job open forever.
+            const ATTEMPTS = 12;
+            let ok = false, lastOut = '';
+            for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+                const have = (await fsp.stat(tmp).catch(() => null))?.size || 0;
+                if (total && have >= total) { ok = true; break; }
+                if (attempt > 1) {
+                    say(`connection dropped at ${gb(have)} — resuming from there (attempt ${attempt} of ${ATTEMPTS})`);
+                    await new Promise(r => setTimeout(r, 15000));
+                } else if (have > 0) {
+                    say(`resuming an earlier copy from ${gb(have)}`);
+                }
+                const res = await run('curl', ['-fsSL', '--http1.1', '--speed-limit', '1000', '--speed-time', '60',
+                    '-C', '-', '-o', tmp, planet], { onLine: say });
+                if (res.ok) { ok = true; break; }
+                lastOut = res.output;
+            }
             clearInterval(ticker); ticker = null;
-            if (!res.ok) throw new Error(res.output.slice(-400) || `curl exited with ${res.code}`);
+            if (!ok) throw new Error(`the copy kept dropping — gave up after ${ATTEMPTS} attempts. ${lastOut.slice(-300)}`.trim());
 
             const st = await fsp.stat(tmp);
             if (total && st.size !== total) {
+                // Too big can only mean a corrupt resume; too small resumes next time.
+                if (st.size > total) await fsp.unlink(tmp).catch(() => {});
                 throw new Error(`the download is incomplete: ${gb(st.size)} arrived of the ${gb(total)} announced`);
             }
             if (!(await looksLikePmtiles(tmp))) {
+                await fsp.unlink(tmp).catch(() => {});
                 throw new Error('the downloaded file is not a PMTiles archive — the planet server answered with something else');
             }
             // Atomic swap — one syscall, so a reader never sees a partial file.
@@ -921,8 +953,9 @@ function startPlanetBuild() {
             say(`done — the served archive is now the whole planet, ${gb(st.size)}`);
             job.state = 'done'; job.percent = 100;
         } catch (err) {
+            // The part file is deliberately LEFT: it is the resume point for
+            // the next attempt, and never served — only a verified rename is.
             if (ticker) clearInterval(ticker);
-            await fsp.unlink(tmp).catch(() => {});
             job.state = 'failed';
             job.error = err.message;
             say(`failed: ${err.message}`);

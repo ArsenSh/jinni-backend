@@ -511,7 +511,7 @@ describe('the whole planet — a copy, not an extract', () => {
             expect(job.error).toMatch(/planet build/i);
             expect(fs.readFileSync(archive, 'utf8')).toBe('known good tiles');
             expect(JSON.parse(fs.readFileSync(path.join(dir, 'regions.json'), 'utf8')).countries[0].code).toBe('AM');
-            expect(fs.readdirSync(dir).filter(f => f.startsWith('.build-'))).toEqual([]);
+            expect(fs.readdirSync(dir).filter(f => f.startsWith('.build-') || f.startsWith('.planet-'))).toEqual([]);
         });
 
         test('a country build is refused while a planet copy is running, and vice versa', async () => {
@@ -525,11 +525,15 @@ describe('the whole planet — a copy, not an extract', () => {
             await expect(planet.estimatePlanet()).rejects.toThrow(/planet build/i);
         });
 
-        test('a leftover temp file from a build the process died in is swept — the estimate scratch file is not', async () => {
+        test('leftovers of dead builds are swept — the estimate scratch file and the part file being resumed are not', async () => {
             fs.writeFileSync(path.join(dir, '.build-1700000000000.pmtiles'), Buffer.alloc(64));
+            fs.writeFileSync(path.join(dir, '.planet-20260901.part'), Buffer.alloc(64));
+            fs.writeFileSync(path.join(dir, '.planet-20260912.part'), Buffer.alloc(64));
             fs.writeFileSync(path.join(dir, '.estimate.pmtiles'), Buffer.alloc(64));
-            await planet.sweepStaleBuilds();
+            await planet.sweepStaleBuilds(path.join(dir, '.planet-20260912.part'));
             expect(fs.existsSync(path.join(dir, '.build-1700000000000.pmtiles'))).toBe(false);
+            expect(fs.existsSync(path.join(dir, '.planet-20260901.part'))).toBe(false);
+            expect(fs.existsSync(path.join(dir, '.planet-20260912.part'))).toBe(true);
             expect(fs.existsSync(path.join(dir, '.estimate.pmtiles'))).toBe(true);
         });
 
