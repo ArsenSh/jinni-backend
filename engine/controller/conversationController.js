@@ -84,13 +84,33 @@ Rules that override everything else:
 - A message that answers Jinni's question belongs to the lane that asked it, whatever words it uses.
 - Words alone are never evidence: "stay 4 days" is a duration, not a hotel ask; "tickets" after fares is flights; "vice versa" after fares is flights the other way.
 - Never invent a place, a date or a detail that is in neither the message, the conversation, nor the state. When it is genuinely missing and needed, lane = clarify.
-- Prefer acting over asking: if the state or conversation already holds the detail, use it. A flight with no stated origin departs from where the traveler is now; never clarify the origin when the state names a location.`;
+- Prefer acting over asking: if the state or conversation already holds the detail, use it. A flight with no stated origin departs from where the traveler is now; never clarify the origin when the state names a location.
+- "thanks", "ok thanks", "great", "bye", "perfect" CLOSE the exchange: lane chitchat, answers_pending_question false — a thank-you is not a yes to Jinni's offer (live 2026-09-14: "ok thanks" dealt six more restaurants). Only a message that actually decides the offer answers it.
+- lane deck ONLY when there is something to search for: the message (or the follow-up it continues) names what to show. A deck with nothing to look for is never right.
+- OUTPUT COMPACTLY: omit every key whose value would be "" / false / 0 / [] / null — an absent key means that default. Always include language, is_travel, action_type, lane, and reply_language.`;
+
+// The v2 intent schema + rules are STATIC, so they live in the system prompt,
+// which claudeService marks cacheable: every call after the first reads ~3k
+// tokens from cache instead of re-processing them (live 2026-09-14: 4–10 s
+// per decision with the schema in the user turn). Sliced from the same
+// function v2 uses, so the two can never drift.
+const STATIC_SPEC = (() => {
+    const full = intentService.buildUserPrompt('', []);
+    const i = full.indexOf('Return ONLY this JSON object:');
+    return i >= 0 ? full.slice(i) : full;
+})();
+const STATIC_KEYS = CONTROLLER_KEYS.replace('ENGINE STATE — facts the engine holds. Use them to resolve follow-ups; never contradict them:\n{{STATE}}\n\n', '');
 
 function buildControllerMessages({ message, recentTurns = [], state = {}, dateNote = null } = {}) {
-    const base = intentService.buildUserPrompt(message, recentTurns);
+    const convo = Array.isArray(recentTurns) && recentTurns.length
+        ? recentTurns.map(t => `${t.sender === 'ai' ? 'Assistant' : 'User'}: ${String(t.text || '').replace(/\s+/g, ' ').slice(0, 300)}`).join('\n')
+        : '(no previous messages)';
     return {
-        system: SYSTEM_PROMPT,
-        user: base + '\n' + CONTROLLER_KEYS.replace('{{STATE}}', stateBlock(state, dateNote)),
+        system: `${SYSTEM_PROMPT}\n\n${STATIC_SPEC}\n${STATIC_KEYS}`,
+        user: `Recent conversation (oldest first, may be empty):\n${convo}\n\n`
+            + `Today's date (UTC): ${new Date().toISOString().slice(0, 10)}\n\n`
+            + `ENGINE STATE — facts the engine holds. Use them to resolve follow-ups; never contradict them:\n${stateBlock(state, dateNote)}\n\n`
+            + `Current user message: """${String(message || '').slice(0, 1000)}"""\n\nReturn the JSON object.`,
     };
 }
 
@@ -143,6 +163,14 @@ function shapeDecision(raw, message) {
         ? raw.clarify_question.trim().slice(0, 300) : null;
     if (lane === 'clarify' && !clarifyQuestion) lane = null;      // a clarify with no question is no decision
     const flights = lane === 'flights' ? shapeFlights(raw.flights) : null;
+    // A deck needs something to search for. The model once said "deck" for
+    // "ok thanks" with no query, no refill, no category — and six cards
+    // followed. Inconsistent with its own JSON → the exchange is closing.
+    if (lane === 'deck' && !intent.browse && !intent.refill && !intent.count && !intent.searchQuery
+        && intent.actionType === 'general' && !(intent.placeNames || []).length) {
+        lane = 'chitchat';
+        intent.isTravel = false;
+    }
     return {
         intent, lane,
         answersPendingQuestion: raw.answers_pending_question === true,
@@ -160,6 +188,11 @@ async function decide({ message, recentTurns = [], state = {}, dateNote = null, 
     const model = deps.model || CONTROLLER_MODEL;
     const complete = deps.complete || ((args) => claudeService.complete(args));
     const { system, user } = buildControllerMessages({ message, recentTurns, state, dateNote });
+    // The v2 classifier starts NOW, in parallel. If the controller times out
+    // or fails, its answer is already there — the traveler never pays for
+    // both in sequence (live 2026-09-14: a 12 s timeout, then the fallback).
+    const classify = deps.classify || intentService.classify;
+    const hedge = classify({ message, recentTurns, userLanguage, appCfg }).catch(() => null);
     let decision = null, error = null;
     try {
         const r = await Promise.race([
@@ -173,9 +206,8 @@ async function decide({ message, recentTurns = [], state = {}, dateNote = null, 
         error = err.message;
     }
     if (!decision) {
-        console.warn(`[v3] controller failed (${error}) — falling back to the v2 classifier`);
-        const classify = deps.classify || intentService.classify;
-        const intent = await classify({ message, recentTurns, userLanguage, appCfg });
+        console.warn(`[v3] controller failed (${error}) — using the v2 classifier's parallel answer`);
+        const intent = (await hedge) || await classify({ message, recentTurns, userLanguage, appCfg });
         return { intent, lane: null, answersPendingQuestion: false, topicChanged: false, flights: null, clarifyQuestion: null, source: 'fallback', model, ms: Date.now() - t0, error };
     }
     return { ...decision, source: 'controller', model, ms: Date.now() - t0, error: null };

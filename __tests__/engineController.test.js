@@ -27,16 +27,19 @@ describe('the prompt carries the engine state and the date', () => {
     test('state lines: lane, the question asked, the fares as data, the deck, preferences', () => {
         const { system, user } = buildControllerMessages({ message: 'I need to stay 4 days', recentTurns: [], state: STATE, dateNote: DATE });
         expect(system).toMatch(/conversation controller/);
+        // the STATIC schema and rules sit in the cached system prompt; the
+        // conversation, date, state and message are the only per-call text
+        expect(system).toMatch(/"is_travel":<true or false>/);
+        expect(system).toMatch(/"lane": one of flights \| transport/);
+        expect(system).toMatch(/"stay 4 days" is a duration/);
+        expect(user).not.toMatch(/"is_travel":<true or false>/);
+        expect(user).toContain('Current user message: """I need to stay 4 days"""');
         expect(user).toContain("Traveler's date: Monday 2026-09-14");
         expect(user).toContain('Lane that answered the previous turn: transport');
         expect(user).toMatch(/Jinni's previous reply .*return date as well\?/);
         expect(user).toContain('Fares last fetched (REAL data): Yerevan → Moscow, 2026-09-14..2026-09-20; 1 fare(s): 2026-09-15 07:00 · FlyOne Armenia · 99 USD · direct');
         expect(user).toContain('Cards last shown, in order: 1. Diva; 2. Illusion');
         expect(user).toContain('Saved preferences: style=luxury · interests=nightlife');
-        // and still the whole v2 intent schema, so the lanes get what they expect
-        expect(user).toMatch(/"is_travel":<true or false>/);
-        expect(user).toMatch(/"lane": one of flights \| transport/);
-        expect(user).toMatch(/"stay 4 days" is a duration/);
     });
     test('an empty state says so instead of inventing lines', () => {
         expect(stateBlock({}, null)).toBe('(nothing yet — first turn)');
@@ -66,6 +69,21 @@ describe('shapeDecision — the deterministic brake on the model\'s JSON', () =>
         expect(shapeDecision({ ...GOOD, reply_language: 'ru' }, 'yes').intent.language).toBe('en');
         expect(shapeDecision({ ...GOOD, reply_language: 'ru' }, 'да').intent.language).toBe('ru');
     });
+    test('"deck" with nothing to search for is a closing, not a deck (live 2026-09-14: "ok thanks" dealt six cards)', () => {
+        const thanks = { ...GOOD, lane: 'deck', answers_pending_question: true, info_ask: '', place_search_query: '', browse: false, refill: false, count: 0, action_type: 'general', flights: null };
+        const d = shapeDecision(thanks, 'ok thanks');
+        expect(d.lane).toBe('chitchat');
+        expect(d.intent.isTravel).toBe(false);
+        // but a real deck ask with a query, a refill, a count or a category stays a deck
+        expect(shapeDecision({ ...thanks, place_search_query: 'rooftop bars' }, 'rooftop bars').lane).toBe('deck');
+        expect(shapeDecision({ ...thanks, refill: true }, 'other ones').lane).toBe('deck');
+        expect(shapeDecision({ ...thanks, action_type: 'restaurants' }, 'restaurants?').lane).toBe('deck');
+    });
+    test('the prompt names closings and asks for compact output', () => {
+        const { system } = buildControllerMessages({ message: 'ok thanks', state: STATE, dateNote: DATE });
+        expect(system).toMatch(/a thank-you is not a yes/);
+        expect(system).toMatch(/OUTPUT COMPACTLY/);
+    });
     test('an intent that fails validation is no decision at all', () => {
         expect(shapeDecision({ lane: 'flights' }, 'x')).toBeNull();
     });
@@ -73,22 +91,27 @@ describe('shapeDecision — the deterministic brake on the model\'s JSON', () =>
 
 describe('decide — fail-open to the v2 classifier', () => {
     test('a working model gives a controller decision', async () => {
+        let hedged = 0;
         const d = await decide({ message: 'I need to stay 4 days', state: STATE, dateNote: DATE }, {
             complete: async () => ({ text: '```json\n' + JSON.stringify(GOOD) + '\n```' }), model: 'test-model',
+            classify: async () => { hedged++; return { source: 'llm', isTravel: true }; },
         });
+        expect(hedged).toBe(1);   // the hedge ran in parallel, and was simply not needed
         expect(d.source).toBe('controller');
         expect(d.lane).toBe('flights');
         expect(d.model).toBe('test-model');
         expect(d.error).toBeNull();
     });
-    test('an API error, a timeout, or junk JSON falls back — v3 degrades to v2, never worse', async () => {
-        const classify = async () => ({ source: 'llm', isTravel: false, actionType: 'general', placeNames: [], language: 'en' });
+    test('an API error, a timeout, or junk JSON falls back to the PARALLEL v2 answer — v3 degrades to v2, never worse', async () => {
+        let calls = 0;
+        const classify = async () => { calls++; return { source: 'llm', isTravel: false, actionType: 'general', placeNames: [], language: 'en' }; };
         const dead = await decide({ message: 'hi' }, { complete: async () => { throw new Error('boom'); }, classify });
         expect(dead.source).toBe('fallback'); expect(dead.lane).toBeNull(); expect(dead.error).toMatch(/boom/); expect(dead.intent.isTravel).toBe(false);
         const junk = await decide({ message: 'hi' }, { complete: async () => ({ text: 'not json' }), classify });
         expect(junk.source).toBe('fallback'); expect(junk.error).toMatch(/unusable/);
         const slow = await decide({ message: 'hi' }, { complete: () => new Promise(r => setTimeout(() => r({ text: '{}' }), 200)), timeoutMs: 20, classify });
         expect(slow.source).toBe('fallback'); expect(slow.error).toMatch(/timeout/);
+        expect(calls).toBe(3);   // one hedge per decision, never a second sequential call
     });
 });
 
