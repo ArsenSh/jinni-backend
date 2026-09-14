@@ -27,30 +27,76 @@ function _sseDeltas(buffered) {
     return { deltas, done, rest };
 }
 
-async function streamText({ messages, model = null, maxTokens = 600, temperature = 0.5, onDelta = null }) {
-    const openai = require('../../../config/openai');
-    const response = await openai.chat.completions.create({
+// ── Timeouts (live 2026-09-14: a reply stream hung for 910 s with ZERO
+//    tokens while DeepSeek was degraded — the traveler saw "trouble
+//    connecting" after fifteen minutes). config/openai's axios client has
+//    no timeout at all, so every limit lives here. A stall is a typed error
+//    (code DEEPSEEK_STALL, `emitted` = tokens already sent) so the narrator
+//    can fail over to another provider when nothing has reached the client.
+const FIRST_TOKEN_MS = Number(process.env.DEEPSEEK_FIRST_TOKEN_MS) || 25000;
+const IDLE_MS = Number(process.env.DEEPSEEK_IDLE_MS) || 20000;
+const HARD_MS = Number(process.env.DEEPSEEK_HARD_MS) || 120000;
+const COMPLETE_MS = Number(process.env.DEEPSEEK_COMPLETE_MS) || 60000;
+
+function stallError(why, emitted = 0) {
+    const e = new Error(`deepseek stalled: ${why}`);
+    e.code = 'DEEPSEEK_STALL';
+    e.emitted = emitted;
+    return e;
+}
+
+function withTimeout(promise, ms, why) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(stallError(why)), ms); }),
+    ]).finally(() => clearTimeout(timer));
+}
+
+async function streamText({ messages, model = null, maxTokens = 600, temperature = 0.5, onDelta = null, timeouts = {} } = {}, deps = {}) {
+    const openai = deps.openai || require('../../../config/openai');
+    const firstMs = timeouts.firstTokenMs ?? FIRST_TOKEN_MS;
+    const idleMs = timeouts.idleMs ?? IDLE_MS;
+    const hardMs = timeouts.hardMs ?? HARD_MS;
+    const response = await withTimeout(openai.chat.completions.create({
         model: model || process.env.OPENAI_MODEL || 'deepseek-chat',
         messages,
         temperature,
         max_tokens: maxTokens,
         stream: true,
-    });
+    }), firstMs, `no response in ${firstMs} ms`);
     let text = '';
     let buffer = '';
+    let emitted = 0;
     await new Promise((resolve, reject) => {
+        let idle = null, settled = false;
+        const finish = (fn, arg) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(idle); clearTimeout(hard);
+            fn(arg);
+        };
+        const fail = (why) => {
+            try { response.data.destroy?.(); } catch { /* already gone */ }
+            finish(reject, stallError(`${why} after ${emitted} token(s)`, emitted));
+        };
+        const hard = setTimeout(() => fail(`stream exceeded ${hardMs} ms`), hardMs);
+        const arm = (ms, why) => { clearTimeout(idle); idle = setTimeout(() => fail(why), ms); };
+        arm(firstMs, `no first token in ${firstMs} ms`);
         response.data.on('data', (chunk) => {
             buffer += chunk.toString();
             const { deltas, done, rest } = _sseDeltas(buffer);
             buffer = rest;
             for (const d of deltas) {
                 text += d;
+                emitted++;
                 if (onDelta) { try { onDelta(d); } catch { /* consumer errors never kill the stream */ } }
             }
-            if (done) resolve();
+            arm(idleMs, `no token for ${idleMs} ms`);
+            if (done) finish(resolve);
         });
-        response.data.on('end', resolve);
-        response.data.on('error', reject);
+        response.data.on('end', () => finish(resolve));
+        response.data.on('error', (err) => finish(reject, err));
     });
     const inChars = messages.reduce((s, m) => s + String(m.content || '').length, 0);
     return {
@@ -61,14 +107,15 @@ async function streamText({ messages, model = null, maxTokens = 600, temperature
     };
 }
 
-async function complete({ messages, model = null, maxTokens = 600, temperature = 0.5 }) {
-    const openai = require('../../../config/openai');
-    const res = await openai.chat.completions.create({
+async function complete({ messages, model = null, maxTokens = 600, temperature = 0.5, timeouts = {} } = {}, deps = {}) {
+    const openai = deps.openai || require('../../../config/openai');
+    const completeMs = timeouts.completeMs ?? COMPLETE_MS;
+    const res = await withTimeout(openai.chat.completions.create({
         model: model || process.env.OPENAI_MODEL || 'deepseek-chat',
         messages,
         temperature,
         max_tokens: maxTokens,
-    });
+    }), completeMs, `no completion in ${completeMs} ms`);
     const text = res?.choices?.[0]?.message?.content || '';
     return {
         text,
@@ -101,7 +148,9 @@ async function completeWithTools({ messages, tools = undefined, model = null, ma
     const res = await axios.post(
         `${process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1'}/chat/completions`,
         body,
-        { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
+        // The tool loop's turns share the completion cap: an axios call with no
+        // timeout is exactly how the 910 s hang happened elsewhere in this file.
+        { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, timeout: COMPLETE_MS }
     );
     return {
         message: res.data?.choices?.[0]?.message || {},
@@ -114,4 +163,4 @@ async function completeWithTools({ messages, tools = undefined, model = null, ma
     };
 }
 
-module.exports = { complete, streamText, completeWithTools, _sseDeltas };
+module.exports = { complete, streamText, completeWithTools, _sseDeltas, stallError, withTimeout };

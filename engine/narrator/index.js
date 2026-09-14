@@ -26,19 +26,43 @@ async function stream({ messages, tools = null, model = 'deepseek', modelName = 
         throw new Error('[engine/narrator] tool-use loop not implemented yet — see engine/ENGINE.md build state');
     }
     const provider = deps.provider || PROVIDERS[String(model).toLowerCase()] || deepseek;
-    // TRUE streaming when requested and the provider can (tokens reach onToken
-    // as the model produces them). Falls back to complete+pseudo-stream.
-    if (realStream && typeof provider.streamText === 'function') {
-        return provider.streamText({ messages, maxTokens, temperature, onDelta: onToken, webSearch, modelName });
-    }
-    const result = await provider.complete({ messages, maxTokens, temperature, webSearch, modelName });
-    if (typeof onToken === 'function' && result.text) {
-        // Pseudo-stream: the reply arrives whole, the client still sees it flow.
-        for (const chunk of result.text.match(/.{1,60}(\s|$)/gs) || [result.text]) {
-            onToken(chunk);
+    // Tokens already sent to the client are counted: a failure AFTER them
+    // cannot be retried cleanly (the traveler would see two half-replies), a
+    // failure BEFORE them can be handed to another provider unseen.
+    let emitted = 0;
+    const counted = typeof onToken === 'function' ? (c) => { emitted++; onToken(c); } : null;
+    const run = async (p) => {
+        // TRUE streaming when requested and the provider can (tokens reach
+        // onToken as the model produces them). Falls back to complete+pseudo-stream.
+        if (realStream && typeof p.streamText === 'function') {
+            return p.streamText({ messages, maxTokens, temperature, onDelta: counted, webSearch, modelName });
         }
+        const result = await p.complete({ messages, maxTokens, temperature, webSearch, modelName });
+        if (counted && result.text) {
+            // Pseudo-stream: the reply arrives whole, the client still sees it flow.
+            for (const chunk of result.text.match(/.{1,60}(\s|$)/gs) || [result.text]) counted(chunk);
+        }
+        return result;
+    };
+    try {
+        return await run(provider);
+    } catch (err) {
+        // FAILOVER (live 2026-09-14): DeepSeek degraded — a stream hung 910 s
+        // with zero tokens, then the classifier timed out three times. When
+        // the primary is DeepSeek and NOTHING has reached the client yet, the
+        // reply is written by Claude instead; the traveler never knows.
+        // Never after a token has gone out, and never when Claude is not
+        // configured — then the error is the honest outcome.
+        const primaryIsDeepseek = provider === deepseek || provider === PROVIDERS.deepseek;
+        const failover = deps.failover !== undefined
+            ? deps.failover
+            : ((primaryIsDeepseek && process.env.ANTHROPIC_API_KEY) ? PROVIDERS.claude : null);
+        if (!failover || emitted > 0 || failover === provider) throw err;
+        console.warn(`[narrator] ${err.code || err.name || 'error'} before any token (${String(err.message).slice(0, 120)}) — failing over to claude`);
+        const result = await run(failover);
+        result.failedOver = 'claude';
+        return result;
     }
-    return result;
 }
 
 async function embed(texts) {

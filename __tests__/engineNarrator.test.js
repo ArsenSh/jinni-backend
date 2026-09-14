@@ -387,3 +387,70 @@ describe('saved preferences answer the money question', () => {
         expect(block).not.toMatch(/IS the money answer/);
     });
 });
+
+
+describe('provider failover — DeepSeek degraded (live 2026-09-14: a 910 s stream with zero tokens)', () => {
+    const claudeFake = { complete: async () => ({ text: 'from claude', usage: { in: 1, out: 1 } }), streamText: async ({ onDelta }) => { onDelta?.('from '); onDelta?.('claude'); return { text: 'from claude', usage: { in: 1, out: 1 } }; } };
+    const stall = () => { const e = new Error('deepseek stalled: no first token'); e.code = 'DEEPSEEK_STALL'; return e; };
+
+    test('a failure BEFORE any token hands the reply to the failover provider, unseen', async () => {
+        const tokens = [];
+        const dead = { complete: async () => { throw stall(); }, streamText: async () => { throw stall(); } };
+        const r = await narrator.stream({ messages: [{ role: 'user', content: 'hi' }], onToken: (c) => tokens.push(c), realStream: true }, { provider: dead, failover: claudeFake });
+        expect(r.text).toBe('from claude');
+        expect(r.failedOver).toBe('claude');
+        expect(tokens.join('')).toBe('from claude');
+    });
+
+    test('a failure AFTER tokens went out is NOT retried — two half-replies would be worse', async () => {
+        const half = { streamText: async ({ onDelta }) => { onDelta('Here are'); throw stall(); }, complete: async () => ({ text: 'x' }) };
+        await expect(narrator.stream({ messages: [], onToken: () => {}, realStream: true }, { provider: half, failover: claudeFake })).rejects.toThrow(/stalled/);
+    });
+
+    test('with no failover configured the error is the honest outcome', async () => {
+        const dead = { complete: async () => { throw stall(); } };
+        await expect(narrator.stream({ messages: [] }, { provider: dead, failover: null })).rejects.toThrow(/stalled/);
+    });
+
+    test('a healthy primary never touches the failover', async () => {
+        let touched = 0;
+        const ok = { complete: async () => ({ text: 'fine', usage: {} }) };
+        const spy = { complete: async () => { touched++; return { text: 'no' }; } };
+        const r = await narrator.stream({ messages: [] }, { provider: ok, failover: spy });
+        expect(r.text).toBe('fine'); expect(r.failedOver).toBeUndefined(); expect(touched).toBe(0);
+    });
+});
+
+describe('DeepSeek provider timeouts — nothing waits forever any more', () => {
+    const { EventEmitter } = require('events');
+    const deepseek = require('../engine/narrator/providers/deepseek');
+    const sse = (s) => `data: ${JSON.stringify({ choices: [{ delta: { content: s } }] })}\n`;
+    const fakeOpenai = (script) => ({ chat: { completions: { create: async () => { const data = new EventEmitter(); data.destroy = () => { data.destroyed = true; }; setTimeout(() => script(data), 5); return { data }; } } } });
+
+    test('a stream that never sends a first token is cut off, typed, and the socket destroyed', async () => {
+        let held;
+        const openai = fakeOpenai((d) => { held = d; });
+        const p = deepseek.streamText({ messages: [], timeouts: { firstTokenMs: 40, idleMs: 40, hardMs: 500 } }, { openai });
+        await expect(p).rejects.toMatchObject({ code: 'DEEPSEEK_STALL', emitted: 0 });
+        expect(held.destroyed).toBe(true);
+    });
+
+    test('a stream that goes quiet mid-reply is cut off with the token count', async () => {
+        const openai = fakeOpenai((d) => { d.emit('data', Buffer.from(sse('Hel') + sse('lo'))); });
+        const got = [];
+        const p = deepseek.streamText({ messages: [], onDelta: (c) => got.push(c), timeouts: { firstTokenMs: 200, idleMs: 40, hardMs: 500 } }, { openai });
+        await expect(p).rejects.toMatchObject({ code: 'DEEPSEEK_STALL', emitted: 2 });
+        expect(got).toEqual(['Hel', 'lo']);
+    });
+
+    test('a normal stream still completes and is not cut', async () => {
+        const openai = fakeOpenai((d) => { d.emit('data', Buffer.from(sse('Hi') + 'data: [DONE]\n')); });
+        const r = await deepseek.streamText({ messages: [], timeouts: { firstTokenMs: 200, idleMs: 200, hardMs: 500 } }, { openai });
+        expect(r.text).toBe('Hi');
+    });
+
+    test('a one-shot completion that never answers is cut off too', async () => {
+        const openai = { chat: { completions: { create: () => new Promise(() => {}) } } };
+        await expect(deepseek.complete({ messages: [], timeouts: { completeMs: 40 } }, { openai })).rejects.toMatchObject({ code: 'DEEPSEEK_STALL' });
+    });
+});
