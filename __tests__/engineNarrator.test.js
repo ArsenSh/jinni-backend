@@ -412,6 +412,26 @@ describe('provider failover — DeepSeek degraded (live 2026-09-14: a 910 s stre
         await expect(narrator.stream({ messages: [] }, { provider: dead, failover: null })).rejects.toThrow(/stalled/);
     });
 
+    test('a stalled stream is retried ONCE on the same provider, one-shot, before any failover', async () => {
+        let streams = 0, oneShots = 0, touched = 0;
+        const flaky = {
+            streamText: async () => { streams++; throw stall(); },
+            complete: async () => { oneShots++; return { text: 'second try', usage: {} }; },
+        };
+        const tokens = [];
+        const r = await narrator.stream({ messages: [], onToken: (c) => tokens.push(c), realStream: true }, { provider: flaky, retryOnStall: true, failover: { complete: async () => { touched++; return { text: 'claude' }; } } });
+        expect(r.text).toBe('second try'); expect(r.retried).toBe(true);
+        expect(streams).toBe(1); expect(oneShots).toBe(1); expect(touched).toBe(0);
+        expect(tokens.join('')).toBe('second try');
+    });
+
+    test('by default there is NO Claude failover — DeepSeek only, the error is honest (founder 2026-09-15)', async () => {
+        const prev = process.env.NARRATOR_FAILOVER; delete process.env.NARRATOR_FAILOVER;
+        const dead = { complete: async () => { throw stall(); } };
+        await expect(narrator.stream({ messages: [] }, { provider: dead })).rejects.toThrow(/stalled/);
+        if (prev !== undefined) process.env.NARRATOR_FAILOVER = prev;
+    });
+
     test('a healthy primary never touches the failover', async () => {
         let touched = 0;
         const ok = { complete: async () => ({ text: 'fine', usage: {} }) };

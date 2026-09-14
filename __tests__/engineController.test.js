@@ -1,6 +1,6 @@
 // V3 conversation controller (V3 doc §12). Every assertion runs the shipped
 // code; the model is injected, never called.
-const { decide, buildControllerMessages, shapeDecision, shapeFlights, stateBlock, LANES } = require('../engine/controller/conversationController');
+const { decide, buildControllerMessages, shapeDecision, shapeFlights, stateBlock, LANES, CONTROLLER_PROVIDER } = require('../engine/controller/conversationController');
 const { resolveLaneFlags } = require('../engine/controller/laneOverride');
 
 const STATE = {
@@ -90,6 +90,19 @@ describe('shapeDecision — the deterministic brake on the model\'s JSON', () =>
 });
 
 describe('decide — fail-open to the v2 classifier', () => {
+    test('DeepSeek decides by default; Claude only when CONTROLLER_PROVIDER=claude (founder 2026-09-15)', () => {
+        expect(CONTROLLER_PROVIDER).toBe('deepseek');
+    });
+    test('the DeepSeek path sends the system prompt as a leading system turn', async () => {
+        let seen = null;
+        const fakeDeepseek = require('../engine/narrator/providers/deepseek');
+        const spy = jest.spyOn(fakeDeepseek, 'complete').mockImplementation(async (args) => { seen = args; return { text: JSON.stringify(GOOD) }; });
+        const d = await decide({ message: 'I need to stay 4 days', state: STATE, dateNote: DATE }, { provider: 'deepseek', classify: async () => ({ source: 'llm', isTravel: true }) });
+        spy.mockRestore();
+        expect(d.source).toBe('controller'); expect(d.provider).toBe('deepseek');
+        expect(seen.messages[0].role).toBe('system'); expect(seen.messages[0].content).toMatch(/conversation controller/);
+        expect(seen.messages[1].role).toBe('user'); expect(seen.temperature).toBe(0);
+    });
     test('a working model gives a controller decision', async () => {
         let hedged = 0;
         const d = await decide({ message: 'I need to stay 4 days', state: STATE, dateNote: DATE }, {

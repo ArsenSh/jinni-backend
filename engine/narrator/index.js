@@ -54,10 +54,26 @@ async function stream({ messages, tools = null, model = 'deepseek', modelName = 
         // Never after a token has gone out, and never when Claude is not
         // configured — then the error is the honest outcome.
         const primaryIsDeepseek = provider === deepseek || provider === PROVIDERS.deepseek;
+        if (emitted > 0) throw err;
+        // First: one more try with the SAME provider, one-shot instead of a
+        // stream — a stalled stream is usually a bad connection, not a bad
+        // model (founder 2026-09-15: DeepSeek by default, no Anthropic).
+        const retry = deps.retryOnStall !== undefined ? deps.retryOnStall : primaryIsDeepseek;
+        if (retry && err.code === 'DEEPSEEK_STALL' && typeof provider.complete === 'function') {
+            console.warn(`[narrator] ${err.message.slice(0, 100)} — retrying once, one-shot`);
+            try {
+                const result = await provider.complete({ messages, maxTokens, temperature, webSearch, modelName });
+                if (counted && result.text) for (const chunk of result.text.match(/.{1,60}(\s|$)/gs) || [result.text]) counted(chunk);
+                result.retried = true;
+                return result;
+            } catch (again) { err = again; }
+        }
+        // Then, ONLY when opted in (NARRATOR_FAILOVER=claude in the env, with
+        // a funded key): the reply is written by Claude instead, unseen.
         const failover = deps.failover !== undefined
             ? deps.failover
-            : ((primaryIsDeepseek && process.env.ANTHROPIC_API_KEY) ? PROVIDERS.claude : null);
-        if (!failover || emitted > 0 || failover === provider) throw err;
+            : ((primaryIsDeepseek && process.env.NARRATOR_FAILOVER === 'claude' && process.env.ANTHROPIC_API_KEY) ? PROVIDERS.claude : null);
+        if (!failover || failover === provider) throw err;
         console.warn(`[narrator] ${err.code || err.name || 'error'} before any token (${String(err.message).slice(0, 120)}) — failing over to claude`);
         const result = await run(failover);
         result.failedOver = 'claude';

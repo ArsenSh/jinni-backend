@@ -16,10 +16,15 @@
 // v2 classifier with no lane, so v3 degrades to exactly v2, never worse.
 
 const claudeService = require('../../services/claudeService');
+const deepseekProvider = require('../narrator/providers/deepseek');
 const intentService = require('../../services/intentService');
 
 const LANES = new Set(['flights', 'transport', 'place_question', 'deck', 'itinerary', 'settings', 'currency', 'destinations', 'chitchat', 'clarify']);
-const CONTROLLER_MODEL = process.env.CONTROLLER_MODEL || 'claude-sonnet-5';
+// Founder 2026-09-15: "make all DeepSeek work, no Anthropic one by default".
+// DeepSeek decides unless CONTROLLER_PROVIDER=claude is set in the env; the
+// model name follows the provider (CONTROLLER_MODEL overrides either).
+const CONTROLLER_PROVIDER = (process.env.CONTROLLER_PROVIDER || 'deepseek').toLowerCase() === 'claude' ? 'claude' : 'deepseek';
+const CONTROLLER_MODEL = process.env.CONTROLLER_MODEL || (CONTROLLER_PROVIDER === 'claude' ? 'claude-sonnet-5' : (process.env.OPENAI_MODEL || 'deepseek-chat'));
 const TIMEOUT_MS = Number(process.env.CONTROLLER_TIMEOUT_MS) || 12000;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_RE = /^\d{4}-\d{2}$/;
@@ -186,7 +191,14 @@ function shapeDecision(raw, message) {
 async function decide({ message, recentTurns = [], state = {}, dateNote = null, userLanguage = 'en', appCfg = {} } = {}, deps = {}) {
     const t0 = Date.now();
     const model = deps.model || CONTROLLER_MODEL;
-    const complete = deps.complete || ((args) => claudeService.complete(args));
+    const provider = deps.provider || CONTROLLER_PROVIDER;
+    // Both providers take the same {system, messages} shape: Claude natively,
+    // DeepSeek as an OpenAI-style messages array with a leading system turn.
+    const complete = deps.complete || (provider === 'claude'
+        ? ((args) => claudeService.complete(args))
+        : (({ system, messages, model: m, maxTokens }) => deepseekProvider.complete({
+            messages: [{ role: 'system', content: system }, ...messages], model: m, maxTokens, temperature: 0,
+        })));
     const { system, user } = buildControllerMessages({ message, recentTurns, state, dateNote });
     // The v2 classifier starts NOW, in parallel. If the controller times out
     // or fails, its answer is already there — the traveler never pays for
@@ -208,9 +220,9 @@ async function decide({ message, recentTurns = [], state = {}, dateNote = null, 
     if (!decision) {
         console.warn(`[v3] controller failed (${error}) — using the v2 classifier's parallel answer`);
         const intent = (await hedge) || await classify({ message, recentTurns, userLanguage, appCfg });
-        return { intent, lane: null, answersPendingQuestion: false, topicChanged: false, flights: null, clarifyQuestion: null, source: 'fallback', model, ms: Date.now() - t0, error };
+        return { intent, lane: null, answersPendingQuestion: false, topicChanged: false, flights: null, clarifyQuestion: null, source: 'fallback', model, provider, ms: Date.now() - t0, error };
     }
-    return { ...decision, source: 'controller', model, ms: Date.now() - t0, error: null };
+    return { ...decision, source: 'controller', model, provider, ms: Date.now() - t0, error: null };
 }
 
-module.exports = { decide, buildControllerMessages, shapeDecision, shapeFlights, stateBlock, extractJson, LANES, CONTROLLER_MODEL };
+module.exports = { decide, buildControllerMessages, shapeDecision, shapeFlights, stateBlock, extractJson, LANES, CONTROLLER_MODEL, CONTROLLER_PROVIDER };
