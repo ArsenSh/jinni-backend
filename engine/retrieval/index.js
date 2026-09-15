@@ -479,7 +479,30 @@ async function findPlaces(params = {}, deps = {}) {
             console.log(`[retrieval] season sink (final): ${off} off-season candidate(s) moved behind the rest`);
         }
     }
-    const places = ordered.slice(0, effectiveWanted);
+    // ── CONFIRMED-OPEN FIRST on a right-now ask (live 2026-09-15, 02:00):
+    //    the known-closed rows were dropped, and the deck was then filled
+    //    from places with NO hours at all — a daytime market, a spa, a
+    //    coffee shop — because unknown survives by the trust rule. So
+    //    "what's open right now" carded six places and could confirm one.
+    //    Unknown hours are still never dropped (the rule stands); they are
+    //    ORDERED behind every place the clock can vouch for, and the deck
+    //    SHRINKS to the confirmed ones when at least two exist. A deck of
+    //    "I can't confirm" is not an answer to "what is open". ──
+    let effectiveDeck = effectiveWanted;
+    if (enforceOpenNow && timeContext && shouldDropWhenClosed(category)) {
+        for (const c of ordered) if (c) c._hourChecked = true;
+        const open = ordered.filter(c => c && c._openNow === true);
+        const unknown = ordered.filter(c => !c || c._openNow !== true);
+        if (open.length && unknown.length) {
+            ordered = [...open, ...unknown];
+            if (open.length >= 2 && open.length < effectiveWanted) {
+                effectiveDeck = open.length;
+                provenance.openNowShrunk = effectiveWanted - open.length;
+            }
+            console.log(`[retrieval] open-now: ${open.length} confirmed open lead, ${unknown.length} with unknown hours behind${provenance.openNowShrunk ? `; deck shrunk to the ${open.length} confirmed` : ''}`);
+        }
+    }
+    const places = ordered.slice(0, effectiveDeck);
     // ── WHERE DID IT GO? (2026-09-03) ──
     // "Noah's Garden is in the pool and not in the deck" was unanswerable
     // three rounds running: the pool line says what ARRIVED, the summary says
@@ -492,7 +515,7 @@ async function findPlaces(params = {}, deps = {}) {
         if (provenance.openNowDropped) lost.push(`closed ${provenance.openNowDropped}`);
         if (provenance.outsideRadius) lost.push(`outside-radius ${provenance.outsideRadius}`);
         const cut = ordered.length - places.length;
-        if (cut > 0) lost.push(`cut ${cut} (deck ${effectiveWanted})`);
+        if (cut > 0) lost.push(`cut ${cut} (deck ${effectiveDeck})`);
         console.log(`[retrieval] ${provenance.candidateCount} candidate(s) → ${places.length} served`
             + `${lost.length ? ` — lost to ${lost.join(', ')}` : ''}`
             + `${places.length <= 8 ? ` | deck: ${places.map(p => `${p.name}(${p.source || '?'})`).join(' · ')}` : ''}`);

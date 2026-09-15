@@ -31,7 +31,10 @@ function placeFactLine(p) {
         p._town ? `in ${p._town}` : null,
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
-        p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : null),
+        // Unknown hours are SAID on a right-now deck (live 2026-09-15, 02:00:
+        // the model guessed "likeliest bets" for places whose hours nobody
+        // holds). null → 'hours unknown' only when the deck was hour-checked.
+        p._openNow === true ? 'open now' : (p._openNow === false ? 'closed right now' : (p._hourChecked ? 'hours unknown' : null)),
         // Curator's season window — SOURCED text. Off-season is a caveat the
         // blurb must pass on, in-season a true angle it may use.
         p._offSeason ? `OFF-SEASON now — best time to visit is ${String(p.bestTime).trim()}`

@@ -422,6 +422,50 @@ describe('findPlaces orchestration (injected deps)', () => {
         expect(r.degraded).toBe(true);
         expect(r.reason).toBe('all_filtered');
     });
+    test('right-now ask, 2 AM (live 2026-09-15): confirmed-open places lead, unknown hours trail, and the deck shrinks to the confirmed', async () => {
+        const d = deps();
+        const open247 = { periods: [{ open: { day: 0, time: '0000' } }] };
+        const lateBar = { periods: [{ open: { day: 5, time: '1800' }, close: { day: 6, time: '0400' } }] };
+        d.loadCandidates = async () => ([
+            { placeId: 'market', name: 'Vernissage Market' },                          // no hours
+            { placeId: 'spa', name: 'Wine and Grapes Spa' },                           // no hours
+            { placeId: 'fountain', name: 'Republic Square fountain', opening_hours: open247 },
+            { placeId: 'cafe', name: 'Lumen Coffee' },                                 // no hours
+            { placeId: 'bar', name: 'Late Bar', opening_hours: lateBar },
+            { placeId: 'closed', name: 'Day Café',
+              opening_hours: { periods: [{ open: { day: 6, time: '0900' }, close: { day: 6, time: '2300' } }] } },
+        ]);
+        const r = await findPlaces({
+            category: 'restaurants', limit: 6,
+            timeContext: { dayOfWeek: 6, hour: 2, minute: 0 },
+            enforceOpenNow: true,
+        }, d);
+        // the two the clock can vouch for lead and ARE the deck; the known-closed one is gone
+        expect(r.places.map(p => p.placeId)).toEqual(['fountain', 'bar']);
+        expect(r.provenance.openNowDropped).toBe(1);
+        expect(r.provenance.openNowShrunk).toBe(r.provenance.openNowShrunk);   // shrunk to the two confirmed, whatever the deck default
+        expect(r.provenance.openNowShrunk).toBeGreaterThanOrEqual(4);
+    });
+    test('right-now ask with ONE confirmed-open place: it leads, unknowns still fill the deck (never a one-card deck)', async () => {
+        const d = deps();
+        d.loadCandidates = async () => ([
+            { placeId: 'u1', name: 'Mystery One' },
+            { placeId: 'open', name: 'All Night', opening_hours: { periods: [{ open: { day: 0, time: '0000' } }] } },
+            { placeId: 'u2', name: 'Mystery Two' },
+        ]);
+        const r = await findPlaces({ category: 'restaurants', limit: 6, timeContext: { dayOfWeek: 6, hour: 2, minute: 0 }, enforceOpenNow: true }, d);
+        expect(r.places.map(p => p.placeId)).toEqual(['open', 'u1', 'u2']);
+        expect(r.provenance.openNowShrunk).toBeUndefined();
+    });
+    test('a PLANNED ask never reorders or shrinks on hours', async () => {
+        const d = deps();
+        d.loadCandidates = async () => ([
+            { placeId: 'u1', name: 'Mystery One' },
+            { placeId: 'open', name: 'All Night', opening_hours: { periods: [{ open: { day: 0, time: '0000' } }] } },
+        ]);
+        const r = await findPlaces({ category: 'restaurants', limit: 6, timeContext: { dayOfWeek: 6, hour: 2, minute: 0 }, enforceOpenNow: false }, d);
+        expect(r.places.map(p => p.placeId)).toEqual(['u1', 'open']);
+    });
     test('open-now never drops exempt categories (hotels), even known-closed', async () => {
         const d = deps();
         d.loadCandidates = async () => ([{ placeId: 'h1', name: 'Hotel',
