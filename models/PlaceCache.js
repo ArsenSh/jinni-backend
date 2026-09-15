@@ -25,6 +25,10 @@ const PlaceCacheSchema = new mongoose.Schema({
         weekday_text: [String],
         periods: [mongoose.Schema.Types.Mixed]
     },
+    // Google's OPERATIONAL / CLOSED_TEMPORARILY / CLOSED_PERMANENTLY, written
+    // whenever details are fetched (2026-09-16). A closed business is dropped
+    // from every pool; null = never checked, kept.
+    business_status: { type: String, default: null, index: true },
 
     photos: [{
         photoReference: String,

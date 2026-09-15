@@ -801,3 +801,14 @@ describe('out-of-town ring EXECUTES, not just reads (live 2026-09-06: "beforeR i
         expect(r.places.length).toBeGreaterThan(0);
     });
 });
+
+describe('right-now asks reach the paid search as open-now (2026-09-16)', () => {
+    test('enforceOpenNow travels into loadCandidates params', async () => {
+        let seen = null;
+        const d = { loadCandidates: async (params) => { seen = params; return [{ placeId: 'p1', name: 'A' }]; }, embedder: null };
+        await findPlaces({ category: 'restaurants', timeContext: { dayOfWeek: 6, hour: 2, minute: 0 }, enforceOpenNow: true }, d);
+        expect(seen.enforceOpenNow).toBe(true);
+        await findPlaces({ category: 'restaurants' }, d);
+        expect(seen.enforceOpenNow).toBe(false);
+    });
+});

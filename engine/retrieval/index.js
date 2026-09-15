@@ -103,7 +103,7 @@ async function findPlaces(params = {}, deps = {}) {
         // ── Candidates (the only source of places — real by construction) ──
         let candidates;
         try {
-            candidates = (await loadCandidates(params)) || [];
+            candidates = (await loadCandidates({ ...params, enforceOpenNow })) || [];
         } catch (err) {
             return { places: [], degraded: true, reason: `load_failed: ${err.message}`, provenance };
         }

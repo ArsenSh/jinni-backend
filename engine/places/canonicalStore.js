@@ -546,14 +546,26 @@ async function loadCandidates(params = {}, deps = {}) {
     // not a phrase list.
     const SERVICE_TYPES = new Set(['parking', 'gas_station', 'car_wash', 'car_repair', 'car_dealer',
         'atm', 'bank', 'insurance_agency', 'real_estate_agency', 'storage', 'moving_company',
-        'plumber', 'electrician', 'locksmith', 'laundry', 'funeral_home', 'local_government_office']);
+        'plumber', 'electrician', 'locksmith', 'laundry', 'funeral_home', 'local_government_office',
+        // Nobody's night out either (live 2026-09-16: "what is open right now"
+        // led with a medical centre). Health, civic and office types.
+        'hospital', 'doctor', 'dentist', 'dental_clinic', 'medical_lab', 'physiotherapist', 'veterinary_care',
+        'pharmacy', 'drugstore', 'police', 'fire_station', 'courthouse', 'embassy', 'post_office',
+        'city_hall', 'government_office', 'lawyer', 'accounting', 'consultant', 'corporate_office',
+        'school', 'primary_school', 'secondary_school', 'university', 'preschool']);
     const _isServiceRow = (d) => {
         const ts = [d.primaryType, ...(d.types || d.details?.types || [])].filter(Boolean).map(t => String(t).toLowerCase());
         return ts.length > 0 && ts.some(t => SERVICE_TYPES.has(t)) && !ts.some(t => /tourist|park\b|attraction/.test(t) && t !== 'parking');
     };
     const _svcDropped = scoredCache.filter(({ d }) => _isServiceRow(d));
     if (_svcDropped.length) console.log(`[canonicalStore] service-type row(s) dropped: ${_svcDropped.map(({ d }) => d.name).join(', ')}`);
-    const cacheCandidates = scoredCache.filter(({ d }) => !_isServiceRow(d)).slice(0, 40).map(({ d }) => cacheDocToCandidate(d, center));
+    // A business Google says is closed — temporarily or for good — is not a
+    // recommendation (live 2026-09-16: Cascade Royal, CLOSED_TEMPORARILY,
+    // served as the one late-night restaurant). null = never checked, kept.
+    const _isClosedBusiness = (d) => !!d.business_status && d.business_status !== 'OPERATIONAL';
+    const _closedDropped = scoredCache.filter(({ d }) => _isClosedBusiness(d));
+    if (_closedDropped.length) console.log(`[canonicalStore] closed business row(s) dropped: ${_closedDropped.map(({ d }) => `${d.name} (${d.business_status})`).join(', ')}`);
+    const cacheCandidates = scoredCache.filter(({ d }) => !_isServiceRow(d) && !_isClosedBusiness(d)).slice(0, 40).map(({ d }) => cacheDocToCandidate(d, center));
 
     // ── Validator/partner tier (fail-open service reuse) ──
     let destinations = [], businesses = [];
@@ -695,6 +707,7 @@ async function loadCandidates(params = {}, deps = {}) {
             let extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
                 regionCity: params.regionCity || null, alsoTypes: params.alsoTypes || null,
+                openNow: !!params.enforceOpenNow,
                 needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
             }, deps);
             if (suppress && extra.length) {
@@ -813,7 +826,7 @@ function uncoveredQueryTokens(coreQuery, candidates, maxShare = 0) {
 }
 
 /** Thin-corpus seeding: coverage-gated, one search, ≤needed details resolves. */
-async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, regionCity = null, needed, requestId, alsoTypes = null }, deps = {}) {
+async function googleFallback({ query, coreQuery, category, subType, center, radiusKm, regionCity = null, needed, requestId, alsoTypes = null, openNow = false }, deps = {}) {
     const coverageAllowed = deps.coverage
         || ((action, loc) => { try { return require('../../services/coverageService').googleAllowed(action, loc); } catch { return false; } });
     if (!(await coverageAllowed(category || 'general', { lat: center.lat, lng: center.lng }))) {
@@ -866,7 +879,9 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
     // Only the shortlist is stored (ids + the fields the loop below reads);
     // details still resolve through the ordinary owned-data path.
     const SEARCH_TTL_MIN = 7 * 24 * 60;
-    const searchKey = `text:${q.toLowerCase().trim().replace(/\s+/g, ' ')}`
+    // An open-now search is a different question from the same words by
+    // day, so it must never share a cache entry with it.
+    const searchKey = `text:${openNow ? 'open-now:' : ''}${q.toLowerCase().trim().replace(/\s+/g, ' ')}`
         + `:${center.lat.toFixed(2)}:${center.lng.toFixed(2)}`;
     const searchCache = deps.searchCache || {
         get: async (key) => {
@@ -899,7 +914,7 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         }
     } catch (err) { console.warn(`[canonicalStore] search-cache read failed: ${err.message}`); }
     if (!found) {
-        found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20) }) || [];
+        found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20), openNow: !!openNow }) || [];
         try {
             if (found.length) {
                 await searchCache.set(searchKey, found.map(p => ({

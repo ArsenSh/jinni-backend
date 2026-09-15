@@ -2716,6 +2716,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
             formatted_phone_number: details.formatted_phone_number,
             international_phone_number: details.international_phone_number,
             opening_hours: details.opening_hours,
+            business_status: details.business_status || null,
             types: details.types || [],
             primaryType: details.primaryType || null,
             priceLevel: details.price_level || null,
@@ -2755,6 +2756,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                     formatted_phone_number: updatedCache.formatted_phone_number,
                     international_phone_number: updatedCache.international_phone_number,
                     opening_hours: updatedCache.opening_hours,
+                    business_status: details.business_status || updatedCache.business_status || null,
                     types: details.types || updatedCache.types || [],
                     primaryType: details.primaryType || updatedCache.primaryType || null,
                     _fromCache: false

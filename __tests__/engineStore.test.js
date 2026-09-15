@@ -219,12 +219,14 @@ describe('loadCandidates (injected fakes, gates end to end)', () => {
     });
 
     test('type comparator gate applies when category present; skipped for free query', async () => {
-        const docs = [cacheDoc({ name: 'School', types: ['school'] })];
+        // A bookshop, not a school: schools joined the non-leisure type
+        // exclusion on 2026-09-16, and this test is about the comparator gate.
+        const docs = [cacheDoc({ name: 'Bookshop', types: ['book_store'] })];
         const rejecting = { cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => false, coverage: async () => false };
         const withCat = await loadCandidates({ category: 'restaurants', center: CENTER }, rejecting);
         expect(withCat).toEqual([]);
         const freeQuery = await loadCandidates({ category: null, center: CENTER }, rejecting);
-        expect(freeQuery.map(c => c.name)).toEqual(['School']);   // comparator not consulted
+        expect(freeQuery.map(c => c.name)).toEqual(['Bookshop']);   // comparator not consulted
     });
 
     test('validator tier failure is fail-open (cache still answers)', async () => {
@@ -563,5 +565,29 @@ describe('googleFallback respects the staff hide', () => {
         const out = await googleFallback({ query: 'historical', category: 'historical', center: CENTRE,
             radiusKm: 15, needed: 5 }, deps(async () => { throw new Error('mongo down'); }));
         expect(out).toHaveLength(2);
+    });
+});
+
+describe('closed businesses and non-leisure types never reach a deck (2026-09-16)', () => {
+    const ok = { proximity: async () => ({}), placeMatches: () => true, coverage: async () => false };
+    test('a business Google marks closed is dropped from the cache tier; null status is kept', async () => {
+        const docs = [
+            cacheDoc({ name: 'Cascade Royal', types: ['restaurant'], business_status: 'CLOSED_TEMPORARILY' }),
+            cacheDoc({ name: 'Gone For Good', types: ['restaurant'], business_status: 'CLOSED_PERMANENTLY' }),
+            cacheDoc({ name: 'Never Checked', types: ['restaurant'] }),
+            cacheDoc({ name: 'Open Business', types: ['restaurant'], business_status: 'OPERATIONAL' }),
+        ];
+        const out = await loadCandidates({ category: null, center: CENTER }, { ...ok, cacheFind: async () => docs });
+        expect(out.map(c => c.name).sort()).toEqual(['Never Checked', 'Open Business']);
+    });
+    test('a hospital, a pharmacy and a school are not a night out', async () => {
+        const docs = [
+            cacheDoc({ name: 'Medical Center', types: ['hospital', 'health'] }),
+            cacheDoc({ name: 'Pharmacy', types: ['pharmacy'] }),
+            cacheDoc({ name: 'School', types: ['school'] }),
+            cacheDoc({ name: 'Rooftop Bar', types: ['bar'] }),
+        ];
+        const out = await loadCandidates({ category: null, center: CENTER }, { ...ok, cacheFind: async () => docs });
+        expect(out.map(c => c.name)).toEqual(['Rooftop Bar']);
     });
 });

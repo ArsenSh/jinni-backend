@@ -123,6 +123,9 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
         // primarily typed 'bar'/'cafe' isn't excluded here; the caller still
         // verifies the resolved place's real types (placeMatchesActionType).
         if (options.includedType) { body.includedType = options.includedType; }
+        // A right-now ask asks Google for places open NOW (2026-09-16): the
+        // late-night restaurant search bought 5 places, 4 of them closed.
+        if (options.openNow) { body.openNow = true; }
         console.log('[findPlaces] POSTing to ' + PLACES_BASE + '/places:searchText body=' + JSON.stringify(body));
         // A single 5s timeout used to drop a REAL place outright — e.g. "Amira
         // Palace" lost to one slow round-trip, never reaching the cache. Retry only
@@ -134,10 +137,11 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
         const TIMEOUTS = [6000, 9000];
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                const response = await axios.post(PLACES_BASE + '/places:searchText', body, { headers: placesHeaders('places.id,places.displayName,places.location,places.types,places.primaryType'), timeout: TIMEOUTS[attempt - 1] });
+                const response = await axios.post(PLACES_BASE + '/places:searchText', body, { headers: placesHeaders('places.id,places.displayName,places.location,places.types,places.primaryType,places.businessStatus'), timeout: TIMEOUTS[attempt - 1] });
                 console.log('[findPlaces] response status=' + response.status + ' places=' + (response.data.places || []).length + (attempt > 1 ? ' (attempt ' + attempt + ')' : ''));
                 const places = response.data.places || [];
-                return places.map(function(place) {
+                // A business Google marks closed is never a candidate.
+                return places.filter(function(p) { return !p.businessStatus || p.businessStatus === 'OPERATIONAL'; }).map(function(place) {
                     const coords = normaliseLocation(place.location);
                     // `name` (from displayName) lets callers verify the resolved place
                     // actually resembles what was asked for — Google's Text Search
@@ -145,7 +149,7 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
                     // "Amara" biased to the wrong city once resolved to a shooting
                     // range). Requesting displayName does not change the billing SKU:
                     // location/types already put this call in the Pro tier.
-                    return { place_id: place.id, name: place.displayName?.text || null, geometry: { location: coords }, types: place.types || [], primaryType: place.primaryType || null };
+                    return { place_id: place.id, name: place.displayName?.text || null, geometry: { location: coords }, types: place.types || [], primaryType: place.primaryType || null, business_status: place.businessStatus || null };
                 });
             } catch (error) {
                 const httpStatus = error.response ? error.response.status : null;
@@ -221,6 +225,10 @@ async function getPlaceDetails(placeId, detailedInfo, requestId) {
                 'rating', 'websiteUri', 'internationalPhoneNumber',
                 'regularOpeningHours', 'nationalPhoneNumber', 'photos',
                 'types', 'primaryType', 'priceLevel',
+                // Live 2026-09-16: Cascade Royal — temporarily closed on Google,
+                // served as the one late-night restaurant, and the More window
+                // showed nothing because the status was never requested.
+                'businessStatus',
             ].join(',');
             const response = await axios.get(PLACES_BASE + '/places/' + placeId, { headers: placesHeaders(fieldMask), timeout: 10000 });
             const result = response.data;
@@ -254,6 +262,8 @@ async function getPlaceDetails(placeId, detailedInfo, requestId) {
                 photos: result.photos || [],
                 types: result.types || [],
                 primaryType: result.primaryType || null,
+                // OPERATIONAL | CLOSED_TEMPORARILY | CLOSED_PERMANENTLY, or null.
+                business_status: result.businessStatus || null,
                 // Google price bucket (PRICE_LEVEL_INEXPENSIVE…VERY_EXPENSIVE). Well
                 // populated for restaurants/food; usually absent for lodging &
                 // attractions — the priceTier helper falls back to lodging `types`
