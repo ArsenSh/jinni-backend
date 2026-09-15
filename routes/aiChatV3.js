@@ -2504,6 +2504,14 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             tokensEst: estimatedTokens,
             tokensActual: actualTokens,
             ms: Date.now() - t0,
+            // Founder 2026-09-16: the Sessions tab shows what was asked, what
+            // was answered and what the engine printed while deciding.
+            engine: 'v3',
+            ask: String(message || '').slice(0, 300),
+            replyHead: String(reply || '').slice(0, 400),
+            controllerLane: v3Decision?.lane || null,
+            controllerSource: v3Decision?.source || null,
+            log: require('../engine/utils/requestLog').capture(),
         });
     } catch (e) { console.warn('[v3][turnlog] skipped:', e.message); }
 

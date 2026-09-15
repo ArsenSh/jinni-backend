@@ -256,6 +256,102 @@ router.get('/chat-sessions/:id', async (req, res) => {
     }
 });
 
+const escapeRegExp = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// ── SESSIONS TAB (founder 2026-09-16) ────────────────────────────────────────
+// "Track from the admin page how each user used it and what they saw." Three
+// reads, all admin-gated, all read-only: the newest sessions across every
+// user, the engine's turn records for one session, and a plain-text export
+// of a session in the shape the founder pastes into a debugging chat.
+
+// Newest sessions across all users, optionally filtered by user name/email.
+router.get('/chat-sessions', async (req, res) => {
+    try {
+        const lim = Math.min(parseInt(req.query.limit) || 40, 100);
+        const search = String(req.query.search || '').trim();
+        let userFilter = {};
+        if (search) {
+            const users = await User.find({ $or: [
+                { email: { $regex: escapeRegExp(search), $options: 'i' } },
+                { name: { $regex: escapeRegExp(search), $options: 'i' } },
+            ] }).select('_id').limit(200).lean();
+            userFilter = { userId: { $in: users.map(u => u._id) } };
+        }
+        const sessions = await ChatSession.aggregate([
+            { $match: userFilter },
+            { $sort: { updatedAt: -1 } },
+            { $limit: lim },
+            { $project: {
+                title: 1, userId: 1, createdAt: 1, updatedAt: 1,
+                messageCount: { $size: { $ifNull: ['$messages', []] } },
+                lastLane: 1,
+            } },
+            { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+            { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+            { $project: { title: 1, createdAt: 1, updatedAt: 1, messageCount: 1, lastLane: 1,
+                          user: { _id: '$user._id', name: '$user.name', email: '$user.email' } } },
+        ]);
+        res.json({ success: true, data: { sessions } });
+    } catch (error) {
+        console.error('[admin chat-sessions list] error:', error);
+        res.status(500).json({ success: false, error: 'Failed to load sessions' });
+    }
+});
+
+// The engine's turn records for one session, oldest first.
+router.get('/chat-sessions/:id/turns', async (req, res) => {
+    try {
+        const ChatTurn = require('../models/ChatTurn');
+        const turns = await ChatTurn.find({ sessionId: req.params.id }).sort({ at: 1 }).limit(300).lean();
+        res.json({ success: true, data: { turns } });
+    } catch (error) {
+        console.error('[admin chat-session turns] error:', error);
+        res.status(500).json({ success: false, error: 'Failed to load turns' });
+    }
+});
+
+// One session as plain text: transcript interleaved with the engine's turn
+// records — the exact shape the founder pastes when reporting a bad answer.
+router.get('/chat-sessions/:id/export', async (req, res) => {
+    try {
+        const ChatTurn = require('../models/ChatTurn');
+        const session = await ChatSession.findById(req.params.id).populate('userId', 'name email').lean();
+        if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
+        const turns = await ChatTurn.find({ sessionId: req.params.id }).sort({ at: 1 }).limit(300).lean();
+        const fmt = (d) => (d ? new Date(d).toISOString().replace('T', ' ').slice(0, 19) : '?');
+        const out = [];
+        out.push(`JINNI SESSION ${session._id}`);
+        out.push(`user: ${session.userId?.name || '?'} <${session.userId?.email || '?'}>`);
+        out.push(`title: ${session.title || ''}`);
+        out.push(`created: ${fmt(session.createdAt)} · updated: ${fmt(session.updatedAt)}`);
+        out.push('');
+        let ti = 0;
+        for (const m of session.messages || []) {
+            if (m.sender === 'user') {
+                out.push(`[${fmt(m.timestamp)}] USER: ${m.text || ''}`);
+                const t = turns[ti++];
+                if (t) {
+                    out.push(`  engine=${t.engine || '?'} branch=${t.branch}${t.controllerLane ? ` controller=${t.controllerLane}(${t.controllerSource})` : ''} ` +
+                             `ms=${t.ms} tokens=${t.tokensActual || t.tokensEst} candidates=${t.candidateCount} shown=${t.shown} google=${t.googleCalls}` +
+                             `${t.category ? ` cat=${t.category}` : ''}${t.radiusKm ? ` r=${t.radiusKm}km` : ''}${t.city ? ` city=${t.city}` : ''}`);
+                    for (const line of t.log || []) out.push(`  | ${line}`);
+                }
+            } else {
+                out.push(`[${fmt(m.timestamp)}] JINNI: ${m.text || ''}`);
+                const recs = Array.isArray(m.recommendations) ? m.recommendations : [];
+                for (const r of recs) out.push(`  • ${r.name}${r.category ? ` (${r.category})` : ''}${r.description ? ` — ${r.description}` : ''}`);
+            }
+            out.push('');
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="jinni-session-${session._id}.txt"`);
+        res.send(out.join('\n'));
+    } catch (error) {
+        console.error('[admin chat-session export] error:', error);
+        res.status(500).json({ success: false, error: 'Failed to export session' });
+    }
+});
+
 // Toggle user premium status
 router.patch('/users/:id/premium', async (req, res) => {
     try {

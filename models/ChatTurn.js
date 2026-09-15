@@ -22,11 +22,12 @@
 // (clicked, saved, shared); this records what the ENGINE decided. Mixing them
 // would put diagnostics into the collection the admin charts aggregate.
 //
-// PRIVACY: the message itself is never stored — only its length and the signals
-// derived from it. A turn log that quietly became a transcript archive would be
-// a different thing from the one anyone agreed to. Rows self-delete after 90
-// days (the PlaceView TTL precedent): long enough for a trend, short enough that
-// this never becomes a permanent record of anyone's questions.
+// PRIVACY (revised by the founder 2026-09-16): the message text, the head of
+// the reply and the engine's own log lines ARE stored now — "I can track from
+// the admin page how each user used it and what they saw." The session already
+// holds the transcript (ChatSession); this adds the engine's reasoning beside
+// it. Admin-only through the Sessions tab, and rows still self-delete after 90
+// days, so this is a debugging window, not a permanent archive.
 
 const mongoose = require('mongoose');
 
@@ -55,7 +56,15 @@ const chatTurnSchema = new mongoose.Schema({
         index: true,
     },
 
-    // ── What was asked, without storing what was said ──
+    // ── What was asked and answered (founder decision 2026-09-16) ──
+    engine: { type: String, default: null },          // v2 | v3
+    ask: { type: String, default: null },             // the message, ≤ 300 chars
+    replyHead: { type: String, default: null },       // first 400 chars of the prose
+    // v3 controller's decision, when one was made
+    controllerLane: { type: String, default: null },
+    controllerSource: { type: String, default: null }, // controller | fallback
+    // The engine's console lines for this request (engine/utils/requestLog).
+    log: { type: [String], default: undefined },
     askLen: { type: Number, default: 0 },
     lang: { type: String, default: null },
     category: { type: String, default: null },   // null = the 'free' query that opens every gate
