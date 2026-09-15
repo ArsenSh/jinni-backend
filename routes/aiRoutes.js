@@ -2715,7 +2715,8 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
             website: details.website,
             formatted_phone_number: details.formatted_phone_number,
             international_phone_number: details.international_phone_number,
-            opening_hours: details.opening_hours,
+            // Staff-curated hours outrank a Google refresh (validator, 2026-09-16).
+            opening_hours: (cached && cached.hoursCurated && cached.opening_hours) ? cached.opening_hours : details.opening_hours,
             business_status: details.business_status || null,
             types: details.types || [],
             primaryType: details.primaryType || null,

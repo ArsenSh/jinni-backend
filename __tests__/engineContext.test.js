@@ -231,3 +231,36 @@ describe('parseWeekdayText — Google\'s hours lines become the periods isOpenAt
         expect(regularOpeningHoursToPeriods(null)).toBeNull();
     });
 });
+
+describe('scheduleToWeekdayText — staff hours render like Google\'s and round-trip (validator, 2026-09-16)', () => {
+    const { scheduleToWeekdayText, parseWeekdayText, scheduleToPeriods, isOpenAt } = require('../engine/context/contextEngine');
+    const schedule = { is24Hours: false, days: [
+        { day: 'Monday', closed: false, open: '09:00', close: '18:00' },
+        { day: 'Tuesday', closed: true },
+        { day: 'Wednesday', closed: false, open: '00:00', close: '23:59' },
+        { day: 'Friday', closed: false, open: '20:00', close: '02:00' },
+    ] };
+    test('lines in Google\'s shape, every day present, missing days closed', () => {
+        const lines = scheduleToWeekdayText(schedule);
+        expect(lines).toEqual([
+            'Monday: 9:00 AM – 6:00 PM', 'Tuesday: Closed', 'Wednesday: Open 24 hours', 'Thursday: Closed',
+            'Friday: 8:00 PM – 2:00 AM', 'Saturday: Closed', 'Sunday: Closed',
+        ]);
+        expect(scheduleToWeekdayText({ is24Hours: true })[3]).toBe('Thursday: Open 24 hours');
+        expect(scheduleToWeekdayText(null)).toBeNull();
+    });
+    test('the lines parse back to the same periods the schedule converter produces', () => {
+        const fromLines = parseWeekdayText(scheduleToWeekdayText(schedule));
+        const fromSchedule = scheduleToPeriods(schedule).periods;
+        // A 24-hour day is written two ways (00:00–23:59 same day vs 00:00 →
+        // 00:00 next day); what matters is that BOTH forms give the same
+        // open/closed answer at every hour of the week.
+        for (let day = 0; day < 7; day++) for (let hour = 0; hour < 24; hour++) {
+            const ctx = { dayOfWeek: day, hour, minute: 30 };
+            expect(isOpenAt({ periods: fromLines }, ctx)).toBe(isOpenAt({ periods: fromSchedule }, ctx));
+        }
+        expect(isOpenAt({ periods: fromSchedule }, { dayOfWeek: 6, hour: 1, minute: 0 })).toBe(true);   // Fri 8 PM → Sat 2 AM
+        expect(isOpenAt({ periods: fromSchedule }, { dayOfWeek: 3, hour: 23, minute: 30 })).toBe(true);  // Wednesday 24h
+        expect(isOpenAt({ periods: fromSchedule }, { dayOfWeek: 2, hour: 12, minute: 0 })).toBe(false);  // Tuesday closed
+    });
+});

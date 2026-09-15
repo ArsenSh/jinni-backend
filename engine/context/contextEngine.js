@@ -286,6 +286,33 @@ function parseWeekdayText(lines) {
     return periods;
 }
 
+/** A staff schedule → Google-style display lines ("Monday: 9:00 AM – 6:00 PM",
+ *  "Open 24 hours", "Closed"), so curated hours render everywhere Google's do
+ *  and round-trip through parseWeekdayText unchanged. */
+function scheduleToWeekdayText(openingHours) {
+    if (!openingHours) return null;
+    const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    if (openingHours.is24Hours) return DAYS.map(d => `${d}: Open 24 hours`);
+    const clock = (hhmm) => {
+        const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || ''));
+        if (!m) return null;
+        let h = Number(m[1]); const min = m[2];
+        const mer = h >= 12 ? 'PM' : 'AM';
+        h = h % 12 || 12;
+        return `${h}:${min} ${mer}`;
+    };
+    const byDay = new Map((Array.isArray(openingHours.days) ? openingHours.days : []).map(r => [r?.day, r]));
+    const out = [];
+    for (const d of DAYS) {
+        const row = byDay.get(d);
+        if (!row || row.closed) { out.push(`${d}: Closed`); continue; }
+        if (row.open === '00:00' && (row.close === '23:59' || row.close === '24:00' || row.close === '00:00')) { out.push(`${d}: Open 24 hours`); continue; }
+        const a = clock(row.open), b = clock(row.close);
+        out.push(a && b ? `${d}: ${a} – ${b}` : `${d}: Closed`);
+    }
+    return out;
+}
+
 /** Places API (New) regularOpeningHours.periods → the legacy shape isOpenAt
  *  reads. {open:{day,hour,minute},close:{…}}; a 24/7 place is one open-only
  *  period, which the legacy shape expresses the same way. */
@@ -311,6 +338,7 @@ module.exports = {
     parseHoursLine,
     parseWeekdayText,
     regularOpeningHoursToPeriods,
+    scheduleToWeekdayText,
     isOpenAt,
     annotateOpenNow,
     shouldDropWhenClosed,

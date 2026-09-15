@@ -217,7 +217,8 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
             likes: 1, dislikes: 1, useCount: 1, fetchCount: 1, explore: 1,
             createdAt: 1, lastUsed: 1, website: 1,
             formatted_phone_number: 1, international_phone_number: 1,
-            'opening_hours.weekday_text': 1, types: 1, primaryType: 1,
+            'opening_hours.weekday_text': 1, 'opening_hours.periods': 1, hoursCurated: 1, business_status: 1,
+            types: 1, primaryType: 1,
             priceLevel: 1, eventSchedule: 1,
         };
         const [places, total, hidden, verified, all] = await Promise.all([
@@ -292,6 +293,49 @@ router.patch('/explore-places/:placeId/actions', requirePermission('moderateExpl
     } catch (err) {
         console.error('[staff explore-actions] error:', err);
         res.status(500).json({ success: false, error: 'Failed to update categories' });
+    }
+});
+
+// PATCH /api/staff/explore-places/:placeId/hours
+// Body: { openingHours: { is24Hours, days: [{ day, closed, open, close }] } }
+//    or { clear: true } to drop staff hours and let Google's stand again.
+// Staff correct a cached place's opening hours (founder 2026-09-16: a wrong
+// "Open 24 hours" line from Google put a fortress in a 3 am deck). The same
+// day-schedule shape the Destination editor uses; converted here into BOTH
+// forms the app reads — periods for the open-now check, display lines for
+// the More window — and flagged so a details refresh never overwrites them.
+router.patch('/explore-places/:placeId/hours', requirePermission('moderateExplore'), async (req, res) => {
+    try {
+        const { scheduleToPeriods, scheduleToWeekdayText } = require('../engine/context/contextEngine');
+        const body = req.body || {};
+        const scope = buildPlaceScopeFilter(req.user);
+        if (scope === null) return res.status(403).json({ success: false, error: 'No region assigned yet — ask your admin' });
+        const filter = scope.$or ? { $and: [{ placeId: req.params.placeId }, scope] } : { placeId: req.params.placeId };
+        let update;
+        if (body.clear === true) {
+            update = { $set: { hoursCurated: false } };
+        } else {
+            const oh = body.openingHours;
+            const DAY_NAMES = new Set(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+            const validRow = (r) => r && DAY_NAMES.has(r.day) && (r.closed === true || (/^\d{2}:\d{2}$/.test(r.open || '') && /^\d{2}:\d{2}$/.test(r.close || '')));
+            if (!oh || typeof oh !== 'object' || (!oh.is24Hours && !(Array.isArray(oh.days) && oh.days.length && oh.days.every(validRow)))) {
+                return res.status(400).json({ success: false, error: 'openingHours must be { is24Hours } or { days: [{ day, closed | open, close }] }' });
+            }
+            const schedule = { is24Hours: oh.is24Hours === true, days: (oh.days || []).map(r => ({ day: r.day, closed: r.closed === true, open: r.open || null, close: r.close || null })) };
+            const periods = scheduleToPeriods(schedule)?.periods || [];
+            update = { $set: {
+                'opening_hours.periods': periods,
+                'opening_hours.weekday_text': scheduleToWeekdayText(schedule),
+                hoursCurated: true,
+            } };
+        }
+        const doc = await PlaceCache.findOneAndUpdate(filter, update, { new: true })
+            .select('placeId name opening_hours hoursCurated').lean();
+        if (!doc) return res.status(404).json({ success: false, error: 'Place not found in your region' });
+        res.json({ success: true, place: doc, message: body.clear ? `"${doc.name}" hours back to Google's` : `"${doc.name}" hours saved` });
+    } catch (err) {
+        console.error('[staff explore-hours] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to save hours' });
     }
 });
 
