@@ -591,3 +591,51 @@ describe('closed businesses and non-leisure types never reach a deck (2026-09-16
         expect(out.map(c => c.name)).toEqual(['Rooftop Bar']);
     });
 });
+
+describe('right-now asks (2026-09-16, 03:00 live)', () => {
+    const ok = { proximity: async () => ({}), placeMatches: () => true, coverage: async () => false };
+    const night = { dayOfWeek: 2, hour: 3, minute: 0 };
+    const dayHours = { periods: [{ open: { day: 2, time: '0900' }, close: { day: 2, time: '1800' } }] };
+    const allNight = { periods: [{ open: { day: 0, time: '0000' } }] };
+
+    test('a grocery store is a shopping answer and nothing else', async () => {
+        const docs = [
+            cacheDoc({ name: 'Yerevan City', types: ['supermarket', 'grocery_store'] }),
+            cacheDoc({ name: 'Vernissage', types: ['market'] }),
+            cacheDoc({ name: 'Danny\'s', types: ['bar'] }),
+        ];
+        const general = await loadCandidates({ category: null, center: CENTER }, { ...ok, cacheFind: async () => docs });
+        expect(general.map(c => c.name).sort()).toEqual(['Danny\'s', 'Vernissage']);
+        const shopping = await loadCandidates({ category: 'shopping', center: CENTER }, { ...ok, cacheFind: async () => docs });
+        expect(shopping.map(c => c.name)).toContain('Yerevan City');
+    });
+
+    test('when few owned rows are confirmed open, the paid search fires with openNow even though the pool looked full', async () => {
+        // Every name carries the query word, so no "uncovered token" can fire
+        // the paid search on its own — only the confirmed-open shortfall can.
+        const docs = [];
+        for (let i = 0; i < 12; i++) docs.push(cacheDoc({ name: `Day Bar ${i}`, opening_hours: dayHours }));
+        docs.push(cacheDoc({ name: 'All Night Bar', opening_hours: allNight }));
+        let call = null;
+        const out = await loadCandidates(
+            { category: 'restaurants', center: CENTER, query: 'bar', coreQuery: 'bar', enforceOpenNow: true, timeContext: night },
+            { ...ok, cacheFind: async () => docs, coverage: async () => true,
+              findPlaces: async (q, loc, rid, opts) => { call = { q, opts }; return [{ place_id: 'g1', name: 'Open Club', geometry: { location: { lat: CENTER.lat + 0.01, lng: CENTER.lng } }, types: ['restaurant'], primaryType: 'restaurant' }]; },
+              resolveDetails: async (id) => ({ name: null, rating: 4.3, formatted_address: `${id} St`, imagesStored: true }),
+              searchCache: { get: async () => null, set: async () => {} } });
+        expect(call).not.toBeNull();
+        expect(call.opts.openNow).toBe(true);
+        expect(out.map(c => c.name)).toContain('Open Club');
+    });
+
+    test('by day the same full pool asks Google for nothing', async () => {
+        const docs = [];
+        for (let i = 0; i < 13; i++) docs.push(cacheDoc({ name: `Day Bar ${i}`, opening_hours: dayHours }));
+        let called = false;
+        await loadCandidates(
+            { category: 'restaurants', center: CENTER, query: 'bar', coreQuery: 'bar' },
+            { ...ok, cacheFind: async () => docs, coverage: async () => true, findPlaces: async () => { called = true; return []; },
+              resolveDetails: async () => null, searchCache: { get: async () => null, set: async () => {} } });
+        expect(called).toBe(false);
+    });
+});

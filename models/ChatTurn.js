@@ -49,7 +49,9 @@ const chatTurnSchema = new mongoose.Schema({
         // branch!) — 'currency' AND 'map' were both missing (found live
         // 2026-09-05: currency turns failed validation; map turns had been
         // silently absent from telemetry all along).
-        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'no_web', 'map', 'currency', 'error'],
+        // 'clarify' added 2026-09-16 with the v3 controller's question lane —
+        // shipped without it, and every clarify turn failed validation (live).
+        enum: ['deck', 'no_match', 'empty', 'transport', 'settings', 'tool', 'chitchat', 'no_centre', 'no_web', 'map', 'currency', 'error', 'clarify'],
         index: true,
     },
 

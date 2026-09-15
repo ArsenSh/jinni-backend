@@ -16,7 +16,7 @@
 
 const { normalizePlaceName, _sigTokens } = require('./matching');
 const { haversineKm } = require('../utils/geo');
-const { scheduleToPeriods } = require('../context/contextEngine');
+const { scheduleToPeriods, isOpenAt } = require('../context/contextEngine');
 // The CURRENT embedding model — stored vectors from another model are noise
 // in the new space and must be IGNORED until the sweep re-embeds them (the
 // 2026-08-31 multilingual swap made this gate load-bearing).
@@ -553,9 +553,16 @@ async function loadCandidates(params = {}, deps = {}) {
         'pharmacy', 'drugstore', 'police', 'fire_station', 'courthouse', 'embassy', 'post_office',
         'city_hall', 'government_office', 'lawyer', 'accounting', 'consultant', 'corporate_office',
         'school', 'primary_school', 'secondary_school', 'university', 'preschool']);
+    // A supermarket is a legitimate SHOPPING answer and nothing else (live
+    // 2026-09-16, 03:00: two grocery branches led "what is open right now" for
+    // a traveler whose interest is romantic). Category-conditional, by type.
+    const GROCERY_TYPES = new Set(['supermarket', 'grocery_store', 'convenience_store', 'department_store', 'wholesaler']);
     const _isServiceRow = (d) => {
         const ts = [d.primaryType, ...(d.types || d.details?.types || [])].filter(Boolean).map(t => String(t).toLowerCase());
-        return ts.length > 0 && ts.some(t => SERVICE_TYPES.has(t)) && !ts.some(t => /tourist|park\b|attraction/.test(t) && t !== 'parking');
+        if (!ts.length) return false;
+        // Exact types: "supermarket" contains "market", so no substring test here.
+        if (category !== 'shopping' && ts.some(t => GROCERY_TYPES.has(t)) && !ts.some(t => t === 'market' || t === 'bazaar' || t === 'shopping_mall')) return true;
+        return ts.some(t => SERVICE_TYPES.has(t)) && !ts.some(t => /tourist|park\b|attraction/.test(t) && t !== 'parking');
     };
     const _svcDropped = scoredCache.filter(({ d }) => _isServiceRow(d));
     if (_svcDropped.length) console.log(`[canonicalStore] service-type row(s) dropped: ${_svcDropped.map(({ d }) => d.name).join(', ')}`);
@@ -701,14 +708,23 @@ async function loadCandidates(params = {}, deps = {}) {
         .filter(t => !geoTokens.has(t))
         .filter(t => !chatStop.has(t))
         .filter(t => !(category && (category.includes(t) || t.includes(category.slice(0, -1)))));
-    if (!params.corridor && (merged.length < wantedFresh || missing.length) && (params.query || category)) {
+    // On a RIGHT-NOW ask only owned rows the clock can vouch for count as
+    // "enough" (live 2026-09-16, 03:00: "nightlife" had 13 owned candidates,
+    // 8 known-closed and 3 statues confirmed open, so the open-now search
+    // never fired and three sculptures were served as a night out). The
+    // open-now text search is exactly the source that knows what is open.
+    const ownedUsable = (params.enforceOpenNow && params.timeContext)
+        ? merged.filter(c => isOpenAt(c.opening_hours || c.openingHours, params.timeContext) === true).length
+        : merged.length;
+    if (ownedUsable < merged.length) console.log(`[canonicalStore] right-now: ${ownedUsable} of ${merged.length} owned candidate(s) confirmed open`);
+    if (!params.corridor && (ownedUsable < wantedFresh || missing.length) && (params.query || category)) {
         params.onStage?.('map', 'Asking the map for fresh spots…');
         try {
             let extra = await googleFallback({
                 query: params.query, coreQuery: params.coreQuery, category, subType, center, radiusKm,
                 regionCity: params.regionCity || null, alsoTypes: params.alsoTypes || null,
                 openNow: !!params.enforceOpenNow,
-                needed: Math.max(wantedFresh - merged.length, missing.length ? 3 : 0), requestId,
+                needed: Math.max(wantedFresh - ownedUsable, missing.length ? 3 : 0), requestId,
             }, deps);
             if (suppress && extra.length) {
                 const before = extra.length;
