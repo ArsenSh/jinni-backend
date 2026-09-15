@@ -151,3 +151,59 @@ describe('resolveLaneFlags — the lane lands on v2\'s own flags', () => {
         for (const lane of LANES) expect(() => resolveLaneFlags(lane, base)).not.toThrow();
     });
 });
+
+describe('vague places asks are asked about, not guessed at (founder 2026-09-16)', () => {
+    // The judgement is the model's; these replay tonight's conversation through
+    // the shipped decision pipeline with the model's answer injected, so the
+    // RULES (prompt) and the SHAPE CHECKS (code) are both exercised.
+    const base = { ...GOOD, lane: 'deck', answers_pending_question: false, info_ask: '', flights: null, place_search_query: '', action_type: 'general', browse: false, refill: false, count: 0 };
+    const at2am = 'Monday 2026-09-16, 02:05 local time (Asia/Yerevan). "today" = 2026-09-16, "tomorrow" = 2026-09-17';
+
+    test('the instructions carry the rule, its shape, and its exceptions', () => {
+        const { system } = buildControllerMessages({ message: 'what is open right now?', state: { travelerLocation: 'Yerevan, Armenia' }, dateNote: at2am });
+        expect(system).toMatch(/A VAGUE PLACES ASK is a clarify/);
+        expect(system).toMatch(/THREE concrete choices that fit the hour/);
+        expect(system).toMatch(/bars discussed two turns ago and now "what's open\?" is a deck for bars/);
+        expect(system).toMatch(/A refill \("what else", "other ones"\) continues the previous deck and is never vague/);
+        expect(system).toMatch(/When the traveler ANSWERS a clarify question/);
+    });
+
+    test('"what is open right now" from a fresh chat at 2 am → one question with three choices', async () => {
+        const d = await decide({ message: 'what is open right now?', state: { travelerLocation: 'Yerevan, Armenia' }, dateNote: at2am }, {
+            complete: async () => ({ text: JSON.stringify({ ...base, lane: 'clarify', clarify_question: 'It\'s 2 am — are you after food, a drink, or somewhere to walk?' }) }),
+            classify: async () => ({ source: 'llm', isTravel: true }),
+        });
+        expect(d.lane).toBe('clarify');
+        expect(d.clarifyQuestion).toBe('It\'s 2 am — are you after food, a drink, or somewhere to walk?');
+        expect(d.flights).toBeNull();
+    });
+
+    test('"food" as the answer → a food deck, marked as answering the question', async () => {
+        const d = await decide({
+            message: 'food',
+            recentTurns: [{ sender: 'user', text: 'what is open right now?' }, { sender: 'ai', text: 'It\'s 2 am — are you after food, a drink, or somewhere to walk?' }],
+            state: { travelerLocation: 'Yerevan, Armenia', lastLane: 'clarify', lastReply: 'It\'s 2 am — are you after food, a drink, or somewhere to walk?' }, dateNote: at2am,
+        }, {
+            complete: async () => ({ text: JSON.stringify({ ...base, lane: 'deck', action_type: 'restaurants', place_search_query: 'late-night food Yerevan', browse: true, answers_pending_question: true }) }),
+            classify: async () => ({ source: 'llm', isTravel: true }),
+        });
+        expect(d.lane).toBe('deck');
+        expect(d.answersPendingQuestion).toBe(true);
+        expect(d.intent.actionType).toBe('restaurants');
+        expect(d.intent.searchQuery).toBe('late-night food Yerevan');
+    });
+
+    test('a deck decision with nothing to search for is still not a deck — the shape check, not a meaning rule', () => {
+        const d = shapeDecision({ ...base }, 'what is open right now?');
+        expect(d.lane).not.toBe('deck');
+    });
+
+    test('a clarify with an empty question is no decision — falls to the v2 answer', async () => {
+        const d = await decide({ message: 'what is open right now?', dateNote: at2am }, {
+            complete: async () => ({ text: JSON.stringify({ ...base, lane: 'clarify', clarify_question: '' }) }),
+            classify: async () => ({ source: 'llm', isTravel: true }),
+        });
+        expect(d.lane).toBeNull();
+        expect(d.clarifyQuestion).toBeNull();
+    });
+});
