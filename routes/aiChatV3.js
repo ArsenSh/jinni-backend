@@ -1658,6 +1658,15 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 meta.walkingAsk = true;
                 console.log('[v3] walking-distance ask -> radius capped at 2km (a limit, not a re-centre)');
             }
+            // A RIGHT-NOW ask is answered within reach (2026-09-16): "what can I
+            // do now" at midnight dealt a viewpoint 10.5 km out and a monastery
+            // at 7 km. 5 km is a taxi ride, not an expedition; an explicit
+            // radius below and an out-of-town ask still win.
+            if (rightNow && !outOfTown && radiusKm > 5) {
+                radiusKm = 5;
+                meta.rightNowRadius = true;
+                console.log('[v3] right-now ask -> radius capped at 5km');
+            }
             const askedRadiusKm = parseRadiusKm(geoAsk);
             if (askedRadiusKm) {
                 radiusKm = askedRadiusKm;
@@ -2341,7 +2350,9 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 }
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 recommendations = hoisted.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode, description: hoisted.blurbs[i] || null }));
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode,
+                        // V3: a blurb may not claim open/closed for a place with no hours.
+                        description: require('../engine/narrator/prompts/grounded').scrubHoursClaims(hoisted.blurbs[i] || null, p) || null }));
                 // What the listing printed stays exactly as printed; the
                 // traveler's own currency rides ALONGSIDE it, rounded and
                 // marked ≈ (Arsen 2026-08-24: "it will show what it found and

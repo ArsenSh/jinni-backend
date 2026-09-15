@@ -651,6 +651,7 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
               + `- question: one short follow-up in ${langName} to refine the search (or null).\n`
               + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the intro by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
+              + '- HOURS: a facts line saying "hours unknown" means NOBODY holds the hours of this place. For such a place never write open, open now, open late, still serving, closes late, or closed — say its hours are not listed and suggest checking before going. Only "open now" / "closed right now" on the line may be stated.\n'
               // Same honest-max rule as the streamed builder — this is its
               // failure-path twin and must not lose the promise on fallback.
               + (askedCount && places.length && places.length < askedCount
@@ -824,6 +825,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               + 'short sentence and wait, and never say it is done.\n'
               + '- An "about:" note in a facts line is the curator\'s background — use it to UNDERSTAND the place and choose true angles, but NEVER copy or closely paraphrase its sentences; the blurb must be your own fresh words, and it may still only state facts the line carries.\n'
               + '- HONESTY: never attribute a cuisine, specialty, or feature to a place unless its facts line states it. If none of the listed places truly matches what the traveler asked for (e.g. a cuisine you cannot see in the facts), open the prose by saying so plainly and present them as closest alternatives — never dress a place up as what it is not.\n'
+              + '- HOURS: a facts line saying "hours unknown" means NOBODY holds the hours of this place. For such a place never write open, open now, open late, still serving, closes late, or closed — say its hours are not listed and suggest checking before going. Only "open now" / "closed right now" on the line may be stated.\n'
               // Owned notes on a PLACES turn (Arsen 2026-08-24, after "where can
               // I buy a SIM card" returned phone-repair shops and a blurb
               // claimed one sold tourist SIMs). The notes say what a local
@@ -1044,6 +1046,27 @@ function buildSettingsMessages({ message, langName, done = [], failed = [], need
     ];
 }
 
+/** The narrator once wrote "open late" and "built for exactly this hour" for
+ *  places whose facts line said hours unknown (live 2026-09-16). The prompt
+ *  now forbids it; this is the belt to that brace: a blurb that asserts an
+ *  open/closed state for a place with NO hours has that sentence replaced by
+ *  the honest one. Only sentences carrying the claim are touched. */
+const OPEN_CLAIM_RE = /\b(open(?:s|ed|ing)?(?: (?:now|late|till|until|past|around the clock|24))?|still (?:open|serving|going)|closes? (?:late|at)|late[- ]night(?: spot| option| hours)?|built for (?:exactly )?this hour|closed(?: now| right now| at this hour)?|after midnight)\b/i;
+function scrubHoursClaims(blurb, place) {
+    if (!blurb || !place || !place._hourChecked || place._openNow === true || place._openNow === false) return blurb;
+    const sentences = String(blurb).match(/[^.!?]+[.!?]?/g) || [String(blurb)];
+    let changed = false;
+    const kept = sentences.map(sn => {
+        if (!OPEN_CLAIM_RE.test(sn)) return sn;
+        changed = true;
+        return null;
+    }).filter(Boolean);
+    if (!changed) return blurb;
+    const honest = ' Its hours are not listed, so check before going.';
+    const base = kept.join('').trim();
+    return (base ? base + honest : honest.trim());
+}
+
 module.exports = {
-    clipTurn, historyTurns,
+    scrubHoursClaims, clipTurn, historyTurns,
     buildSettingsMessages, buildGroundedMessages, buildDestinationMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, localFactsBlock, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildToolAnswerMessages, placeFactLine, historyTurns, selfBlock };

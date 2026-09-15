@@ -474,3 +474,24 @@ describe('DeepSeek provider timeouts — nothing waits forever any more', () => 
         await expect(deepseek.complete({ messages: [], timeouts: { completeMs: 40 } }, { openai })).rejects.toMatchObject({ code: 'DEEPSEEK_STALL' });
     });
 });
+
+
+describe('scrubHoursClaims — no open/closed claim for a place nobody holds hours for (live 2026-09-16)', () => {
+    const { scrubHoursClaims } = require('../engine/narrator/prompts/grounded');
+    const unknown = { _hourChecked: true, _openNow: null };
+    test('the offending sentence goes, the honest one arrives', () => {
+        const out = scrubHoursClaims('A sky lounge and club 1.3 km away, well rated. Built for exactly this hour — drinks, music and a crowd.', unknown);
+        expect(out).toBe('A sky lounge and club 1.3 km away, well rated. Its hours are not listed, so check before going.');
+        expect(scrubHoursClaims('Cocktail rooftop, outdoors, social and open late.', unknown)).toBe('Its hours are not listed, so check before going.');
+    });
+    test('a confirmed-open or confirmed-closed place, or a planned deck, is never touched', () => {
+        const text = 'Open late and lively.';
+        expect(scrubHoursClaims(text, { _hourChecked: true, _openNow: true })).toBe(text);
+        expect(scrubHoursClaims(text, { _hourChecked: true, _openNow: false })).toBe(text);
+        expect(scrubHoursClaims(text, { _openNow: null })).toBe(text);           // not an hour-checked deck
+    });
+    test('a blurb with no claim is untouched, and nulls pass through', () => {
+        expect(scrubHoursClaims('A quiet park with benches.', unknown)).toBe('A quiet park with benches.');
+        expect(scrubHoursClaims(null, unknown)).toBeNull();
+    });
+});

@@ -242,7 +242,15 @@ async function getPlaceDetails(placeId, detailedInfo, requestId) {
                 website: result.websiteUri || null,
                 international_phone_number: result.internationalPhoneNumber || null,
                 formatted_phone_number: result.nationalPhoneNumber || null,
-                opening_hours: result.regularOpeningHours ? {open_now: result.regularOpeningHours.openNow != null ? result.regularOpeningHours.openNow : null, weekday_text: result.regularOpeningHours.weekdayDescriptions || [],} : null,
+                // periods: the STRUCTURED hours the open-now check reads. Never
+                // stored before 2026-09-16 — 1,249 cached places carried only the
+                // display lines and the engine judged none of them.
+                opening_hours: result.regularOpeningHours ? {
+                    open_now: result.regularOpeningHours.openNow != null ? result.regularOpeningHours.openNow : null,
+                    weekday_text: result.regularOpeningHours.weekdayDescriptions || [],
+                    periods: require('../engine/context/contextEngine').regularOpeningHoursToPeriods(result.regularOpeningHours)
+                        || require('../engine/context/contextEngine').parseWeekdayText(result.regularOpeningHours.weekdayDescriptions) || [],
+                } : null,
                 photos: result.photos || [],
                 types: result.types || [],
                 primaryType: result.primaryType || null,

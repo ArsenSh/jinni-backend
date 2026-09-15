@@ -102,7 +102,12 @@ function buildTimeContext({ timezone = null, lng = null, now = new Date() } = {}
  *                         UNKNOWN (missing/malformed) — the caller must keep nulls.
  */
 function isOpenAt(openingHours, ctx) {
-    const periods = openingHours?.periods;
+    let periods = openingHours?.periods;
+    // Rows written before 2026-09-16 hold only Google's display lines; read
+    // them on the fly so coverage does not wait on the backfill script.
+    if ((!Array.isArray(periods) || periods.length === 0) && Array.isArray(openingHours?.weekday_text)) {
+        periods = parseWeekdayText(openingHours.weekday_text);
+    }
     if (!Array.isArray(periods) || periods.length === 0) return null;
 
     // 24/7: one period, open day 0 time "0000", no close.
@@ -214,9 +219,98 @@ function describeDate(tz) {
         + `"next week" = ${ymd(nextWeekStart)} to ${ymd(nextWeekEnd)}, "this weekend" = ${ymd(add(today, ((6 - dow) % 7)))} to ${ymd(add(today, ((6 - dow) % 7) + 1))}`;
 }
 
+/* ── Google's HOURS TEXT → periods (2026-09-16) ──
+ * Live finding: 1,249 of 1,869 cached places carry opening hours, but ONLY
+ * as Google's display lines ("Monday: 10:00 AM – 12:00 AM"); the mapper never
+ * stored the structured periods, so isOpenAt read null for every one of them
+ * and the 2 AM deck was filled from places the engine could not judge. The
+ * lines are regular enough to parse exactly: "Open 24 hours", "Closed", one
+ * or more "H[:MM] [AM|PM] – H:MM AM|PM" ranges, with Google's narrow spaces.
+ * Anything else → null for that day (unknown, never a guess). */
+const _DAY_NUM = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const _HHMM = (h, m) => `${String(h).padStart(2, '0')}${String(m).padStart(2, '0')}`;
+
+function _clock(str, meridiemHint) {
+    // "10:00 AM" / "12:00" (meridiem inherited from the range's end) / "9 PM"
+    const m = /^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/i.exec(String(str).trim());
+    if (!m) return null;
+    let h = Number(m[1]); const min = Number(m[2] || 0);
+    const mer = (m[3] || meridiemHint || '').toUpperCase();
+    if (h < 1 || h > 12 || min > 59) return null;
+    if (mer === 'AM' && h === 12) h = 0;
+    else if (mer === 'PM' && h !== 12) h += 12;
+    else if (!mer) return null;
+    return { h, m: min };
+}
+
+/** One weekday line → array of {open:{day,time},close:{day,time}}, [] for
+ *  closed, null when it cannot be read. `day` is Google's 0=Sunday. */
+function parseHoursLine(line, day) {
+    const text = String(line || '').replace(/[   ]/g, ' ').replace(/\s+/g, ' ').trim();
+    const body = text.replace(/^[A-Za-z]+:\s*/, '');
+    if (/^closed$/i.test(body)) return [];
+    if (/^open 24 hours$/i.test(body)) return [{ open: { day, time: '0000' }, close: { day: (day + 1) % 7, time: '0000' } }];
+    const out = [];
+    for (const range of body.split(/\s*,\s*/)) {
+        const r = /^(.+?)\s*[–—-]\s*(.+)$/.exec(range);
+        if (!r) return null;
+        const endMer = (/(AM|PM)\s*$/i.exec(r[2]) || [])[1];
+        const a = _clock(r[1], endMer), b = _clock(r[2], null);
+        if (!a || !b) return null;
+        const openM = a.h * 60 + a.m, closeM = b.h * 60 + b.m;
+        // Close at or before open = runs past midnight (8 PM – 2 AM).
+        const closeDay = closeM <= openM ? (day + 1) % 7 : day;
+        out.push({ open: { day, time: _HHMM(a.h, a.m) }, close: { day: closeDay, time: _HHMM(b.h, b.m) } });
+    }
+    return out.length ? out : null;
+}
+
+/** All seven lines → Google-shape periods, or null when NOTHING was readable.
+ *  A place open 24/7 collapses to the canonical single open-only period. */
+function parseWeekdayText(lines) {
+    if (!Array.isArray(lines) || !lines.length) return null;
+    const periods = [];
+    let readable = 0, allDay = 0;
+    for (const line of lines) {
+        const dayName = String(line || '').split(':')[0].trim().toLowerCase();
+        const day = _DAY_NUM[dayName];
+        if (day === undefined) continue;
+        const parsed = parseHoursLine(line, day);
+        if (parsed === null) continue;
+        readable++;
+        if (parsed.length === 1 && parsed[0].open.time === '0000' && parsed[0].close.time === '0000') allDay++;
+        periods.push(...parsed);
+    }
+    if (!readable) return null;
+    if (allDay === 7) return [{ open: { day: 0, time: '0000' } }];
+    return periods;
+}
+
+/** Places API (New) regularOpeningHours.periods → the legacy shape isOpenAt
+ *  reads. {open:{day,hour,minute},close:{…}}; a 24/7 place is one open-only
+ *  period, which the legacy shape expresses the same way. */
+function regularOpeningHoursToPeriods(roh) {
+    const src = Array.isArray(roh?.periods) ? roh.periods : null;
+    if (!src || !src.length) return null;
+    const out = [];
+    for (const p of src) {
+        const o = p?.open;
+        if (!o || !Number.isInteger(o.day)) continue;
+        const open = { day: o.day, time: _HHMM(o.hour || 0, o.minute || 0) };
+        if (!p.close) { out.push({ open }); continue; }
+        const c = p.close;
+        if (!Number.isInteger(c.day)) continue;
+        out.push({ open, close: { day: c.day, time: _HHMM(c.hour || 0, c.minute || 0) } });
+    }
+    return out.length ? out : null;
+}
+
 module.exports = {
     buildTimeContext,
     describeDate,
+    parseHoursLine,
+    parseWeekdayText,
+    regularOpeningHoursToPeriods,
     isOpenAt,
     annotateOpenNow,
     shouldDropWhenClosed,

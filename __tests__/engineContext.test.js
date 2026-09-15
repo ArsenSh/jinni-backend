@@ -166,3 +166,68 @@ describe('shouldDropWhenClosed (policy table, tightened 2026-08-22)', () => {
         expect(shouldDropWhenClosed('events')).toBe(false);
     });
 });
+
+describe('parseWeekdayText — Google\'s hours lines become the periods isOpenAt reads (2026-09-16)', () => {
+    const { parseHoursLine, parseWeekdayText, regularOpeningHoursToPeriods, isOpenAt } = require('../engine/context/contextEngine');
+    // Real cached lines, Google's narrow no-break spaces included.
+    const NBSP = ' ', THIN = ' ';
+    const line = (d, body) => `${d}: ${body}`;
+    const week = [
+        line('Monday', `10:00${NBSP}AM${THIN}–${THIN}12:00${NBSP}AM`),
+        line('Tuesday', `12:00${THIN}–${THIN}11:00${NBSP}PM`),        // meridiem inherited from the end
+        line('Wednesday', 'Closed'),
+        line('Thursday', 'Open 24 hours'),
+        line('Friday', `8:00${NBSP}PM${THIN}–${THIN}2:00${NBSP}AM`),  // past midnight
+        line('Saturday', `9:00${NBSP}AM${THIN}–${THIN}1:00${NBSP}PM, 3:00${THIN}–${THIN}7:00${NBSP}PM`),  // split day
+        line('Sunday', `12:00${NBSP}AM${THIN}–${THIN}11:59${NBSP}PM`),
+    ];
+
+    test('every real line shape parses into exact periods', () => {
+        expect(parseHoursLine(week[0], 1)).toEqual([{ open: { day: 1, time: '1000' }, close: { day: 2, time: '0000' } }]);
+        expect(parseHoursLine(week[1], 2)).toEqual([{ open: { day: 2, time: '1200' }, close: { day: 2, time: '2300' } }]);
+        expect(parseHoursLine(week[2], 3)).toEqual([]);
+        expect(parseHoursLine(week[3], 4)).toEqual([{ open: { day: 4, time: '0000' }, close: { day: 5, time: '0000' } }]);
+        expect(parseHoursLine(week[4], 5)).toEqual([{ open: { day: 5, time: '2000' }, close: { day: 6, time: '0200' } }]);
+        expect(parseHoursLine(week[5], 6)).toEqual([
+            { open: { day: 6, time: '0900' }, close: { day: 6, time: '1300' } },
+            { open: { day: 6, time: '1500' }, close: { day: 6, time: '1900' } },
+        ]);
+        expect(parseHoursLine(week[6], 0)).toEqual([{ open: { day: 0, time: '0000' }, close: { day: 0, time: '2359' } }]);
+    });
+
+    test('an unreadable line is unknown for that day, never a guess', () => {
+        expect(parseHoursLine('Monday: by appointment', 1)).toBeNull();
+        expect(parseHoursLine('Monday: 25:00 – 26:00', 1)).toBeNull();
+        expect(parseWeekdayText(['Monday: ???', 'Tuesday: ???'])).toBeNull();
+        expect(parseWeekdayText([])).toBeNull();
+        expect(parseWeekdayText(null)).toBeNull();
+    });
+
+    test('a place open 24 hours every day collapses to the canonical 24/7 period', () => {
+        const all = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(d => line(d, 'Open 24 hours'));
+        expect(parseWeekdayText(all)).toEqual([{ open: { day: 0, time: '0000' } }]);
+    });
+
+    test('isOpenAt reads the text lines when periods are absent — the 2 AM deck stops being blind', () => {
+        const hours = { weekday_text: week };
+        expect(isOpenAt(hours, { dayOfWeek: 6, hour: 1, minute: 30 })).toBe(true);    // Fri 8 PM – Sat 2 AM
+        expect(isOpenAt(hours, { dayOfWeek: 3, hour: 14, minute: 0 })).toBe(false);   // Wednesday closed
+        expect(isOpenAt(hours, { dayOfWeek: 4, hour: 3, minute: 0 })).toBe(true);     // Thursday 24 hours
+        expect(isOpenAt(hours, { dayOfWeek: 6, hour: 14, minute: 0 })).toBe(false);   // Saturday gap 1–3 PM
+        expect(isOpenAt(hours, { dayOfWeek: 6, hour: 16, minute: 0 })).toBe(true);
+        expect(isOpenAt({ weekday_text: ['Monday: by appointment'] }, { dayOfWeek: 1, hour: 12, minute: 0 })).toBeNull();
+    });
+
+    test('Places API (New) structured hours map to the same shape', () => {
+        expect(regularOpeningHoursToPeriods({ periods: [
+            { open: { day: 1, hour: 9, minute: 30 }, close: { day: 1, hour: 18, minute: 0 } },
+            { open: { day: 5, hour: 20 }, close: { day: 6, hour: 2 } },
+        ] })).toEqual([
+            { open: { day: 1, time: '0930' }, close: { day: 1, time: '1800' } },
+            { open: { day: 5, time: '2000' }, close: { day: 6, time: '0200' } },
+        ]);
+        expect(regularOpeningHoursToPeriods({ periods: [{ open: { day: 0, hour: 0, minute: 0 } }] })).toEqual([{ open: { day: 0, time: '0000' } }]);
+        expect(regularOpeningHoursToPeriods({})).toBeNull();
+        expect(regularOpeningHoursToPeriods(null)).toBeNull();
+    });
+});
