@@ -27,7 +27,7 @@ describe('publicVisible mirrors the Discoveries hide rules', () => {
 });
 
 describe('clusterCities', () => {
-    test('a city gets a page only with enough places within its radius', () => {
+    test('a city gets a page only with enough places within its reach', () => {
         const rows = [];
         for (let i = 0; i < 12; i++) rows.push(row(`y${i}`, 40.18 + i * 0.001, 44.51));
         for (let i = 0; i < 3; i++) rows.push(row(`g${i}`, 40.79, 43.85 + i * 0.001));
@@ -35,6 +35,19 @@ describe('clusterCities', () => {
         expect(out.map(c => c.slug)).toEqual(['yerevan']);
         expect(out[0].rows).toHaveLength(12);
         expect(out[0].city.countryName).toBe('Armenia');
+    });
+    // Founder 2026-09-17: Tavush's places were dropped because no 50k city
+    // was near. A small town claims what lies within ITS reach (10 km), and
+    // a village next to a metro still belongs to the metro.
+    test('a small town keeps its own places; a metro absorbs a village inside its reach', () => {
+        const DILIJAN = { name: 'Dilijan', asciiName: 'Dilijan', lat: 40.74, lng: 44.86, countryCode: 'AM', countryName: 'Armenia', population: 17000 };
+        const KANAKER = { name: 'Kanaker', asciiName: 'Kanaker', lat: 40.22, lng: 44.55, countryCode: 'AM', countryName: 'Armenia', population: 3000 };
+        const rows = [];
+        for (let i = 0; i < 6; i++) rows.push(row(`d${i}`, 40.74 + i * 0.01, 44.86));      // within ~6 km of Dilijan
+        for (let i = 0; i < 6; i++) rows.push(row(`k${i}`, 40.22, 44.55 + i * 0.001));      // in Kanaker, 5 km from Yerevan
+        const out = clusterCities(rows, [YEREVAN, DILIJAN, KANAKER], { minPlaces: 6 });
+        expect(out.map(c => c.slug).sort()).toEqual(['dilijan', 'yerevan']);
+        expect(out.find(c => c.slug === 'yerevan').rows).toHaveLength(6);
     });
     test('a place far from every city belongs to none', () => {
         const out = clusterCities([row('far', 45.0, 44.5)], [YEREVAN], { minPlaces: 1 });

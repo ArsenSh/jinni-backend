@@ -24,9 +24,16 @@ const INTEREST_TAGS = new Set(['nature', 'family', 'romantic', 'art', 'cultural'
 
 const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities'];
 const CATEGORY_ORDER = ['restaurants', 'historical', 'hidden_gems', 'activities', 'photo_spots', 'shopping', 'hotels'];
-const CITY_MIN_PLACES = Number(process.env.PUBLIC_CITY_MIN_PLACES) || 12;   // a page with fewer reads thin
-const CITY_MIN_POPULATION = Number(process.env.PUBLIC_CITY_MIN_POPULATION) || 50000;
-const CITY_RADIUS_KM = Number(process.env.PUBLIC_CITY_RADIUS_KM) || 30;     // a city page, not a region
+// Founder 2026-09-17: "there is also Tavush and lots of other regions that
+// the cache has verified locations" — a 50k-population bar left Dilijan and
+// Ijevan out. Every settlement may now own a page; the LARGEST settlement
+// whose population-based reach (gazetteer radiusForPopulation: village 5 km
+// … metro 30 km) covers a place claims it, so a monastery near Dilijan goes
+// to Dilijan, not to Yerevan. Six verified places make a page.
+const CITY_MIN_PLACES = Number(process.env.PUBLIC_CITY_MIN_PLACES) || 6;
+const CITY_MIN_POPULATION = Number(process.env.PUBLIC_CITY_MIN_POPULATION) || 1000;
+const CITY_RADIUS_KM = Number(process.env.PUBLIC_CITY_RADIUS_KM) || 30;     // hard cap on any reach
+const { radiusForPopulation } = require('../engine/geo/gazetteer');
 const PER_CATEGORY = 24;
 // Founder 2026-09-17: the public page says "checked by local validators", so
 // by default ONLY validator-verified rows are published. Set
@@ -80,11 +87,13 @@ function clusterCities(rows, cities, { radiusKm = CITY_RADIUS_KM, minPlaces = CI
     const byCity = new Map();     // city name+country → { city, rows }
     for (const r of rows) {
         const loc = r.details.geometry.location;
-        let best = null, bestKm = radiusKm;
+        let best = null, bestKm = radiusKm, bestPop = -1;
         for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
             for (const c of grid.get(`${Math.floor(loc.lat) + dy}:${Math.floor(loc.lng) + dx}`) || []) {
                 const km = haversineKm(loc.lat, loc.lng, c.lat, c.lng);
-                if (km < bestKm) { bestKm = km; best = c; }
+                if (km > radiusKm || km > radiusForPopulation(c.population)) continue;   // outside this settlement's reach
+                const pop = c.population || 0;
+                if (pop > bestPop || (pop === bestPop && km < bestKm)) { bestPop = pop; bestKm = km; best = c; }
             }
         }
         if (!best) continue;
