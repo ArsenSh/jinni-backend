@@ -77,3 +77,24 @@ describe('clusterCities', () => {
         expect(slugify('Saint-Étienne du Mont')).toBe('saint-etienne-du-mont');
     });
 });
+
+describe('ownedRow (Destinations and Businesses on the public page, 2026-09-17)', () => {
+    const { ownedRow } = require('../routes/publicRoutes')._internals;
+    const base = { _id: '5f1a2b3c4d5e6f7a8b9c0d1e', name: 'Lavash House', images: ['/api/media/x.jpg', 'https://cdn/y.jpg'],
+        location: { coordinates: { lat: 40.18, lng: 44.51 }, address: '1 Abovyan St', city: 'Yerevan' }, contact: { website: 'https://l.am', phone: '+374' } };
+    test('a business maps its types to rails, keeps its tier and ships its own photos', () => {
+        const r = ownedRow({ ...base, type: ['restaurants', 'romantic', 'luxury', 'jewelry'], partnership: { tier: 'signature' } }, 'business');
+        expect(r.placeId).toBe('biz_5f1a2b3c4d5e6f7a8b9c0d1e');
+        expect(r.actions.sort()).toEqual(['restaurants', 'shopping']);
+        expect(r.interests).toEqual(['romantic']);
+        expect(r._styleTier).toBe(4);
+        expect(r._owned.tier).toBe('signature');
+        expect(r._owned.images).toHaveLength(2);
+        expect(r.explore.status).toBe('verified');
+    });
+    test('a destination carries no partner tier; events-only or photo-less rows are skipped', () => {
+        expect(ownedRow({ ...base, type: ['historical'] }, 'destination')._owned.tier).toBeNull();
+        expect(ownedRow({ ...base, type: ['events'] }, 'destination')).toBeNull();
+        expect(ownedRow({ ...base, type: ['historical'], images: [] }, 'destination')).toBeNull();
+    });
+});

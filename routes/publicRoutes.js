@@ -133,21 +133,64 @@ function clusterCities(rows, cities, { radiusKm = CITY_RADIUS_KM, minPlaces = CI
     return [...bySlug.values()].sort((a, b) => b.rows.length - a.rows.length);
 }
 
+// ── Owned rows: validator Destinations and partner Businesses (founder
+//    2026-09-17: "it is pure cache, add destination and businesses"). Both
+//    carry their OWN photos and words, so they are the safest thing to
+//    publish. Shaped like a cache row so the same clustering/visibility
+//    code runs; `_owned` carries what the card and More window need. ──
+const OWNED_CATS = new Set(['restaurants', 'hotels', 'historical', 'hidden_gems', 'activities', 'photo_spots']);
+const SHOP_TYPES = new Set(['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food']);
+const normName = (n) => String(n || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+function ownedRow(d, source) {
+    const lat = d?.location?.coordinates?.lat, lng = d?.location?.coordinates?.lng;
+    if (!d?.name || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    const types = Array.isArray(d.type) ? d.type.map(t => String(t).toLowerCase()) : [];
+    const actions = [...new Set(types.filter(t => OWNED_CATS.has(t)).concat(types.some(t => SHOP_TYPES.has(t)) ? ['shopping'] : []))];
+    if (!actions.length) return null;                       // events are dated, not places; untyped rows have no rail
+    const images = (Array.isArray(d.images) ? d.images : []).map(i => (typeof i === 'string' ? i : i?.url)).filter(u => typeof u === 'string' && u);
+    if (!images.length) return null;                        // a public card needs a photo the visitor can see
+    let hours = null;
+    try { const { scheduleToWeekdayText } = require('../engine/context/contextEngine'); hours = Array.isArray(d.openingHours?.days) && d.openingHours.days.length || d.openingHours?.is24Hours ? scheduleToWeekdayText(d.openingHours) : null; } catch (_) { hours = null; }
+    const desc = d.description && typeof d.description === 'object' ? (d.description.short || d.description.detailed || null) : (d.description || null);
+    return {
+        placeId: `${source === 'business' ? 'biz' : 'dest'}_${d._id}`,
+        name: d.name,
+        rating: Number.isFinite(d.rating) ? d.rating : (Number.isFinite(d.engagement?.rating) ? d.engagement.rating : null),
+        actions,
+        interests: types.filter(t => INTEREST_TAGS.has(t)),
+        // Owned rows have no Google price level; the validator's luxury/budget tag stands in.
+        _styleTier: types.includes('luxury') ? 4 : types.includes('budget') ? 1 : null,
+        explore: { status: 'verified' },
+        photos: images.map(u => ({ url: u })),
+        details: { geometry: { location: { lat, lng } }, formatted_address: d.location?.address || null, vicinity: d.location?.city || null },
+        _owned: {
+            source,
+            tier: source === 'business' ? (d.partnership?.tier || 'verified') : null,
+            images, description: desc || null,
+            website: d.contact?.website || null, phone: d.contact?.phone || null, hours,
+            address: d.location?.address || [d.location?.city, d.location?.country].filter(Boolean).join(', ') || null,
+        },
+    };
+}
+
 function cardOf(r, km) {
     const hasImage = Array.isArray(r.photos) && r.photos.length > 0;
     return {
         placeId: r.placeId,
         name: r.name,
         rating: Number.isFinite(r.rating) ? r.rating : null,
-        image: hasImage ? `/api/ai/place-image/${r.placeId}/0` : null,
+        image: r._owned ? r._owned.images[0] : (hasImage ? `/api/ai/place-image/${r.placeId}/0` : null),
         photoCount: hasImage ? r.photos.length : 0,
+        photos: r._owned ? r._owned.images : undefined,     // owned rows ship their own gallery URLs
+        source: r._owned ? r._owned.source : 'cache',
+        tier: r._owned ? r._owned.tier : null,               // verified | spotlight | signature — businesses only
         region: r.details?.vicinity || r.details?.formatted_address || null,
         distanceKm: Math.round(km * 10) / 10,
         verified: (r.explore?.status || 'visible') === 'verified',
         // Founder 2026-09-17: the public page gets the onboarding filters
         // (interests, style, budget) — these two fields are what they read.
         interests: (r.interests || []).map(t => String(t).toLowerCase()).filter(t => INTEREST_TAGS.has(t)),
-        tier: priceTier(r.types, r.primaryType, r.priceLevel).tier,
+        priceTier: r._owned ? r._styleTier : priceTier(r.types, r.primaryType, r.priceLevel).tier,
         priced: (r.actions || []).some(isPriceAction),
     };
 }
@@ -163,6 +206,23 @@ async function buildSnapshot() {
     }).select('placeId name rating actions likes dislikes explore aiBlocked business_status photos.url interests types primaryType priceLevel details.geometry.location details.vicinity details.formatted_address').lean())
         .filter(publicVisible)
         .filter(r => !VERIFIED_ONLY || r.explore?.status === 'verified');
+    // Owned rows join the same pool; a cache row with the same name as an
+    // owned one is dropped so the owned photo and words win.
+    let owned = [];
+    try {
+        const Destination = require('../models/Destination');
+        const Business = require('../models/Business');
+        const [dests, bizs] = await Promise.all([
+            Destination.find({ isActive: { $ne: false }, 'location.coordinates.lat': { $type: 'number' }, 'images.0': { $exists: true } })
+                .select('name type images location rating engagement description contact openingHours').lean(),
+            Business.find({ status: 'active', 'location.coordinates.lat': { $type: 'number' }, 'images.0': { $exists: true } })
+                .select('name type images location rating engagement description contact openingHours partnership').lean(),
+        ]);
+        owned = [...dests.map(d => ownedRow(d, 'destination')), ...bizs.map(b => ownedRow(b, 'business'))].filter(Boolean);
+    } catch (err) { console.warn(`[public] owned rows unavailable: ${err.message} — cache only`); }
+    const ownedNames = new Set(owned.map(o => normName(o.name)));
+    const cacheRows = rows.filter(r => !ownedNames.has(normName(r.name)));
+    const pool = [...owned, ...cacheRows];
     let cities = [];
     try {
         const GeoName = require('../models/GeoName');
@@ -174,7 +234,7 @@ async function buildSnapshot() {
                                       featureCode: { $nin: ['PPLX', 'PPLQ', 'PPLW', 'PPLH'] } })
             .select('name asciiName lat lng countryCode countryName population').lean();
     } catch (err) { console.warn(`[public] gazetteer unavailable: ${err.message} — no city pages`); }
-    const clusters = clusterCities(rows, cities);
+    const clusters = clusterCities(pool, cities);
     const snap = { cities: [], pages: new Map(), builtAt: new Date() };
     for (const cl of clusters) {
         const categories = {};
@@ -198,7 +258,7 @@ async function buildSnapshot() {
         snap.cities.push(city);
         snap.pages.set(cl.slug, { city, categories, order: CATEGORY_ORDER.filter(c => categories[c]) });
     }
-    console.log(`[public] discovery snapshot (${VERIFIED_ONLY ? 'verified only' : 'visible + verified'}): ${rows.length} place(s) → ${snap.cities.length} city page(s)${snap.cities.length ? ` (${snap.cities.map(c => `${c.name} ${c.count}`).join(', ')})` : ''}`);
+    console.log(`[public] discovery snapshot (${VERIFIED_ONLY ? 'verified only' : 'visible + verified'}): ${cacheRows.length} cache + ${owned.length} owned place(s) → ${snap.cities.length} city page(s)${snap.cities.length ? ` (${snap.cities.map(c => `${c.name} ${c.count}`).join(', ')})` : ''}`);
     return snap;
 }
 async function snapshot() {
@@ -225,6 +285,17 @@ router.get('/discover/cities', async (req, res) => {
 
 router.get('/discover/place/:placeId', async (req, res) => {
     try {
+        const id = String(req.params.placeId).slice(0, 200);
+        const m = /^(dest|biz)_([a-f0-9]{24})$/.exec(id);
+        if (m) {
+            const Model = m[1] === 'biz' ? require('../models/Business') : require('../models/Destination');
+            const d = await Model.findById(m[2]).select('name type images location rating engagement description contact openingHours partnership status isActive').lean();
+            const o = d && (m[1] === 'biz' ? d.status === 'active' : d.isActive !== false) ? ownedRow(d, m[1] === 'biz' ? 'business' : 'destination') : null;
+            if (!o) return res.status(404).json({ success: false, error: 'Place not found' });
+            cacheHeader(res);
+            return res.json({ success: true, data: { name: o.name, address: o._owned.address, rating: o.rating, hours: o._owned.hours,
+                website: o._owned.website, phone: o._owned.phone, description: o._owned.description, photos: o._owned.images, tier: o._owned.tier, source: o._owned.source } });
+        }
         const r = await PlaceCache.findOne({ placeId: String(req.params.placeId).slice(0, 200) })
             .select('placeId name rating explore aiBlocked business_status likes dislikes website formatted_phone_number opening_hours.weekday_text details.formatted_address details.vicinity details.geometry.location photos.url').lean();
         if (!r || !publicVisible(r) || (VERIFIED_ONLY && r.explore?.status !== 'verified')) return res.status(404).json({ success: false, error: 'Place not found' });
@@ -281,4 +352,4 @@ router.get('/sitemap.xml', async (req, res) => {
 module.exports = router;
 module.exports._test = { clusterCities, publicVisible, slugify };
 // For scripts/publicCoverage.js (read-only diagnostics on the server).
-module.exports._internals = { buildSnapshot, publicVisible, clusterCities, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };
+module.exports._internals = { buildSnapshot, publicVisible, clusterCities, ownedRow, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };
