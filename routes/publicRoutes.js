@@ -275,8 +275,13 @@ const cacheHeader = (res) => res.set('Cache-Control', 'public, max-age=300');
 router.get('/discover/cities', async (req, res) => {
     try {
         const s = await snapshot();
-        cacheHeader(res);
-        res.json({ success: true, cities: s.cities, builtAt: s.builtAt });
+        // Cloudflare stamps the visitor's country on every request; the
+        // landing lists that country's cities first (founder 2026-09-17:
+        // "what if a user from the Emirates enters?"). Per-visitor, so the
+        // response must not be cached by a shared proxy.
+        const visitorCountry = String(req.headers['cf-ipcountry'] || '').toUpperCase().slice(0, 2) || null;
+        res.set('Cache-Control', 'private, max-age=300');
+        res.json({ success: true, cities: s.cities, visitorCountry: /^[A-Z]{2}$/.test(visitorCountry || '') ? visitorCountry : null, builtAt: s.builtAt });
     } catch (err) {
         console.error('[public cities] error:', err);
         res.status(500).json({ success: false, error: 'Failed to load cities' });
