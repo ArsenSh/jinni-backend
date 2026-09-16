@@ -18,6 +18,9 @@
 const express = require('express');
 const router = express.Router();
 const PlaceCache = require('../models/PlaceCache');
+const { priceTier, isPriceAction } = require('../services/priceTier');
+// Same vocabulary the Discoveries page matches onboarding interests against.
+const INTEREST_TAGS = new Set(['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink']);
 
 const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities'];
 const CATEGORY_ORDER = ['restaurants', 'historical', 'hidden_gems', 'activities', 'photo_spots', 'shopping', 'hotels'];
@@ -112,6 +115,11 @@ function cardOf(r, km) {
         region: r.details?.vicinity || r.details?.formatted_address || null,
         distanceKm: Math.round(km * 10) / 10,
         verified: (r.explore?.status || 'visible') === 'verified',
+        // Founder 2026-09-17: the public page gets the onboarding filters
+        // (interests, style, budget) — these two fields are what they read.
+        interests: (r.interests || []).map(t => String(t).toLowerCase()).filter(t => INTEREST_TAGS.has(t)),
+        tier: priceTier(r.types, r.primaryType, r.priceLevel).tier,
+        priced: (r.actions || []).some(isPriceAction),
     };
 }
 
@@ -123,7 +131,7 @@ async function buildSnapshot() {
         'explore.status': { $ne: 'hidden' },
         aiBlocked: { $ne: true },
         'photos.0': { $exists: true },
-    }).select('placeId name rating actions likes dislikes explore aiBlocked business_status photos.url details.geometry.location details.vicinity details.formatted_address').lean())
+    }).select('placeId name rating actions likes dislikes explore aiBlocked business_status photos.url interests types primaryType priceLevel details.geometry.location details.vicinity details.formatted_address').lean())
         .filter(publicVisible)
         .filter(r => !VERIFIED_ONLY || r.explore?.status === 'verified');
     let cities = [];
