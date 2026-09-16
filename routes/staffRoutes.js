@@ -323,9 +323,15 @@ router.patch('/explore-places/:placeId/hours', requirePermission('moderateExplor
             }
             const schedule = { is24Hours: oh.is24Hours === true, days: (oh.days || []).map(r => ({ day: r.day, closed: r.closed === true, open: r.open || null, close: r.close || null })) };
             const periods = scheduleToPeriods(schedule)?.periods || [];
+            // Dotted paths fail with "Cannot create field 'periods' in element
+            // {opening_hours: null}" on a row Google gave no hours for (live
+            // 2026-09-16, first save from the validator). Read the row and
+            // write the whole object, keeping open_now if one is stored.
+            const existing = await PlaceCache.findOne(filter).select('opening_hours').lean();
+            if (!existing) return res.status(404).json({ success: false, error: 'Place not found in your region' });
+            const prev = (existing.opening_hours && typeof existing.opening_hours === 'object') ? existing.opening_hours : {};
             update = { $set: {
-                'opening_hours.periods': periods,
-                'opening_hours.weekday_text': scheduleToWeekdayText(schedule),
+                opening_hours: { ...prev, periods, weekday_text: scheduleToWeekdayText(schedule) },
                 hoursCurated: true,
             } };
         }
