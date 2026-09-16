@@ -229,8 +229,12 @@ router.get('/discover/:slug', async (req, res) => {
         const s = await snapshot();
         const page = s.pages.get(slugify(req.params.slug));
         if (!page) return res.status(404).json({ success: false, error: 'No public page for this city yet' });
+        // Live USD-based rates so the page's budget filter can read any
+        // currency the onboarding offers. Fail-open: no rates → USD only.
+        let rates = null;
+        try { const cs = require('../services/currencyService'); rates = (cs.getCurrentRates ? cs.getCurrentRates() : cs.getExchangeRates?.())?.rates || null; } catch (_) { rates = null; }
         cacheHeader(res);
-        res.json({ success: true, ...page, builtAt: s.builtAt });
+        res.json({ success: true, ...page, rates, builtAt: s.builtAt });
     } catch (err) {
         console.error('[public city] error:', err);
         res.status(500).json({ success: false, error: 'Failed to load city' });
