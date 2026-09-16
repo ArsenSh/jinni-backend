@@ -596,12 +596,20 @@ function buildNoMatchMessages({ message, langName = 'English', unmatched = [], c
  * fixed HERE; the model only renders it in the traveler's language. It may
  * never add venues — nothing is verified on an empty turn.
  */
-function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty', isEvents = false, cityLabel = null, history = [], preferences = null }) {
+function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty', isEvents = false, cityLabel = null, history = [], preferences = null, openShown = [] }) {
     const where = cityLabel ? ` in ${cityLabel}` : ' in this area';
+    // Places shown EARLIER in this conversation that are confirmed open right
+    // now. Live 2026-09-16 03:30: "restaurants or cafes" after a deck that
+    // held Bellagio (open) was answered "everything is closed" — Bellagio was
+    // excluded as already shown, then the rest were dropped as closed. The
+    // honest reply names the open ones the traveler already has.
+    const open = (openShown || []).map(n => String(n || '').trim()).filter(Boolean).slice(0, 4);
     const meaning = cause === 'no_web'
         ? 'They explicitly asked you to search the internet. You CANNOT browse the web here — say that plainly and warmly in one sentence, then offer what you CAN do: recommend from your own verified places and events. No apology spiral.'
         : cause === 'all_closed'
-        ? `Every matching place you have${where} is CLOSED at this hour (it is late). Say that plainly and warmly, then offer: if they want, they can ask for the list "for tomorrow" and you will show it for planning ahead.`
+        ? (open.length
+            ? `Every NEW matching place you have${where} is CLOSED at this hour (it is late). But these places you already showed them earlier in this conversation are open right now: ${open.join(', ')}. Say plainly that nothing new is open, name those open ones by exact name as the ones to go to now, and offer: they can ask for the rest "for tomorrow".`
+            : `Every matching place you have${where} is CLOSED at this hour (it is late). Say that plainly and warmly, then offer: if they want, they can ask for the list "for tomorrow" and you will show it for planning ahead.`)
         : cause === 'all_filtered'
             ? (isEvents
                 ? `They have already been shown every upcoming event you have${where} — there are no new ones left right now. Suggest asking for places instead, or checking back in a day or two.`
@@ -623,7 +631,9 @@ function buildEmptyDeckMessages({ message, langName = 'English', cause = 'empty'
               // model once copied it verbatim — "They have already been shown
               // everything…" straight to the traveler's face (live 2026-08-30).
               + 'The meaning above describes the traveler as "they" — your reply speaks TO them: always "you", never "they".\n'
-              + 'Never name a specific venue, address or business — none are verified on this turn. '
+              + (open.length
+                  ? `The ONLY venues you may name are these already-shown open ones: ${open.join(', ')}. Never name any other venue, address or business. `
+                  : 'Never name a specific venue, address or business — none are verified on this turn. ')
               + 'Never suggest external websites or search engines.',
         },
         ...historyTurns(history),

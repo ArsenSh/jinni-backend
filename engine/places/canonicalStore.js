@@ -1008,6 +1008,15 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
             console.log(`[canonicalStore] fallback skip "${p.name}" — details unresolved`);
             continue;
         }
+        // A business Google marks closed (temporarily or for good) is not a
+        // recommendation on ANY tier. The cache tier drops it above; this
+        // fallback resolves details through the shared resolver and once
+        // carded Cascade Royal (CLOSED_TEMPORARILY) again at 03:30 because a
+        // search-cache hit from before the live filter replayed it (2026-09-16).
+        if (d.business_status && d.business_status !== 'OPERATIONAL') {
+            console.log(`[canonicalStore] fallback skip "${p.name}" — ${d.business_status}`);
+            continue;
+        }
         // The asked CATEGORY is a hard gate on paid rows: mixed text-search
         // results once carded a CAFE and a WINE BAR in a hotels chain (live
         // 2026-08-31). Unknown types stay lenient inside the gate itself.

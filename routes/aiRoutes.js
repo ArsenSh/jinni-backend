@@ -2564,6 +2564,10 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                 formatted_phone_number: cached.formatted_phone_number,
                 international_phone_number: cached.international_phone_number,
                 opening_hours: cached.opening_hours,
+                // Every return shape carries the status: the retrieval fallback
+                // resolves details through here and must be able to drop a
+                // CLOSED_* business (Cascade Royal served again 2026-09-16 03:30).
+                business_status: cached.business_status || null,
                 types: cached.types || [],
                 primaryType: cached.primaryType || null,
                 _fromCache: true
@@ -2589,6 +2593,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                         formatted_phone_number: details.formatted_phone_number,
                         international_phone_number: details.international_phone_number,
                         opening_hours: details.opening_hours,
+                        business_status: details.business_status || null,
                         types: details.types || [],
                         primaryType: details.primaryType || null,
                         priceLevel: details.price_level || null,
@@ -2611,6 +2616,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                 formatted_phone_number: details.formatted_phone_number,
                 international_phone_number: details.international_phone_number,
                 opening_hours: details.opening_hours,
+                business_status: details.business_status || cached.business_status || null,
                 types: details.types || cached.types || [],
                 primaryType: details.primaryType || cached.primaryType || null,
                 _fromCache: true
@@ -2674,6 +2680,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                         formatted_phone_number: cachedById.formatted_phone_number,
                         international_phone_number: cachedById.international_phone_number,
                         opening_hours: cachedById.opening_hours,
+                        business_status: cachedById.business_status || null,
                         types: cachedById.types || [],
                         primaryType: cachedById.primaryType || null,
                         _fromCache: true
@@ -2776,6 +2783,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
                     formatted_phone_number: details.formatted_phone_number,
                     international_phone_number: details.international_phone_number,
                     opening_hours: details.opening_hours,
+                    business_status: details.business_status || null,
                     types: details.types || [],
                     primaryType: details.primaryType || null,
                     _fromCache: false
@@ -2794,6 +2802,7 @@ async function getCachedPlaceDetails(placeIdOrName, detailedInfo = false, reques
             formatted_phone_number: details.formatted_phone_number,
             international_phone_number: details.international_phone_number,
             opening_hours: details.opening_hours,
+            business_status: details.business_status || null,
             types: details.types || [],
             primaryType: details.primaryType || null,
             _fromCache: false

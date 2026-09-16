@@ -258,6 +258,29 @@ describe('buildEmptyDeckMessages (localized empty decks — the Dilijan lesson, 
     });
 });
 
+// Live 2026-09-16 03:30: Bellagio was open and already on screen; the next
+// ask got "everything is closed" because Bellagio was excluded as seen.
+describe('buildEmptyDeckMessages all_closed with already-shown open places', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    const sys = (o) => g.buildEmptyDeckMessages({ message: 'x', ...o })[0].content;
+    test('names the open already-shown places and allows ONLY those names', () => {
+        const s = sys({ cause: 'all_closed', cityLabel: 'Yerevan', openShown: ['Bellagio', ' Dolmama '] });
+        expect(s).toContain('Bellagio, Dolmama');
+        expect(s).toContain('open right now');
+        expect(s).toContain('for tomorrow');
+        expect(s).toMatch(/ONLY venues you may name/);
+        expect(s).not.toMatch(/Never name a specific venue/);
+    });
+    test('without open ones the plain all_closed meaning and venue ban stand', () => {
+        const s = sys({ cause: 'all_closed', openShown: [] });
+        expect(s).not.toContain('open right now');
+        expect(s).toMatch(/Never name a specific venue/);
+    });
+    test('other causes ignore openShown', () => {
+        expect(sys({ cause: 'all_filtered', openShown: ['Bellagio'] })).toContain('already been shown everything');
+    });
+});
+
 describe('buildEmptyDeckMessages no_web cause (honest no-internet reply, 2026-08-30)', () => {
     const g = require('../engine/narrator/prompts/grounded');
     test('no_web meaning: cannot browse, offers verified data, localized', () => {

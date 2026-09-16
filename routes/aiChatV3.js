@@ -25,7 +25,7 @@ const auth = require('../middleware/auth');
 const { usageTracker } = require('../middleware/usageTracker');
 const { findPlaces } = require('../engine/retrieval');
 const { loadCandidates } = require('../engine/places/canonicalStore');
-const { buildTimeContext, describeDate } = require('../engine/context/contextEngine');
+const { buildTimeContext, describeDate, isOpenAt } = require('../engine/context/contextEngine');
 const narrator = require('../engine/narrator');
 const { buildGroundedMessages, buildChitchatMessages, buildGettingAroundMessages, buildNoMatchMessages, buildEmptyDeckMessages, buildNarrationJson, parseNarrationJson, buildStreamedNarrationMessages, parseCardsTail, buildSettingsMessages, buildDestinationMessages } = require('../engine/narrator/prompts/grounded');
 const { DelimitedSplitter } = require('../engine/narrator/streamSplit');
@@ -1957,9 +1957,30 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 const emptyCity = meta.searchCity
                     || [center?.city, center?.country].filter(Boolean).join(', ') || null;
                 const where = emptyCity ? ` in ${emptyCity}` : ' for this area';
+                // Already-shown places that are confirmed open right now. They
+                // were excluded from this deck as "seen", so an all_closed
+                // reply that ignores them lies by omission (live 2026-09-16
+                // 03:30: Bellagio was open and on screen; the reply said
+                // everything was closed). Owned hours only, fail-open to none.
+                let openShown = [];
+                if (cause === 'all_closed' && sessionCards.length) {
+                    try {
+                        const ids = sessionCards.map(c => c.placeId).filter(Boolean).slice(-12);
+                        const rows = ids.length ? await require('../models/PlaceCache')
+                            .find({ placeId: { $in: ids } }).select('placeId name opening_hours business_status').lean() : [];
+                        const byId = new Map(rows.map(r => [r.placeId, r]));
+                        openShown = sessionCards
+                            .filter(c => c.placeId && byId.has(c.placeId))
+                            .filter(c => { const r = byId.get(c.placeId); return (!r.business_status || r.business_status === 'OPERATIONAL') && isOpenAt(r.opening_hours, timeContext) === true; })
+                            .map(c => byId.get(c.placeId).name || c.name);
+                        if (openShown.length) console.log(`[v3] all_closed but already-shown open now: ${openShown.join(', ')}`);
+                    } catch (err) { console.warn(`[v3] open-shown lookup failed: ${err.message} — plain all_closed reply`); }
+                }
                 // English fallback — streamed only if the narrator call fails.
                 const fallback = cause === 'all_closed'
-                    ? `Everything I have${where} looks closed at this hour — ask me again "for tomorrow" and I'll line them up.`
+                    ? (openShown.length
+                        ? `Nothing new${where} is open at this hour — but ${openShown.slice(0, 3).join(', ')} from earlier ${openShown.length === 1 ? 'is' : 'are'} open right now. Ask me again "for tomorrow" for the rest.`
+                        : `Everything I have${where} looks closed at this hour — ask me again "for tomorrow" and I'll line them up.`)
                     : category === 'events'
                         ? (cause === 'all_filtered'
                             ? `That's every upcoming event I have${where} right now — you've seen them all. Ask me for places, or check back in a day or two.`
@@ -2012,7 +2033,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                             messages: buildEmptyDeckMessages({
                                 message, langName, cause, isEvents: category === 'events',
                                 cityLabel: emptyCity, history: recentTurns,
-                                preferences: intent._preferences,
+                                preferences: intent._preferences, openShown,
                             }),
                             onToken: (c) => emptyGate.feed(c),
                             maxTokens: 120,

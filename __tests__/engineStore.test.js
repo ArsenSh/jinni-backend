@@ -358,6 +358,28 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(out).toEqual([]);
     });
 
+    // Live 2026-09-16 03:30: Cascade Royal (CLOSED_TEMPORARILY on Google) was
+    // carded again by the fallback — a search-cache hit from before the live
+    // filter replayed it, and the resolved details were never checked.
+    test('googleFallback: a CLOSED_* business in the resolved details is skipped', async () => {
+        const out = await googleFallback({ query: 'late dinner', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
+            coverage: async () => true,
+            findPlaces: async () => [googleRow('cr', 'Cascade Royal'), googleRow('ok', 'Open Bistro')],
+            resolveDetails: async (id) => ({ name: null, types: ['restaurant'], primaryType: 'restaurant',
+                business_status: id === 'cr' ? 'CLOSED_TEMPORARILY' : 'OPERATIONAL' }),
+        });
+        expect(out.map(c => c.name)).toEqual(['Open Bistro']);
+    });
+
+    test('googleFallback: a null business status (never checked) is kept', async () => {
+        const out = await googleFallback({ query: 'late dinner', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
+            coverage: async () => true,
+            findPlaces: async () => [googleRow('u', 'Unknown Status')],
+            resolveDetails: async () => ({ name: null, types: ['restaurant'], primaryType: 'restaurant', business_status: null }),
+        });
+        expect(out.map(c => c.name)).toEqual(['Unknown Status']);
+    });
+
     test('dedupe: a google row matching an owned placeId ships once (owned wins)', async () => {
         const out = await loadCandidates({ category: 'restaurants', center: CENTER, count: 4, query: 'x' }, {
             cacheFind: async () => [cacheDoc({ name: 'Lavash' })],   // factory → placeId 'p_Lavash'
