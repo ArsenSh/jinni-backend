@@ -84,22 +84,42 @@ function clusterCities(rows, cities, { radiusKm = CITY_RADIUS_KM, minPlaces = CI
         if (!grid.has(k)) grid.set(k, []);
         grid.get(k).push(c);
     }
-    const byCity = new Map();     // city name+country → { city, rows }
+    // Founder 2026-09-17: Tsaghkadzor (1,200 people, 5 km reach) sits 6 km
+    // from Hrazdan (52k, 15 km reach); "largest covering settlement wins"
+    // handed every Tsaghkadzor place to Hrazdan. So: the NEAREST settlement
+    // whose reach covers the place claims it, and a settlement that cannot
+    // reach the page minimum on its own folds its places into the most
+    // populous settlement that also covers them (a hamlet next to a city
+    // never steals the city's page; a real resort town keeps its own).
+    const keyOf = (c) => `${c.name}|${c.countryCode || ''}`;
+    const byCity = new Map();     // key → { city, rows: [{ row, km, fallback }] }
     for (const r of rows) {
         const loc = r.details.geometry.location;
-        let best = null, bestKm = radiusKm, bestPop = -1;
+        let nearest = null, nearKm = radiusKm, biggest = null, bigPop = -1, bigKm = radiusKm;
         for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
             for (const c of grid.get(`${Math.floor(loc.lat) + dy}:${Math.floor(loc.lng) + dx}`) || []) {
                 const km = haversineKm(loc.lat, loc.lng, c.lat, c.lng);
                 if (km > radiusKm || km > radiusForPopulation(c.population)) continue;   // outside this settlement's reach
+                if (km < nearKm) { nearKm = km; nearest = c; }
                 const pop = c.population || 0;
-                if (pop > bestPop || (pop === bestPop && km < bestKm)) { bestPop = pop; bestKm = km; best = c; }
+                if (pop > bigPop || (pop === bigPop && km < bigKm)) { bigPop = pop; bigKm = km; biggest = c; }
             }
         }
-        if (!best) continue;
-        const key = `${best.name}|${best.countryCode || ''}`;
-        if (!byCity.has(key)) byCity.set(key, { city: best, rows: [] });
-        byCity.get(key).rows.push({ row: r, km: bestKm });
+        if (!nearest) continue;
+        const key = keyOf(nearest);
+        if (!byCity.has(key)) byCity.set(key, { city: nearest, rows: [] });
+        byCity.get(key).rows.push({ row: r, km: nearKm, fallback: biggest && biggest !== nearest ? { city: biggest, km: bigKm } : null });
+    }
+    // Fold clusters under the minimum into their fallback settlement.
+    for (const [key, cl] of [...byCity.entries()]) {
+        if (cl.rows.length >= minPlaces) continue;
+        for (const m of cl.rows) {
+            if (!m.fallback) continue;
+            const fk = keyOf(m.fallback.city);
+            if (!byCity.has(fk)) byCity.set(fk, { city: m.fallback.city, rows: [] });
+            byCity.get(fk).rows.push({ row: m.row, km: m.fallback.km, fallback: null });
+        }
+        byCity.delete(key);
     }
     const bySlug = new Map();
     for (const { city, rows: members } of byCity.values()) {

@@ -39,15 +39,28 @@ describe('clusterCities', () => {
     // Founder 2026-09-17: Tavush's places were dropped because no 50k city
     // was near. A small town claims what lies within ITS reach (10 km), and
     // a village next to a metro still belongs to the metro.
-    test('a small town keeps its own places; a metro absorbs a village inside its reach', () => {
+    test('a small town keeps its own places; a hamlet under the minimum folds into the city that covers it', () => {
         const DILIJAN = { name: 'Dilijan', asciiName: 'Dilijan', lat: 40.74, lng: 44.86, countryCode: 'AM', countryName: 'Armenia', population: 17000 };
         const KANAKER = { name: 'Kanaker', asciiName: 'Kanaker', lat: 40.22, lng: 44.55, countryCode: 'AM', countryName: 'Armenia', population: 3000 };
         const rows = [];
         for (let i = 0; i < 6; i++) rows.push(row(`d${i}`, 40.74 + i * 0.01, 44.86));      // within ~6 km of Dilijan
-        for (let i = 0; i < 6; i++) rows.push(row(`k${i}`, 40.22, 44.55 + i * 0.001));      // in Kanaker, 5 km from Yerevan
+        for (let i = 0; i < 3; i++) rows.push(row(`k${i}`, 40.22, 44.55 + i * 0.001));      // in Kanaker, 5 km from Yerevan — too few for a page
+        for (let i = 0; i < 3; i++) rows.push(row(`y${i}`, 40.18, 44.51 + i * 0.001));      // central Yerevan
         const out = clusterCities(rows, [YEREVAN, DILIJAN, KANAKER], { minPlaces: 6 });
         expect(out.map(c => c.slug).sort()).toEqual(['dilijan', 'yerevan']);
         expect(out.find(c => c.slug === 'yerevan').rows).toHaveLength(6);
+    });
+    // Founder 2026-09-17: "I have many places in Tsaghkadzor but it is not
+    // showing" — the resort town is 6 km from Hrazdan, whose 15 km reach
+    // swallowed it. Nearest covering settlement wins when it has enough.
+    test('a resort town inside a bigger neighbour\'s reach keeps its own page when it has enough places', () => {
+        const HRAZDAN = { name: 'Hrazdan', asciiName: 'Hrazdan', lat: 40.498, lng: 44.766, countryCode: 'AM', countryName: 'Armenia', population: 52000 };
+        const TSAGHKADZOR = { name: 'Tsaghkadzor', asciiName: 'Tsaghkadzor', lat: 40.532, lng: 44.719, countryCode: 'AM', countryName: 'Armenia', population: 1200 };
+        const rows = [];
+        for (let i = 0; i < 8; i++) rows.push(row(`t${i}`, 40.532 + i * 0.002, 44.719));   // in Tsaghkadzor
+        for (let i = 0; i < 6; i++) rows.push(row(`h${i}`, 40.498, 44.766 + i * 0.002));   // in Hrazdan
+        const out = clusterCities(rows, [HRAZDAN, TSAGHKADZOR], { minPlaces: 6 });
+        expect(out.map(c => `${c.slug}:${c.rows.length}`).sort()).toEqual(['hrazdan:6', 'tsaghkadzor:8']);
     });
     test('a place far from every city belongs to none', () => {
         const out = clusterCities([row('far', 45.0, 44.5)], [YEREVAN], { minPlaces: 1 });
