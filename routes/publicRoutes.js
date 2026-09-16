@@ -260,3 +260,5 @@ router.get('/sitemap.xml', async (req, res) => {
 
 module.exports = router;
 module.exports._test = { clusterCities, publicVisible, slugify };
+// For scripts/publicCoverage.js (read-only diagnostics on the server).
+module.exports._internals = { buildSnapshot, publicVisible, clusterCities, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };
