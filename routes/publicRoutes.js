@@ -137,7 +137,12 @@ async function buildSnapshot() {
     let cities = [];
     try {
         const GeoName = require('../models/GeoName');
-        cities = await GeoName.find({ kind: 'city', population: { $gte: CITY_MIN_POPULATION } })
+        // PPLX = a section of a city (Kentron, Arabkir…). GeoNames lists
+        // Yerevan's districts as populated places above 50k, so places were
+        // split among them and the landing listed districts, not cities
+        // (founder 2026-09-17). Only whole settlements may own a page.
+        cities = await GeoName.find({ kind: 'city', population: { $gte: CITY_MIN_POPULATION },
+                                      featureCode: { $nin: ['PPLX', 'PPLQ', 'PPLW', 'PPLH'] } })
             .select('name asciiName lat lng countryCode countryName population').lean();
     } catch (err) { console.warn(`[public] gazetteer unavailable: ${err.message} — no city pages`); }
     const clusters = clusterCities(rows, cities);
