@@ -186,9 +186,15 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
         // NONE of the moderated categories (whatever the AI decided at save
         // time — 'attractions', legacy tags, or nothing) were invisible here
         // while still living in the cache. 'other' surfaces exactly those.
-        const and = [category === 'other'
-            ? { actions: { $not: { $elemMatch: { $in: EXPLORE_MOD_CATEGORIES } } } }
-            : { actions: { $in: EXPLORE_MOD_CATEGORIES } }];
+        // Founder 2026-09-17: "All" must include the AI-decided rows too, and
+        // the status chips must count the CURRENT category (and search), not
+        // the moderated set regardless of what is selected — with "Other"
+        // open, the chips showed numbers that had nothing to do with the
+        // table. So: no category → every cache row in scope; and the counts
+        // are taken over the same base as the table, minus the status clause.
+        const and = [];
+        if (category === 'other') and.push({ actions: { $not: { $elemMatch: { $in: EXPLORE_MOD_CATEGORIES } } } });
+        else if (category && EXPLORE_MOD_CATEGORIES.includes(category)) and.push({ actions: category });
         if (scope.$or) and.push(scope);
         if (search) {
             and.push({ $or: [
@@ -196,15 +202,14 @@ router.get('/explore-places', requirePermission('moderateExplore'), async (req, 
                 { 'details.formatted_address': { $regex: search, $options: 'i' } }
             ] });
         }
-        if (category && EXPLORE_MOD_CATEGORIES.includes(category)) and.push({ actions: category });
+        // Status chips split exactly what the table shows.
+        const countBase = and.length ? [...and] : [{}];
         if (status === 'hidden' || status === 'verified') and.push({ 'explore.status': status });
         else if (status === 'visible') and.push({ 'explore.status': { $nin: ['hidden', 'verified'] } });
 
-        const query = { $and: and };
+        const query = and.length ? { $and: and } : {};
         const lim = Math.min(parseInt(limit) || 24, 100);
         const skip = (Math.max(parseInt(page) || 1, 1) - 1) * lim;
-        // Scope-wide status counts (ignores search/category/status filters) for the tab chips.
-        const countBase = [{ actions: { $in: EXPLORE_MOD_CATEGORIES } }, ...(scope.$or ? [scope] : [])];
 
         // Aggregation with an EARLY projection: cached docs carry megabytes of
         // photo bytes, and sorting whole docs blew Mongo's 32MB sort memory

@@ -25,6 +25,11 @@ const CITY_MIN_PLACES = Number(process.env.PUBLIC_CITY_MIN_PLACES) || 12;   // a
 const CITY_MIN_POPULATION = Number(process.env.PUBLIC_CITY_MIN_POPULATION) || 50000;
 const CITY_RADIUS_KM = Number(process.env.PUBLIC_CITY_RADIUS_KM) || 30;     // a city page, not a region
 const PER_CATEGORY = 24;
+// Founder 2026-09-17: the public page says "checked by local validators", so
+// by default ONLY validator-verified rows are published. Set
+// PUBLIC_INCLUDE_VISIBLE=true to widen it to ordinary visible cache rows (the
+// Discoveries rule) for a city that has too few verified places to get a page.
+const VERIFIED_ONLY = String(process.env.PUBLIC_INCLUDE_VISIBLE || '').toLowerCase() !== 'true';
 const CACHE_MS = 60 * 60 * 1000;
 
 function haversineKm(lat1, lng1, lat2, lng2) {
@@ -119,7 +124,8 @@ async function buildSnapshot() {
         aiBlocked: { $ne: true },
         'photos.0': { $exists: true },
     }).select('placeId name rating actions likes dislikes explore aiBlocked business_status photos.url details.geometry.location details.vicinity details.formatted_address').lean())
-        .filter(publicVisible);
+        .filter(publicVisible)
+        .filter(r => !VERIFIED_ONLY || r.explore?.status === 'verified');
     let cities = [];
     try {
         const GeoName = require('../models/GeoName');
@@ -150,7 +156,7 @@ async function buildSnapshot() {
         snap.cities.push(city);
         snap.pages.set(cl.slug, { city, categories, order: CATEGORY_ORDER.filter(c => categories[c]) });
     }
-    console.log(`[public] discovery snapshot: ${rows.length} place(s) → ${snap.cities.length} city page(s)${snap.cities.length ? ` (${snap.cities.map(c => `${c.name} ${c.count}`).join(', ')})` : ''}`);
+    console.log(`[public] discovery snapshot (${VERIFIED_ONLY ? 'verified only' : 'visible + verified'}): ${rows.length} place(s) → ${snap.cities.length} city page(s)${snap.cities.length ? ` (${snap.cities.map(c => `${c.name} ${c.count}`).join(', ')})` : ''}`);
     return snap;
 }
 async function snapshot() {
@@ -179,7 +185,7 @@ router.get('/discover/place/:placeId', async (req, res) => {
     try {
         const r = await PlaceCache.findOne({ placeId: String(req.params.placeId).slice(0, 200) })
             .select('placeId name rating explore aiBlocked business_status likes dislikes website formatted_phone_number opening_hours.weekday_text details.formatted_address details.vicinity details.geometry.location photos.url').lean();
-        if (!r || !publicVisible(r)) return res.status(404).json({ success: false, error: 'Place not found' });
+        if (!r || !publicVisible(r) || (VERIFIED_ONLY && r.explore?.status !== 'verified')) return res.status(404).json({ success: false, error: 'Place not found' });
         cacheHeader(res);
         res.json({ success: true, data: {
             name: r.name,
