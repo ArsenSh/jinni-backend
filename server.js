@@ -449,6 +449,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/saves', auth, savesRoutes);
 app.use('/api/share', shareRouter);
+app.use('/api/public', require('./routes/publicRoutes'));   // login-free discovery pages + city sitemap (founder 2026-09-16)
 // Root-mounted OG preview for shared trips. Caddy routes jinni.travel/share/*
 // here ONLY for crawler user-agents (WhatsApp/Facebook/Twitter/etc.) so link
 // previews render rich cards; human browsers keep hitting the static SPA.

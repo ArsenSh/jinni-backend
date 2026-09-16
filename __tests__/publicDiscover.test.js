@@ -1,0 +1,53 @@
+// Public discovery (founder 2026-09-16): cities are derived from the data,
+// visibility mirrors Jinni's Discoveries, and nothing personal leaks.
+const { clusterCities, publicVisible, slugify } = require('../routes/publicRoutes')._test;
+
+const row = (id, lat, lng, extra = {}) => ({
+    placeId: id, name: id, rating: 4.5, actions: ['restaurants'], photos: [{ url: 'x' }],
+    details: { geometry: { location: { lat, lng } } }, ...extra,
+});
+const YEREVAN = { name: 'Yerevan', asciiName: 'Yerevan', lat: 40.18, lng: 44.51, countryCode: 'AM', countryName: 'Armenia', population: 1000000 };
+const GYUMRI = { name: 'Gyumri', asciiName: 'Gyumri', lat: 40.79, lng: 43.85, countryCode: 'AM', countryName: 'Armenia', population: 120000 };
+
+describe('publicVisible mirrors the Discoveries hide rules', () => {
+    test('hidden, ai-blocked, closed, buried and low-rated rows are out', () => {
+        expect(publicVisible(row('a', 40, 44))).toBe(true);
+        expect(publicVisible(row('b', 40, 44, { explore: { status: 'hidden' } }))).toBe(false);
+        expect(publicVisible(row('c', 40, 44, { aiBlocked: true }))).toBe(false);
+        expect(publicVisible(row('d', 40, 44, { business_status: 'CLOSED_TEMPORARILY' }))).toBe(false);
+        expect(publicVisible(row('e', 40, 44, { likes: 0, dislikes: 3 }))).toBe(false);
+        expect(publicVisible(row('f', 40, 44, { rating: 3.1 }))).toBe(false);
+    });
+    test('a validator-verified row survives a low rating', () => {
+        expect(publicVisible(row('g', 40, 44, { rating: 3.1, explore: { status: 'verified' } }))).toBe(true);
+    });
+    test('no coordinates → not shown', () => {
+        expect(publicVisible({ placeId: 'h', details: {} })).toBe(false);
+    });
+});
+
+describe('clusterCities', () => {
+    test('a city gets a page only with enough places within its radius', () => {
+        const rows = [];
+        for (let i = 0; i < 12; i++) rows.push(row(`y${i}`, 40.18 + i * 0.001, 44.51));
+        for (let i = 0; i < 3; i++) rows.push(row(`g${i}`, 40.79, 43.85 + i * 0.001));
+        const out = clusterCities(rows, [YEREVAN, GYUMRI], { minPlaces: 12 });
+        expect(out.map(c => c.slug)).toEqual(['yerevan']);
+        expect(out[0].rows).toHaveLength(12);
+        expect(out[0].city.countryName).toBe('Armenia');
+    });
+    test('a place far from every city belongs to none', () => {
+        const out = clusterCities([row('far', 45.0, 44.5)], [YEREVAN], { minPlaces: 1 });
+        expect(out).toEqual([]);
+    });
+    test('same slug in two countries keeps the fuller city', () => {
+        const other = { ...YEREVAN, lat: 10, lng: 10, countryCode: 'XX', countryName: 'Elsewhere' };
+        const rows = [row('a', 40.18, 44.51), row('b', 40.181, 44.51), row('c', 10, 10)];
+        const out = clusterCities(rows, [YEREVAN, other], { minPlaces: 1 });
+        expect(out).toHaveLength(1);
+        expect(out[0].city.countryCode).toBe('AM');
+    });
+    test('slugify strips accents and punctuation', () => {
+        expect(slugify('Saint-Étienne du Mont')).toBe('saint-etienne-du-mont');
+    });
+});
