@@ -89,7 +89,7 @@ router.get('/users', async (req, res) => {
         if (filter === 'active') query['analytics.lastActive'] = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
         const sortObj = { [sort]: order === 'asc' ? 1 : -1 };
         const [users, total] = await Promise.all([
-            User.find(query).select('name email isPremium onboardingCompleted analytics settings createdAt').populate('aiLimits', 'statistics dailyUsage onCooldown isPremium').sort(sortObj).skip(skip).limit(parseInt(limit)).lean(),
+            User.find(query).select('name email isPremium onboardingCompleted analytics settings createdAt acquisition').populate('aiLimits', 'statistics dailyUsage onCooldown isPremium').sort(sortObj).skip(skip).limit(parseInt(limit)).lean(),
             User.countDocuments(query)
         ]);
         res.json({ success: true, data: { users, total, page: parseInt(page), totalPages: Math.ceil(total / parseInt(limit)) } });

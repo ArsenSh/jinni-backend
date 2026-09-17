@@ -165,6 +165,34 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
     ]);
     const languages = langAgg.map(r => ({ key: r._id || 'en', users: r.n }));
 
+    /* Sign-ups by source within the window (founder 2026-09-18): every
+     * traveler account created in the window, grouped by its recorded
+     * acquisition (utm source / campaign, or "direct"), with how many of
+     * them came back on a second day. The one number an ad campaign is
+     * judged by — returning users per source — without any third-party tag. */
+    let acquisition = [];
+    try {
+        const { acquisitionLabel } = require('./acquisition');
+        const since = new Date(`${windowStart}T00:00:00.000Z`);
+        const created = await User.find({ role: TRAVELER_ROLE, createdAt: { $gte: since }, ...locFilter })
+            .select('_id acquisition createdAt').lean();
+        const ids = created.map(u => u._id);
+        const days = ids.length ? await UserActivity.aggregate([
+            { $match: { userId: { $in: ids } } },
+            { $group: { _id: '$userId', days: { $sum: 1 } } },
+        ]) : [];
+        const daysBy = new Map(days.map(d => [String(d._id), d.days]));
+        const groups = new Map();
+        for (const u of created) {
+            const label = acquisitionLabel(u.acquisition);
+            if (!groups.has(label)) groups.set(label, { key: label, source: u.acquisition?.source || 'direct', campaign: u.acquisition?.campaign || null, signups: 0, returned: 0 });
+            const g = groups.get(label); g.signups++;
+            if ((daysBy.get(String(u._id)) || 0) >= 2) g.returned++;
+        }
+        acquisition = [...groups.values()].sort((a, b) => b.signups - a.signups)
+            .map(g => ({ ...g, returnPct: g.signups ? Math.round(1000 * g.returned / g.signups) / 10 : null }));
+    } catch (err) { console.warn(`[retention] acquisition breakdown failed: ${err.message}`); }
+
     /* Surface usage + search-mode split within the window, plus how many
      * distinct users touched the map (route/distance calculations). */
     const actScope = filterIds ? { userId: { $in: filterIds } } : {};
@@ -401,7 +429,8 @@ async function buildRetentionReport({ windowDays = 30, country = '', city = '' }
         engagement,
         quickActions,
         preferences,
-        locations
+        locations,
+        acquisition
     };
 }
 

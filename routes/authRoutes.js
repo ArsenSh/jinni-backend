@@ -259,4 +259,26 @@ router.post('/setup-password', authLimiter, async (req, res) => {
     }
 })
 
+// ── Sign-up source (founder 2026-09-18) ──────────────────────────────────────
+// The frontend keeps the first-landing utm_* fields in the browser and posts
+// them once after the first successful login. Attached only to an account
+// younger than 7 days that has no source yet, so nothing is ever rewritten
+// and an old account cannot be relabelled by a later visit.
+router.post('/acquisition', auth, async (req, res) => {
+    try {
+        const { sanitizeAcquisition } = require('../services/acquisition');
+        const acq = sanitizeAcquisition(req.body && req.body.acquisition);
+        if (!acq) return res.json({ success: true, attached: false });
+        const user = await User.findById(req.user.id).select('acquisition createdAt');
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        const fresh = user.createdAt && (Date.now() - new Date(user.createdAt).getTime()) < 7 * 24 * 60 * 60 * 1000;
+        if (user.acquisition?.source || !fresh) return res.json({ success: true, attached: false });
+        await User.updateOne({ _id: user._id }, { $set: { acquisition: { ...acq, at: new Date() } } });
+        res.json({ success: true, attached: true });
+    } catch (err) {
+        console.error('[auth acquisition] error:', err);
+        res.status(500).json({ success: false, error: 'Failed to record source' });
+    }
+});
+
 module.exports = router;

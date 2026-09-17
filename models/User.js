@@ -76,6 +76,19 @@ const userSchema = new mongoose.Schema({
         lastActive: Date,
         registrationDate: { type: Date, default: Date.now }
     },
+    // Where the sign-up came from (utm_* captured on first landing, attached
+    // once after registration — see services/acquisition.js). Null = direct
+    // or unknown. Never overwritten.
+    acquisition: {
+        source:   { type: String, default: null },
+        medium:   { type: String, default: null },
+        campaign: { type: String, default: null },
+        term:     { type: String, default: null },
+        content:  { type: String, default: null },
+        landing:  { type: String, default: null },
+        referrer: { type: String, default: null },
+        at:       { type: Date, default: null },
+    },
     isPremium: { type: Boolean, default: false },
     // When the premium term ends. NULL MEANS NO EXPIRY — that is the
     // back-compat contract: accounts granted premium before this field
