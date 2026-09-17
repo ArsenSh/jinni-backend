@@ -344,7 +344,8 @@ router.get('/sitemap.xml', async (req, res) => {
         const s = await snapshot();
         const base = String(process.env.FRONTEND_URL || 'https://jinni.travel').replace(/\/+$/, '');
         const day = s.builtAt.toISOString().slice(0, 10);
-        const urls = s.cities.map(c => `  <url><loc>${base}/discover/${c.slug}</loc><lastmod>${day}</lastmod><changefreq>weekly</changefreq></url>`);
+        // English and Russian URLs (founder 2026-09-18) — the frontend serves both.
+        const urls = s.cities.flatMap(c => ['', '/ru'].map(pre => `  <url><loc>${base}${pre}/discover/${c.slug}</loc><lastmod>${day}</lastmod><changefreq>weekly</changefreq></url>`));
         res.set('Content-Type', 'application/xml; charset=utf-8');
         res.set('Cache-Control', 'public, max-age=3600');
         res.send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`);
