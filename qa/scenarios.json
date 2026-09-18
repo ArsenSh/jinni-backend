@@ -173,6 +173,22 @@
           }
         }
       ]
+    },
+    {
+      "id": "hotel-price",
+      "why": "Price question: the agent should call hotel_prices (once the Travelpayouts token is set) and quote only returned numbers; cards carry hotelPrice.",
+      "turns": [
+        {
+          "say": "How much is a night in a good hotel on Lake Sevan? Nothing fancy, just clean and quiet.",
+          "expect": {
+            "v3laneIn": [
+              "places",
+              "clarify"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
     }
   ]
 }
