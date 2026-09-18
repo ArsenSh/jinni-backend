@@ -121,7 +121,9 @@ function summarize(c) {
         id: c._agentId,
         name: c.name,
         kind,
-        distance_km: Number.isFinite(c.distanceKm) ? Math.round(c.distanceKm * 10) / 10 : null,
+        // From the SEARCH CENTRE, not the traveler — live 2026-09-18 the model
+        // wrote "12 km from you" for a hotel 12 km from Lake Sevan's centre.
+        distance_from_search_centre_km: Number.isFinite(c.distanceKm) ? Math.round(c.distanceKm * 10) / 10 : null,
         rating: c.rating ?? null,
         price_tier: c.priceLevel || c._styleTier || null,
         tags: (c.interests || []).slice(0, 5),
@@ -204,7 +206,8 @@ async function runDeckAgent({
             const places = Array.isArray(out?.places) ? out.places.slice(0, count) : [];
             for (const p of places) { if (!p._agentId) p._agentId = `p${++idSeq}`; known.set(p._agentId, p); }
             return {
-                centre: centreName, radius_km: radiusKm || out?.provenance?.radiusKm || null, category, query,
+                centre: centreName, note: `distances below are from the search centre "${centreName}", not from the traveler`,
+                radius_km: radiusKm || out?.provenance?.radiusKm || null, category, query,
                 result_count: places.length, reason: places.length ? null : (out?.reason || 'nothing_found'),
                 results: places.map(summarize),
                 searches_left: SEARCH_BUDGET - searches,
