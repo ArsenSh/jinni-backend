@@ -11,10 +11,15 @@ const HOTELS = { data: [
     { id: 'lp3', name: 'Harsnaqar', stars: 3, rating: 7.4, latitude: 40.56, longitude: 44.96 },
     { id: 'lp4', name: 'Unpriced Inn', stars: 2, latitude: 40.57, longitude: 44.97 },
 ], total: 4 };
-const RATES = { data: [{ hotelId: 'lp1', price: 180 }, { hotelId: 'lp2', price: 320 }, { hotelId: 'lp3', price: 60 }, { hotelId: 'lp4', price: 0 }], sandbox: true };
+const EXTRA = [{ id: 'lp9', name: 'Hotel du Cygne Paris', stars: 3, latitude: 40.57, longitude: 44.97 }];   // outside the area pool, found by name
+const RATES = { data: [{ hotelId: 'lp1', price: 180 }, { hotelId: 'lp2', price: 320 }, { hotelId: 'lp3', price: 60 }, { hotelId: 'lp4', price: 0 }, { hotelId: 'lp9', price: 150 }], sandbox: true };
 const fakeFetch = (log = []) => async (url, init = {}) => {
     log.push({ url, init });
     const ok = (body) => ({ ok: true, json: async () => body });
+    if (url.includes('/data/hotels') && url.includes('hotelName=')) {
+        const q = decodeURIComponent(url.split('hotelName=')[1].split('&')[0]).toLowerCase();
+        return ok({ data: EXTRA.filter(h => h.name.toLowerCase().includes(q.split(' ')[0])) });
+    }
     if (url.includes('/data/hotels')) return ok(HOTELS);
     if (url.includes('/hotels/min-rates')) return ok(RATES);
     return { ok: false, status: 404, json: async () => ({}) };
@@ -83,6 +88,21 @@ describe('hotel prices (liteAPI)', () => {
         expect(out.kind).toBe('deal');
         expect(out.toolCalls[1].name).toBe('hotel_prices');
         expect(out.toolCalls[1].result.matched['Noy Land'].price_per_night).toBe(180);
+    });
+});
+
+describe('named hotels outside the area pool', () => {
+    test('are looked up by name (accent-folded) and priced; the pool stays first', async () => {
+        const log = [];
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Hôtel du Cygne Paris', 'Noy Land'] }, { env: ENV, fetch: fakeFetch(log), now: '2026-09-18T21:00:00Z' });
+        const nameCalls = log.filter(l => l.url.includes('hotelName='));
+        expect(nameCalls).toHaveLength(1);                   // Noy Land is already in the pool — no lookup for it
+        expect(decodeURIComponent(nameCalls[0].url)).toContain('hotelName=Hotel du Cygne Paris');
+        expect(JSON.parse(log[log.length - 1].init.body).hotelIds).toEqual(['lp1', 'lp2', 'lp3', 'lp4', 'lp9']);
+        expect(out.matched['Hôtel du Cygne Paris'].hotel_id).toBe('lp9');
+        expect(out.matched['Hôtel du Cygne Paris'].price_per_night).toBe(150);
+        expect(out.matched['Noy Land'].hotel_id).toBe('lp1');
+        expect(hotels._norm('Hôtel Louvre Richelieu')).toBe('louvre richelieu');
     });
 });
 

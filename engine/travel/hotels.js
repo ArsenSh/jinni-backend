@@ -63,7 +63,7 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
 }
 
 const _q = (o) => Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-const _norm = (s) => String(s || '').toLowerCase().replace(/\b(hotel|resort|spa|the|and|&)\b/g, ' ').replace(/[^a-z0-9Ѐ-ӿ԰-֏]+/g, ' ').trim();
+const _norm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\b(hotel|hotels|resort|spa|the|and|&|de|du|des|la|le)\b/g, ' ').replace(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/g, ' ').trim();
 const haversineKm = (a, b, c, d) => { const R = 6371, t = x => x * Math.PI / 180; const dl = t(c - a), dn = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dn / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
 const _iso = (d) => d.toISOString().slice(0, 10);
 
@@ -113,9 +113,21 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
     const radiusM = Math.round(Math.min(Math.max(Number(radiusKm) || 15, 1), 80) * 1000);
     const found = await _call('/data/hotels', { query: { countryCode: String(centre.countryCode).toUpperCase(), latitude: centre.lat, longitude: centre.lng, radius: Math.max(radiusM, 1000), limit: HOTEL_POOL } }, deps);
     const pool = (Array.isArray(found?.data) ? found.data : []).filter(h => h && h.id);
+    // The agent's named picks, looked up by name near the centre — a big city's
+    // area pool rarely contains them (Paris: 37 priced, 0 of 8 named matched).
+    const inPool = (nm) => { const key = _norm(nm); return !!key && pool.some(h => { const hn = _norm(h.name); return hn && (hn === key || hn.includes(key) || key.includes(hn)); }); };
+    const wanted = (Array.isArray(names) ? names : []).map(w => typeof w === 'string' ? { name: w } : (w || {})).filter(w => w.name && !inPool(w.name));   // only the ones the pool lacks
+    const byName = await Promise.all(wanted.map(async (w) => {
+        const q = String(w.name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+        const at = Number.isFinite(w.lat) ? { latitude: w.lat, longitude: w.lng, radius: 3000 } : { latitude: centre.lat, longitude: centre.lng, radius: Math.max(radiusM, 1000) * 2 };
+        const r = await _call('/data/hotels', { query: { countryCode: String(centre.countryCode).toUpperCase(), hotelName: q, ...at, limit: 5 } }, deps);
+        return (Array.isArray(r?.data) ? r.data : []).filter(h => h && h.id);
+    }));
+    const seen = new Set(pool.map(h => h.id));
+    for (const list of byName) for (const h of list) if (!seen.has(h.id)) { seen.add(h.id); pool.push(h); }
     if (!pool.length) return { ok: false, reason: found === null ? `hotels_call_failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'no_hotels_in_index_here', area: centre.name || null, ...base };
     const rates = await _call('/hotels/min-rates', { method: 'POST', body: {
-        hotelIds: pool.map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
+        hotelIds: pool.slice(0, 100).map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
         occupancies: [{ adults: 2 }], currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
     } }, deps);
     const partnerError = rates && rates.error && typeof rates.error === 'object' ? rates.error : null;   // e.g. {code:2001, message:'no availability found'}

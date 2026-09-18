@@ -208,6 +208,60 @@
           }
         }
       ]
+    },
+    {
+      "id": "hotel-price-paris",
+      "why": "Europe, budget ask in French: the tool should price central Paris and the model should quote only returned numbers, in French.",
+      "turns": [
+        {
+          "say": "Je cherche un hôtel pas cher près du Louvre pour le week-end prochain, ça coûte combien la nuit ?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
+    },
+    {
+      "id": "hotel-price-bangkok",
+      "why": "Asia, luxury with dates: the range (cheapest/median/priciest) should let the model say what luxury means in Bangkok.",
+      "turns": [
+        {
+          "say": "Luxury hotel in Bangkok on the river, 20-23 November — what would a night cost me?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
+    },
+    {
+      "id": "hotel-price-tbilisi",
+      "why": "Neighbouring country, no dates, no style: default stay + honest 'no availability' or real prices.",
+      "turns": [
+        {
+          "say": "Weekend in Tbilisi old town, any good hotel and roughly how much?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
     }
   ]
 }
