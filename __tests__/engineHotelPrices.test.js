@@ -42,7 +42,8 @@ describe('hotel prices (liteAPI)', () => {
         expect(out.ok).toBe(true);
         expect(log[0].url).toContain('/data/hotels?countryCode=AM&latitude=40.55&longitude=44.95&radius=15000');
         expect(log[0].init.headers['X-API-Key']).toBe('sand_x');
-        const body = JSON.parse(log[1].init.body);
+        expect(log.some(l => l.url.includes('hotelName=Nowhere'))).toBe(true);   // the pool lacks it → looked up by name
+        const body = JSON.parse(log.find(l => l.url.includes('/hotels/min-rates')).init.body);
         expect(body).toMatchObject({ hotelIds: ['lp1', 'lp2', 'lp3', 'lp4'], checkin: '2026-10-02', checkout: '2026-10-04', currency: 'USD', guestNationality: 'AM', occupancies: [{ adults: 2 }] });
         expect(out.nights).toBe(2);
         expect(out.hotels.map(h => h.name)).toEqual(['Harsnaqar', 'Noy Land Resort', 'Black Diamond Hotel & Spa']);   // unpriced dropped, cheapest first
