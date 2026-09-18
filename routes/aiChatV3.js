@@ -556,6 +556,14 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
         //    a Yerevan sofa (live 2026-08-29, Group B battery). Settings
         //    commands and transport/how-to questions never move the centre. ──
         const sessionCards = shownPlaces(sessionPeek?.messages);
+        // Shared hotel_prices executor (agent loop + answer loops) — only when the partner key exists.
+        const hotelPricesExec = (o = {}) => hotels.makeExecutor({
+            center, sessionCards, fallbackName: meta.searchCity || null,
+            currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
+            guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2), ...o,
+        });
+        const HOTEL_TOOLS = hotels.hotelsEnabled() ? [hotels.HOTEL_PRICES_TOOL] : [];
+        const hotelExecs = () => hotels.hotelsEnabled() ? { hotel_prices: hotelPricesExec() } : {};
         // Per-deck ledger for the narrator: the AI resolves "the first two" /
         // "the glamping I saved" from THIS, instead of claiming turns stand
         // alone or searching reference phrases (live 2026-09-05, the Dsegh
@@ -1187,7 +1195,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 for (const chunk of reply.match(/.{1,60}(\s|$)/gs) || [reply]) {
                     send(res, { type: 'token', content: chunk });
                 }
-                if (toolCalls) meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                if (toolCalls) meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' ? { result: c.result } : {}) }));
                 // Keep the LAST fare set the API actually returned, so the next
                 // turn answers from data rather than denying what is on screen.
                 const _flightCall = [...loop.toolCalls].reverse().find(c => c.name === 'find_flights' && c.result);
@@ -1337,8 +1345,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             if (_det.timeBound || hasReturnDeadline(message)) {
                 const loop = await runToolLoop({
                     messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences, sessionDeck: sessionDecks }),
-                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
-                    execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }),
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, ...HOTEL_TOOLS],
+                    execute: { ...makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }), ...hotelExecs() },
                     maxTokens: 500,
                 }, { provider: deepseekProvider });
                 addUsage(loop);
@@ -1348,7 +1356,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 }
                 stats.path = 'tool';
                 meta.answerType = 'feasibility';
-                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' ? { result: c.result } : {}) }));
                 console.log(`[v3] time-bound itinerary ask -> feasibility check (${loop.toolCalls.length} tool call(s)), no clarifier`);
             } else {
             const _pd = _det.days || parseItineraryDays(message);
@@ -1455,9 +1463,9 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     aboutPlace: (namedCard && namedCard.name) || null,
                     alreadyDescribed: !!(namedCard && namedCard.name && sessionPeek?.lastDiscussed?.name
                         && String(namedCard.name).toLowerCase() === String(sessionPeek.lastDiscussed.name).toLowerCase()) }),
-                tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
-                execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}`,
-                    onPlace: (d) => fetchedDocs.push(d) }),
+                tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, ...HOTEL_TOOLS],
+                execute: { ...makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}`,
+                    onPlace: (d) => fetchedDocs.push(d) }), ...hotelExecs() },
                 maxTokens: 400,
             }, { provider: deepseekProvider });
             addUsage(loop);
@@ -1466,7 +1474,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 send(res, { type: 'token', content: chunk });
             }
             stats.path = 'tool';
-            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' ? { result: c.result } : {}) }));
             console.log(`[v3] tool-loop "${String(message).slice(0, 50)}" → ${loop.toolCalls.length} call(s) [${loop.toolCalls.map(c => `${c.name}(${c.args?.name || ''})`).join(', ')}] in ${Date.now() - t0}ms iter=${loop.iterations}`);
             // Stamp what this turn DISCUSSED so a later pronoun can point at
             // it (see the referent block above). Fire-and-forget: a failed
@@ -1924,45 +1932,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         // remembered by hotel name and ride on the dealt cards.
                         ...(hotels.hotelsEnabled() ? {
                             extraTools: [hotels.HOTEL_PRICES_TOOL],
-                            extraExec: {
-                                hotel_prices: async (a = {}) => {
-                                    const names = (Array.isArray(a.hotel_names) ? a.hotel_names : []).slice(0, 8).map(n => {
-                                        const sc = sessionCards.find(c => c?.name && c.name.toLowerCase() === String(n).toLowerCase());
-                                        return sc && Number.isFinite(sc.latitude ?? sc.lat) ? { name: String(n), lat: sc.latitude ?? sc.lat, lng: sc.longitude ?? sc.lng } : { name: String(n) };
-                                    });
-                                    // Resolve the area to a centre + ISO country (the partner
-                                    // index is per country): gazetteer name → hit; "traveler"
-                                    // or an unknown name → the settlement around the traveler.
-                                    const gaz = require('../engine/geo/gazetteer');
-                                    const areaName = String(a.area || '').slice(0, 80);
-                                    let hit = null;
-                                    if (areaName && areaName.toLowerCase() !== 'traveler') { try { hit = await gaz.lookupPlace(areaName, { near: center || null }); } catch { hit = null; } }
-                                    let centre = hit && Number.isFinite(hit.lat) ? { lat: hit.lat, lng: hit.lng, countryCode: hit.countryCode || null, name: hit.name } : null;
-                                    if ((!centre || !centre.countryCode) && center) {
-                                        let reg = null; try { reg = await gaz.regionAt({ lat: centre?.lat ?? center.lat, lng: centre?.lng ?? center.lng }, { maxKm: 60 }); } catch { reg = null; }
-                                        if (reg?.countryCode) centre = { lat: centre?.lat ?? center.lat, lng: centre?.lng ?? center.lng, countryCode: reg.countryCode, name: centre?.name || reg.city || meta.searchCity || areaName };
-                                    }
-                                    const out = await hotels.hotelPrices({
-                                        centre, names, radiusKm: hit?.waterBody ? 40 : 15,
-                                        checkIn: a.check_in || null, checkOut: a.check_out || null,
-                                        currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
-                                        guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
-                                    });
-                                    console.log(`[v3][hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'} → ${out.ok ? `${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
-                                    if (!out.ok) return { error: out.reason, centre: centre ? { name: centre.name, country: centre.countryCode } : null };
-                                    for (const [name, m] of Object.entries(out.matched || {})) if (m) agentPrices.set(name.toLowerCase(), m);
-                                    const pn = out.hotels.map(h => h.price_per_night);
-                                    return {
-                                        area: out.area, stay: `${out.check_in} → ${out.check_out} (${out.nights} night${out.nights > 1 ? 's' : ''})`, currency: out.currency,
-                                        area_range_per_night: pn.length ? { cheapest: pn[0], median: pn[Math.floor(pn.length / 2)], priciest: pn[pn.length - 1], hotels_priced: pn.length } : null,
-                                        matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no cached price'])),
-                                        priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-                                        cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-                                        note: 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels',
-                                        diag: out.diag || null,
-                                    };
-                                },
-                            },
+                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }) },
                         } : {}),
                         // Progress the traveler can see while the brain works.
                         onEvent: ({ tool, args }) => {
@@ -2118,8 +2088,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     try {
                         const loop = await runToolLoop({
                             messages: buildToolAnswerMessages({ message, langName, history: recentTurns, preferences: intent._preferences, sessionDeck: sessionDecks }),
-                            tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
-                            execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }),
+                            tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, ...HOTEL_TOOLS],
+                            execute: { ...makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }), ...hotelExecs() },
                             maxTokens: 400,
                         }, { provider: deepseekProvider });
                         if (loop.text) {
@@ -2129,7 +2099,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                                 send(res, { type: 'token', content: chunk });
                             }
                             stats.path = 'tool';
-                            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                            meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' ? { result: c.result } : {}) }));
                             rescued = true;
                             console.log(`[v3] empty deck rescued by tool loop (question-shaped ask) → ${loop.toolCalls.length} call(s) in ${Date.now() - t0}ms`);
                         }
@@ -2227,8 +2197,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         sessionDeck: sessionDecks,
                         aboutPlace: (sessionPeek?.lastDiscussed?.name && _placeLive(sessionPeek.lastDiscussed.name))
                             ? sessionPeek.lastDiscussed.name : null }),
-                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL],
-                    execute: makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }),
+                    tools: [PLACE_DETAILS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, ...HOTEL_TOOLS],
+                    execute: { ...makeExecutors({ center, sessionPlaces: sessionCards, requestId: `v3-${Date.now()}` }), ...hotelExecs() },
                     maxTokens: 400,
                 }, { provider: deepseekProvider });
                 addUsage(loop);
@@ -2238,7 +2208,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 }
                 stats.path = 'tool';
                 meta.answerType = 'question_rescue';
-                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args }));
+                meta.toolCalls = loop.toolCalls.map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' ? { result: c.result } : {}) }));
                 const _qd = [...loop.toolCalls].reverse().find(c => c.name === 'get_place_details')?.args?.name || null;
                 if (sessionId && _qd) {
                     require('../models/ChatSession').updateOne(

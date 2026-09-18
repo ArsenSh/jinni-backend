@@ -160,4 +160,43 @@ const HOTEL_PRICES_TOOL = {
     },
 };
 
-module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, HOTEL_PRICES_TOOL, _memo, _norm };
+/**
+ * Executor for the tool, shared by the deck agent and the answer-path tool
+ * loops. Resolves the area to a centre + ISO country via the gazetteer (name →
+ * hit; "traveler"/unknown → the settlement around the traveler), prices, and
+ * reports matches through `onMatch(nameLower, row)` so cards can carry them.
+ */
+function makeExecutor({ center = null, sessionCards = [], currency = 'USD', locale = 'en', guestNationality = 'US', fallbackName = null, onMatch = null } = {}, deps = {}) {
+    const gaz = deps.gazetteer || require('../geo/gazetteer');
+    return async (a = {}) => {
+        const names = (Array.isArray(a.hotel_names) ? a.hotel_names : []).slice(0, 8).map(n => {
+            const sc = sessionCards.find(c => c?.name && c.name.toLowerCase() === String(n).toLowerCase());
+            return sc && Number.isFinite(sc.latitude ?? sc.lat) ? { name: String(n), lat: sc.latitude ?? sc.lat, lng: sc.longitude ?? sc.lng } : { name: String(n) };
+        });
+        const areaName = String(a.area || '').slice(0, 80);
+        let hit = null;
+        if (areaName && areaName.toLowerCase() !== 'traveler') { try { hit = await gaz.lookupPlace(areaName, { near: center || null }); } catch { hit = null; } }
+        let centre = hit && Number.isFinite(hit.lat) ? { lat: hit.lat, lng: hit.lng, countryCode: hit.countryCode || null, name: hit.name } : null;
+        if ((!centre || !centre.countryCode) && (centre || center)) {
+            const at = { lat: centre?.lat ?? center.lat, lng: centre?.lng ?? center.lng };
+            let reg = null; try { reg = await gaz.regionAt(at, { maxKm: 60 }); } catch { reg = null; }
+            if (reg?.countryCode) centre = { ...at, countryCode: reg.countryCode, name: centre?.name || reg.city || fallbackName || areaName };
+        }
+        const out = await hotelPrices({ centre, names, radiusKm: hit?.waterBody ? 40 : 15, checkIn: a.check_in || null, checkOut: a.check_out || null, currency, locale, guestNationality }, deps);
+        console.log(`[hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'} → ${out.ok ? `${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
+        if (!out.ok) return { error: out.reason, centre: centre ? { name: centre.name, country: centre.countryCode } : null };
+        if (onMatch) for (const [name, m] of Object.entries(out.matched || {})) if (m) onMatch(name.toLowerCase(), m);
+        const pn = out.hotels.map(h => h.price_per_night);
+        return {
+            area: out.area, stay: `${out.check_in} → ${out.check_out} (${out.nights} night${out.nights > 1 ? 's' : ''})`, currency: out.currency,
+            area_range_per_night: pn.length ? { cheapest: pn[0], median: pn[Math.floor(pn.length / 2)], priciest: pn[pn.length - 1], hotels_priced: pn.length } : null,
+            matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no live price'])),
+            priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
+            cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
+            note: 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels',
+            diag: out.diag || null,
+        };
+    };
+}
+
+module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, makeExecutor, HOTEL_PRICES_TOOL, _memo, _norm };
