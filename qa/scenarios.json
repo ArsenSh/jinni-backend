@@ -176,12 +176,13 @@
     },
     {
       "id": "hotel-price",
-      "why": "Price question: the agent should call hotel_prices (once the Travelpayouts token is set) and quote only returned numbers; cards carry hotelPrice.",
+      "why": "Price question: the agent should call hotel_prices (liteAPI) and quote only returned numbers; owner-listed prices reach the card as listedPrice.",
       "turns": [
         {
           "say": "How much is a night in a good hotel on Lake Sevan? Nothing fancy, just clean and quiet.",
           "expect": {
             "v3laneIn": [
+              "deck",
               "places",
               "clarify"
             ],

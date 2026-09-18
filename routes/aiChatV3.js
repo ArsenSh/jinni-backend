@@ -1959,6 +1959,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                                         priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
                                         cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
                                         note: 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels',
+                                        diag: out.diag || null,
                                     };
                                 },
                             },

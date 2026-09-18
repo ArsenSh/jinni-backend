@@ -26,7 +26,8 @@ const TIMEOUT_MS = 8000;
 const TTL_MS = 6 * 3600e3;          // "from" prices move slowly; 6 h is honest enough
 const MAX_MEMO = 300;
 const MATCH_KM = 0.6;               // same hotel ⇒ same block; the name is the tie-breaker
-const HOTEL_POOL = 60;              // hotels priced per area call
+const HOTEL_POOL = 50;              // hotels priced per area call
+let _lastError = null;              // { path, status } of the last failed call — surfaced in diag
 const _memo = new Map();            // key → { at, value }
 
 function hotelsEnabled(env = process.env) { return !!env.HOTEL_PRICES_TOKEN; }
@@ -52,9 +53,10 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
             headers: { Accept: 'application/json', 'X-API-Key': env.HOTEL_PRICES_TOKEN, ...(body ? { 'Content-Type': 'application/json' } : {}) },
             ...(body ? { body: JSON.stringify(body) } : {}),
         });
-        if (!res.ok) { console.warn(`[hotels] ${method} ${path} → ${res.status}`); return null; }
+        if (!res.ok) { _lastError = { path, status: res.status }; console.warn(`[hotels] ${method} ${path} → ${res.status}`); return null; }
         return _remember(key, await res.json());
     } catch (err) {
+        _lastError = { path, status: err.name === 'AbortError' ? 'timeout' : err.message };
         console.warn(`[hotels] ${method} ${path}: ${err.message}`);
         return null;
     } finally { clearTimeout(timer); }
@@ -100,7 +102,7 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
     const radiusM = Math.round(Math.min(Math.max(Number(radiusKm) || 15, 1), 80) * 1000);
     const found = await _call('/data/hotels', { query: { countryCode: String(centre.countryCode).toUpperCase(), latitude: centre.lat, longitude: centre.lng, radius: Math.max(radiusM, 1000), limit: HOTEL_POOL } }, deps);
     const pool = (Array.isArray(found?.data) ? found.data : []).filter(h => h && h.id);
-    if (!pool.length) return { ok: false, reason: 'no_hotels_in_index_here', area: centre.name || null, ...base };
+    if (!pool.length) return { ok: false, reason: found === null ? `hotels_call_failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'no_hotels_in_index_here', area: centre.name || null, ...base };
     const rates = await _call('/hotels/min-rates', { method: 'POST', body: {
         hotelIds: pool.map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
         occupancies: [{ adults: 2 }], currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
@@ -131,7 +133,8 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
         }
         matched[n.name] = best ? { ...best } : null;
     }
-    return { ok: true, area: centre.name || null, ...base, hotels, matched };
+    const diag = { hotels_in_index: pool.length, hotels_priced: priceById.size, rates_call: rates === null ? `failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'ok' };
+    return { ok: true, area: centre.name || null, ...base, hotels, matched, diag };
 }
 
 /** The agent tool. Registered only when the token exists, so the model never reaches for a dead tool. */

@@ -72,7 +72,8 @@ async function turn(sessionId, message) {
 
 function cardLine(c) {
     const lat = c.latitude ?? c.lat ?? c.geometry?.lat, lng = c.longitude ?? c.lng ?? c.geometry?.lng;
-    return `${c.name}${c.category ? ` [${c.category}]` : ''}${c.distance ? ` ${c.distance}` : ''}${c.address || c.location ? ` — ${String(c.address || c.location).slice(0, 60)}` : ''}${Number.isFinite(lat) ? ` (${lat.toFixed(3)},${lng.toFixed(3)})` : ''}`;
+    const price = c.hotelPrice ? ` from ${c.hotelPrice.perNight} ${c.hotelPrice.currency}/night${c.bookingUrl ? ' (link)' : ''}` : (c.listedPrice ? ` listed ${c.listedPrice.min != null ? 'from ' + c.listedPrice.min : '≈ ' + c.listedPrice.average} ${c.listedPrice.currency}` : '');
+    return `${c.name}${c.category ? ` [${c.category}]` : ''}${c.distance ? ` ${c.distance}` : ''}${price}${c.address || c.location ? ` — ${String(c.address || c.location).slice(0, 60)}` : ''}${Number.isFinite(lat) ? ` (${lat.toFixed(3)},${lng.toFixed(3)})` : ''}`;
 }
 
 function check(expect, r) {
@@ -113,7 +114,7 @@ function check(expect, r) {
             if (r.meta?.followUpQuestion) console.log(`    question: ${r.meta.followUpQuestion}`);
             for (const c of r.cards) console.log(`    • ${cardLine(c)}`);
             for (const [name, ok, note] of check(t.expect, r)) { ok ? pass++ : fail++; console.log(`    ${ok ? 'PASS' : 'FAIL'} ${name}${note ? ` (${note})` : ''}`); }
-            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng })) });
+            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng, hotelPrice: c.hotelPrice || null, listedPrice: c.listedPrice || null, bookingUrl: c.bookingUrl || null })) });
             // Persist the transcript the way the app does, so the next turn has history.
             const now = new Date().toISOString();
             messages.push({ id: `u-${Date.now()}`, sender: 'user', text: t.say, timestamp: now });
