@@ -2274,7 +2274,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 // logged blurbs=6/6, every Armenian turn 4/6 or 5/6). Output
                 // caps cost nothing when unused — only truncation does.
                 const narrationTokens = narrationBudget(result.places.length, intent._userLanguage || 'en');
-                let intro = '', blurbs = [], streamedOk = false;
+                let intro = '', blurbs = [], streamedOk = false, unfit = [];
                 try {
                     const proseGate = makeGreetingGate((text) => send(res, { type: 'token', content: text }), { enabled: greetGateOn });
                     const splitter = new DelimitedSplitter((text) => proseGate.feed(text));
@@ -2303,6 +2303,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     const parsedTail = tail ? parseCardsTail(tail, result.places.length) : null;
                     if (parsedTail) {
                         blurbs = parsedTail.blurbs;
+                        unfit = parsedTail.unfit || [];
                         meta.followUpQuestion = parsedTail.question;
                         // The model's read of what each place IS, already checked
                         // against the vocabulary. Ride it on the candidate so it
@@ -2360,6 +2361,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     if (parsed) {
                         intro = parsed.intro;
                         blurbs = parsed.blurbs;
+                        unfit = parsed.unfit || [];
                         meta.followUpQuestion = parsed.question;
                     } else {
                         const fb = await narrator.stream({ messages: buildGroundedMessages(promptArgs), maxTokens: 400, model: providerName, modelName });
@@ -2381,6 +2383,18 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 //    Prose and deck AGREE: intro-named places lead the cards. ──
                 // Blurbs seat on the card they NAME, not the index the model
                 // wrote (mis-numbered by praise order, live 2026-09-04).
+                // The narrator may mark a card unfit for THIS ask (its judgment,
+                // 2026-09-18: a VR arena on "calm weekend"). Code only removes,
+                // and only while something fit remains — an all-unfit deck is
+                // the narrator's honesty problem to say in prose, not ours to blank.
+                const _unfitIdx = (unfit || []).map((u, i) => (u ? i : -1)).filter(i => i >= 0 && result.places[i]);
+                if (_unfitIdx.length && _unfitIdx.length < result.places.length) {
+                    console.log(`[v3] narrator marked ${_unfitIdx.length} card(s) unfit — dropped: ${_unfitIdx.map(i => result.places[i].name).join(', ')}`);
+                    meta.unfitDropped = _unfitIdx.map(i => result.places[i].name);
+                    const keep = new Set(_unfitIdx);
+                    result.places = result.places.filter((_, i) => !keep.has(i));
+                    blurbs = blurbs.filter((_, i) => !keep.has(i));
+                }
                 const _realigned = realignBlurbs(result.places, blurbs);
                 if (_realigned.some((b, i2) => b !== blurbs[i2])) {
                     console.log('[v3] blurbs realigned to their named cards');

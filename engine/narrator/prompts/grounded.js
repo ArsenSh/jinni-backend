@@ -654,7 +654,8 @@ function buildNarrationJson({ query, places = [], langName = 'English', timeNote
             role: 'system',
             content:
                 'You are Jinni, a warm, concise travel companion. Reply ONLY with JSON — no prose outside it, no markdown fences.\n'
-              + 'Schema: {"intro": string, "cards": [{"i": number, "blurb": string}], "question": string|null}\n'
+              + 'Schema: {"intro": string, "cards": [{"i": number, "blurb": string, "unfit": true|absent}], "question": string|null}\n'
+              + '- unfit: true ONLY for a place that plainly contradicts the ask; omit otherwise; never mark every card; do not name an unfit place in the intro.\n'
               + 'Rules:\n'
               + `- intro: 1–3 warm sentences in ${langName} answering the ask, highlighting 1–2 listed places by exact name. NEVER mention a place not on the list — including ones from earlier in the conversation. Never enumerate the places as a list or bullets — the cards present every place; the intro only frames the set.\n`
               + `- cards: one entry per listed index, blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. Never state prices, opening hours, menus, phone numbers, addresses, or ratings other than those given.\n`
@@ -700,15 +701,15 @@ function parseNarrationJson(text, count) {
         const obj = JSON.parse(m[0]);
         if (typeof obj.intro !== 'string' || !obj.intro.trim()) return null;
         const blurbs = new Array(count).fill(null);
+        const unfit = new Array(count).fill(false);
         for (const c of (Array.isArray(obj.cards) ? obj.cards : [])) {
-            if (c && Number.isInteger(c.i) && c.i >= 0 && c.i < count
-                && typeof c.blurb === 'string' && c.blurb.trim()) {
-                blurbs[c.i] = c.blurb.trim().slice(0, 240);
-            }
+            if (!c || !Number.isInteger(c.i) || c.i < 0 || c.i >= count) continue;
+            if (typeof c.blurb === 'string' && c.blurb.trim()) blurbs[c.i] = c.blurb.trim().slice(0, 240);
+            if (c.unfit === true) unfit[c.i] = true;
         }
         const question = (typeof obj.question === 'string' && obj.question.trim())
             ? obj.question.trim().slice(0, 200) : null;
-        return { intro: obj.intro.trim(), blurbs, question };
+        return { intro: obj.intro.trim(), blurbs, question, unfit };
     } catch { return null; }
 }
 
@@ -780,7 +781,7 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
                   + 'and present them as the matching subset, never as new discoveries.\n'
                   : '')
               + 'THEN, on a new line, write exactly <<<CARDS>>> followed by JSON only:\n'
-              + '{"cards": [{"i": 0, "kind": "...", "blurb": "..."}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
+              + '{"cards": [{"i": 0, "kind": "...", "blurb": "...", "unfit": true}, ...], "question": "..." | null, "prefUpdate": {...} | null}\n'
               + `- cards MUST contain EXACTLY one entry for EVERY listed index (0..${Math.max(places.length - 1, 0)}), blurb of 1–2 sentences (max ~35 words) in ${langName} on why it suits THIS ask — vivid but factual. `
               + '"i" is the place\'s index in the numbered list ABOVE — NEVER the order you chose to write about them. '
               // The card's category. Google's raw types are on each facts line
@@ -788,6 +789,12 @@ function buildStreamedNarrationMessages({ query, places = [], langName = 'Englis
               // mall can all arrive as one vague type. The model reads the NAME
               // too, so it can tell them apart; code then checks the answer is
               // a vocabulary word and ignores anything else.
+              // The narrator is the last brain before the traveler sees a card.
+              // Retrieval ranks by text similarity and can seat a VR arena on
+              // a "calm weekend" ask (live 2026-09-18); the model saw it and
+              // wrote "skip it" — now it can say so in data and the card is not
+              // dealt. Judgment stays with the model; code only removes.
+              + '\n- unfit: true ONLY for a place that plainly contradicts the ask (a VR arena or nightclub for "calm", a hostel for "luxury", a city hotel for "on the lake"). Omit it otherwise. Never mark every card unfit. Do not name an unfit place in the prose.'
               + '\n- kind: what this place IS, chosen from this list EXACTLY as spelled, in English (never translated):\n'
               + `  ${CATEGORY_VOCABULARY.join(', ')}.\n`
               + '  Judge from the name AND the raw types shown. Pick the most specific one that is TRUE; '
@@ -871,6 +878,7 @@ function parseCardsTail(tail, count) {
     const text = String(tail || '');
     const blurbs = new Array(count).fill(null);
     const kinds = new Array(count).fill(null);
+    const unfit = new Array(count).fill(false);
     let question = null, prefUpdate = null;
 
     // Pass 1 — parse the JSON, tolerating the model's most common slip
@@ -888,6 +896,7 @@ function parseCardsTail(tail, count) {
             if (typeof c.blurb === 'string' && c.blurb.trim()) blurbs[c.i] = c.blurb.trim().slice(0, 240);
             const kind = normalizeCategory(c.kind);
             if (kind) kinds[c.i] = kind;
+            if (c.unfit === true) unfit[c.i] = true;
         }
         if (typeof obj.question === 'string' && obj.question.trim()) {
             question = obj.question.trim().slice(0, 200);
@@ -895,7 +904,7 @@ function parseCardsTail(tail, count) {
         // A parse that yielded NOTHING (valid JSON, wrong shape) still gets
         // the salvage pass below — don't return an empty win.
         if (obj.prefUpdate && typeof obj.prefUpdate === 'object') prefUpdate = obj.prefUpdate;
-        if (blurbs.some(Boolean) || kinds.some(Boolean) || question) return { blurbs, kinds, question, prefUpdate };
+        if (blurbs.some(Boolean) || kinds.some(Boolean) || question) return { blurbs, kinds, question, prefUpdate, unfit };
     }
 
     // Pass 2 — salvage (battery row 7, 2026-08-22): a truncated or malformed

@@ -518,3 +518,19 @@ describe('scrubHoursClaims — no open/closed claim for a place nobody holds hou
         expect(scrubHoursClaims(null, unknown)).toBeNull();
     });
 });
+
+describe('unfit cards (narrator judgment, 2026-09-18)', () => {
+    const g = require('../engine/narrator/prompts/grounded');
+    test('parseCardsTail carries unfit flags', () => {
+        const r = g.parseCardsTail('{"cards":[{"i":0,"kind":"park","blurb":"calm"},{"i":1,"kind":"amusement park","blurb":"loud","unfit":true}],"question":null}', 2);
+        expect(r.unfit).toEqual([false, true]);
+    });
+    test('parseNarrationJson carries unfit flags', () => {
+        const r = g.parseNarrationJson('{"intro":"x","cards":[{"i":0,"blurb":"a"},{"i":1,"blurb":"b","unfit":true}],"question":null}', 2);
+        expect(r.unfit).toEqual([false, true]);
+    });
+    test('the rule is in both prompts', () => {
+        expect(g.buildStreamedNarrationMessages({ query: 'calm', places: [{ name: 'A' }], langName: 'English' })[0].content).toMatch(/unfit: true ONLY/);
+        expect(g.buildNarrationJson({ query: 'calm', places: [{ name: 'A' }], langName: 'English' })[0].content).toMatch(/unfit: true ONLY/);
+    });
+});
