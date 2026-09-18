@@ -1930,10 +1930,23 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                                         const sc = sessionCards.find(c => c?.name && c.name.toLowerCase() === String(n).toLowerCase());
                                         return sc && Number.isFinite(sc.latitude ?? sc.lat) ? { name: String(n), lat: sc.latitude ?? sc.lat, lng: sc.longitude ?? sc.lng } : { name: String(n) };
                                     });
+                                    // Resolve the area to a centre + ISO country (the partner
+                                    // index is per country): gazetteer name → hit; "traveler"
+                                    // or an unknown name → the settlement around the traveler.
+                                    const gaz = require('../engine/geo/gazetteer');
+                                    const areaName = String(a.area || '').slice(0, 80);
+                                    let hit = null;
+                                    if (areaName && areaName.toLowerCase() !== 'traveler') { try { hit = await gaz.lookupPlace(areaName, { near: center || null }); } catch { hit = null; } }
+                                    let centre = hit && Number.isFinite(hit.lat) ? { lat: hit.lat, lng: hit.lng, countryCode: hit.countryCode || null, name: hit.name } : null;
+                                    if ((!centre || !centre.countryCode) && center) {
+                                        let reg = null; try { reg = await gaz.regionAt({ lat: centre?.lat ?? center.lat, lng: centre?.lng ?? center.lng }, { maxKm: 60 }); } catch { reg = null; }
+                                        if (reg?.countryCode) centre = { lat: centre?.lat ?? center.lat, lng: centre?.lng ?? center.lng, countryCode: reg.countryCode, name: centre?.name || reg.city || meta.searchCity || areaName };
+                                    }
                                     const out = await hotels.hotelPrices({
-                                        area: String(a.area || '').slice(0, 80), near: center || null, names,
+                                        centre, names, radiusKm: hit?.waterBody ? 40 : 15,
                                         checkIn: a.check_in || null, checkOut: a.check_out || null,
                                         currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
+                                        guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
                                     });
                                     if (!out.ok) return { error: out.reason };
                                     for (const [name, m] of Object.entries(out.matched || {})) if (m) agentPrices.set(name.toLowerCase(), m);
@@ -1944,7 +1957,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                                         matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no cached price'])),
                                         priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
                                         cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-                                        note: 'cached "from" prices per night; quote only these numbers, and only for the matched hotels',
+                                        note: 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels',
                                     };
                                 },
                             },
