@@ -15,9 +15,19 @@
 //                 be missing — the tool says so instead of guessing)
 // Live search for exact dates needs separate approval; not used here.
 //
-// Setup: TRAVELPAYOUTS_TOKEN + TRAVELPAYOUTS_MARKER in Coolify env. Without
-// the token everything fails open — the agent simply gets no hotel_prices
-// tool and answers as it does today, minus prices.
+// !! 2026-09-19, same day: Hotellook was SHUT DOWN on 2025-10-20 (Travelpayouts
+// "FAQ on the closure of Hotellook": "Widgets, landing pages, and the Hotellook
+// API stopped working"); engine.hotellook.com answers 404 for every path. The
+// endpoints below are therefore DEAD. The tool plumbing (agent tool schema,
+// name matching, per-night maths, card fields) is provider-agnostic and stays;
+// the fetch layer must be re-pointed at a live partner API (candidates:
+// liteAPI, Amadeus Self-Service hotel search, Booking.com Demand API).
+//
+// Gate: HOTEL_PRICES_TOKEN (+ HOTEL_PRICES_MARKER for the booking link) —
+// deliberately NOT the TRAVELPAYOUTS_* pair, which is already set for
+// flights: with the dead host the tool would be registered and fail on every
+// hotel question. Without the token everything fails open — the agent simply
+// gets no hotel_prices tool and answers as it does today, minus prices.
 
 const LOOKUP_URL = 'https://engine.hotellook.com/api/v2/lookup.json';
 const CACHE_URL = 'https://engine.hotellook.com/api/v2/cache.json';
@@ -28,7 +38,7 @@ const MAX_MEMO = 300;
 const MATCH_KM = 1.2;               // same hotel ⇒ same block; names are the tie-breaker
 const _memo = new Map();            // url → { at, value }
 
-function hotelsEnabled(env = process.env) { return !!env.TRAVELPAYOUTS_TOKEN; }
+function hotelsEnabled(env = process.env) { return !!env.HOTEL_PRICES_TOKEN; }
 
 function _remember(key, value) {
     if (_memo.size >= MAX_MEMO) _memo.delete(_memo.keys().next().value);
@@ -70,7 +80,7 @@ const _validDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 
 /** Where a traveler lands when they click "check rates". Marker = our commission. */
 function bookingUrl({ destination, hotelId = null, checkIn, checkOut, adults = 2, currency = 'usd', locale = 'en' } = {}, env = process.env) {
-    const q = _q({ destination, hotelId, checkIn, checkOut, adults, currency: String(currency || 'usd').toLowerCase(), language: locale, marker: env.TRAVELPAYOUTS_MARKER || null });
+    const q = _q({ destination, hotelId, checkIn, checkOut, adults, currency: String(currency || 'usd').toLowerCase(), language: locale, marker: env.HOTEL_PRICES_MARKER || null });
     return `${BOOK_URL}?${q}`;
 }
 
@@ -78,7 +88,7 @@ function bookingUrl({ destination, hotelId = null, checkIn, checkOut, adults = 2
 async function lookupLocation(query, { near = null, lang = 'en' } = {}, deps = {}) {
     const env = deps.env || process.env;
     if (!hotelsEnabled(env) || !query) return null;
-    const json = await _getJson(`${LOOKUP_URL}?${_q({ query, lang, lookFor: 'both', limit: 10, token: env.TRAVELPAYOUTS_TOKEN })}`, deps);
+    const json = await _getJson(`${LOOKUP_URL}?${_q({ query, lang, lookFor: 'both', limit: 10, token: env.HOTEL_PRICES_TOKEN })}`, deps);
     const locs = Array.isArray(json?.results?.locations) ? json.results.locations : [];
     const hotels = Array.isArray(json?.results?.hotels) ? json.results.hotels : [];
     const dist = (x) => near && x?.location && Number.isFinite(+x.location.lat) ? haversineKm(near.lat, near.lng, +x.location.lat, +x.location.lon) : Infinity;
@@ -105,7 +115,7 @@ async function hotelPrices({ area, near = null, names = [], checkIn = null, chec
     const params = found.kind === 'location'
         ? { locationId: found.hit.id }
         : { locationId: found.hit.locationId, hotelId: found.hit.id };
-    const rows = await _getJson(`${CACHE_URL}?${_q({ ...params, checkIn: stay.checkIn, checkOut: stay.checkOut, currency: cur, limit: Math.min(Math.max(limit, 5), 100), token: env.TRAVELPAYOUTS_TOKEN })}`, deps);
+    const rows = await _getJson(`${CACHE_URL}?${_q({ ...params, checkIn: stay.checkIn, checkOut: stay.checkOut, currency: cur, limit: Math.min(Math.max(limit, 5), 100), token: env.HOTEL_PRICES_TOKEN })}`, deps);
     const list = Array.isArray(rows) ? rows : [];
     const areaName = found.kind === 'location' ? (found.hit.fullName || found.hit.name) : (found.hit.locationName || area);
     const centre = near || (found.hit.location && Number.isFinite(+found.hit.location.lat) ? { lat: +found.hit.location.lat, lng: +found.hit.location.lon } : null);

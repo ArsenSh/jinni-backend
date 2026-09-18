@@ -1,9 +1,11 @@
-// Hotel prices via Travelpayouts/Hotellook (founder 2026-09-19). Recorded
-// response shapes; the token is fake — nothing here touches the network.
+// Hotel prices tool plumbing (founder 2026-09-19). The Hotellook provider it
+// was written against is DEAD (closed 2025-10-20) — these tests pin the
+// provider-agnostic parts: gating, matching, per-night maths, agent wiring.
+// Recorded response shapes; the token is fake — nothing touches the network.
 const hotels = require('../engine/travel/hotels');
 const { runDeckAgent } = require('../engine/agent/deckAgent');
 
-const ENV = { TRAVELPAYOUTS_TOKEN: 'tok', TRAVELPAYOUTS_MARKER: '123456' };
+const ENV = { HOTEL_PRICES_TOKEN: 'tok', HOTEL_PRICES_MARKER: '123456' };
 const LOOKUP = { status: 'ok', results: {
     locations: [
         { id: 1001, type: 'City', countryName: 'Armenia', name: 'Sevan', fullName: 'Sevan, Armenia', location: { lat: 40.55, lon: 44.95 }, hotelsCount: 40 },
