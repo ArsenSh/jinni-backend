@@ -86,6 +86,24 @@ describe('hotel prices (liteAPI)', () => {
     });
 });
 
+describe('dates and partner errors', () => {
+    test('a past stay keeps its day and rolls to the next year; a stay 2+ years back is dropped', () => {
+        expect(hotels.rollForward({ checkIn: '2025-10-10', checkOut: '2025-10-12' }, new Date('2026-09-18T21:00:00Z'))).toEqual({ checkIn: '2026-10-10', checkOut: '2026-10-12' });
+        expect(hotels.rollForward({ checkIn: '2026-10-10', checkOut: '2026-10-12' }, new Date('2026-09-18T21:00:00Z'))).toEqual({ checkIn: '2026-10-10', checkOut: '2026-10-12' });
+        expect(hotels.rollForward({ checkIn: '2020-01-01', checkOut: '2020-01-02' }, new Date('2026-09-18T21:00:00Z'))).toBeNull();
+    });
+    test('the partner "no availability" error is named in diag, and nothing is priced', async () => {
+        const fetchNoAvail = async (url) => ({ ok: true, json: async () => url.includes('/data/hotels') ? HOTELS : { error: { code: 2001, message: 'no availability found' } } });
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'], checkIn: '2025-10-10', checkOut: '2025-10-11' }, { env: ENV, fetch: fetchNoAvail, now: '2026-09-18T21:00:00Z' });
+        expect(out.ok).toBe(true);
+        expect(out.check_in).toBe('2026-10-10');
+        expect(out.hotels).toEqual([]);
+        expect(out.matched['Harsnaqar']).toBeNull();
+        expect(out.diag.rates_call).toBe('partner: no availability found');
+        expect(out.diag.rates_shape).toBeUndefined();
+    });
+});
+
 describe("owner's listed price (Destination/Business pricing)", () => {
     const { summarize } = require('../engine/agent/deckAgent');
     const { toRecommendation } = require('../engine/narrator/cards');

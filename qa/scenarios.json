@@ -201,7 +201,8 @@
             "v3laneIn": [
               "deck",
               "places",
-              "clarify"
+              "clarify",
+              "place_question"
             ],
             "cardsMax": 6
           }

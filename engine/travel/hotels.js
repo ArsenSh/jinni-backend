@@ -75,6 +75,14 @@ function defaultStay(now = new Date()) {
     const out = new Date(d); out.setUTCDate(out.getUTCDate() + 1);
     return { checkIn: _iso(d), checkOut: _iso(out) };
 }
+/** A stay in the past keeps its month/day and moves to the next year it is still ahead. Null past 2 years (a typo, not a plan). */
+function rollForward({ checkIn, checkOut }, now = new Date()) {
+    const today = Date.parse(_iso(now));
+    let a = new Date(checkIn + 'T12:00:00Z'), b = new Date(checkOut + 'T12:00:00Z'), tries = 0;
+    while (Date.parse(_iso(a)) < today && tries < 2) { a.setUTCFullYear(a.getUTCFullYear() + 1); b.setUTCFullYear(b.getUTCFullYear() + 1); tries++; }
+    if (Date.parse(_iso(a)) < today) return null;
+    return { checkIn: _iso(a), checkOut: _iso(b) };
+}
 function _nights(a, b) { return Math.max(1, Math.round((Date.parse(b) - Date.parse(a)) / 864e5)); }
 const _validDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 
@@ -94,7 +102,10 @@ function bookingUrl({ hotelId, checkIn, checkOut, adults = 2, currency = 'USD', 
 async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn = null, checkOut = null, currency = 'USD', guestNationality = 'US', locale = 'en' } = {}, deps = {}) {
     const env = deps.env || process.env;
     if (!hotelsEnabled(env)) return { ok: false, reason: 'hotel_prices_disabled' };
-    const stay = _validDate(checkIn) && _validDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn) ? { checkIn, checkOut } : defaultStay(deps.now ? new Date(deps.now) : new Date());
+    const now = deps.now ? new Date(deps.now) : new Date();
+    let stay = _validDate(checkIn) && _validDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn) ? { checkIn, checkOut } : null;
+    if (stay) stay = rollForward(stay, now);   // the model wrote "2025-10-10" in September 2026 — same day, next occurrence
+    if (!stay) stay = defaultStay(now);
     const nights = _nights(stay.checkIn, stay.checkOut);
     const cur = String(currency || 'USD').toUpperCase();
     const base = { check_in: stay.checkIn, check_out: stay.checkOut, nights, currency: cur, hotels: [], matched: {} };
@@ -107,6 +118,7 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
         hotelIds: pool.map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
         occupancies: [{ adults: 2 }], currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
     } }, deps);
+    const partnerError = rates && rates.error && typeof rates.error === 'object' ? rates.error : null;   // e.g. {code:2001, message:'no availability found'}
     const priceById = new Map((Array.isArray(rates?.data) ? rates.data : []).filter(r => r && r.hotelId && Number.isFinite(+r.price) && +r.price > 0).map(r => [r.hotelId, +r.price]));
     const hotels = pool.filter(h => priceById.has(h.id)).map(h => {
         const total = Math.round(priceById.get(h.id));
@@ -133,8 +145,8 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
         }
         matched[n.name] = best ? { ...best } : null;
     }
-    const diag = { hotels_in_index: pool.length, hotels_priced: priceById.size, rates_call: rates === null ? `failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'ok' };
-    if (rates && !priceById.size) {   // priced nothing — show the shape we got, so a doc/reality mismatch is visible
+    const diag = { hotels_in_index: pool.length, hotels_priced: priceById.size, rates_call: rates === null ? `failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : (partnerError ? `partner: ${partnerError.message || partnerError.code}` : 'ok') };
+    if (rates && !priceById.size && !partnerError) {   // priced nothing — show the shape we got, so a doc/reality mismatch is visible
         const first = Array.isArray(rates.data) ? rates.data[0] : null;
         diag.rates_shape = { keys: Object.keys(rates).slice(0, 8), data_length: Array.isArray(rates.data) ? rates.data.length : null, first_keys: first && typeof first === 'object' ? Object.keys(first).slice(0, 10) : null, sample: JSON.stringify(first || rates).slice(0, 300) };
     }
@@ -193,10 +205,10 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no live price'])),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-            note: 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels',
+            note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,
             diag: out.diag || null,
         };
     };
 }
 
-module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, makeExecutor, HOTEL_PRICES_TOOL, _memo, _norm };
+module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, rollForward, makeExecutor, HOTEL_PRICES_TOOL, _memo, _norm };
