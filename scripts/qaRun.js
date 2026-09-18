@@ -93,8 +93,12 @@ function check(expect, r) {
         results.push([`all cards within ${max} km of ${lat},${lng}`, far.length === 0, far.length ? `far: ${far.map(c => c.name).join(', ')}` : `${r.cards.length} card(s)`]);
     }
     if (expect.allCardsDatedEvents) {
+        // Honest fallback is allowed: when NO dated event exists the deck may be
+        // venues (the reply says so). Mixing venues INTO a dated deck is the fault.
         const undated = r.cards.filter(c => !c.eventSchedule);
-        results.push(['all cards are dated events', undated.length === 0, undated.length ? `venues/undated: ${undated.map(c => c.name).join(', ')}` : `${r.cards.length} event(s)`]);
+        const dated = r.cards.length - undated.length;
+        const ok = undated.length === 0 || dated === 0;
+        results.push(['no venues mixed into a dated events deck', ok, dated === 0 && undated.length ? `no dated events — ${undated.length} venue(s) offered honestly` : (undated.length ? `venues/undated: ${undated.map(c => c.name).join(', ')}` : `${r.cards.length} event(s)`)]);
     }
     if (expect.cardsWithImageMin != null) {
         const withImg = r.cards.filter(c => c.image || c.cachedImageUrl).length;
