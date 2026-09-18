@@ -81,6 +81,7 @@ function check(expect, r) {
     const qa = r.meta?.qa || {};
     const lane = qa.lane || null, path = qa.path || null;
     if (expect.v3lane && ENGINE === 'v3') results.push([`lane=${expect.v3lane}`, lane === expect.v3lane, `got ${lane || path || '?'}`]);
+    if (expect.v3laneIn && ENGINE === 'v3') results.push([`lane in ${expect.v3laneIn.join('|')}`, expect.v3laneIn.includes(lane), `got ${lane || path || '?'}`]);
     if (expect.cardsMax != null) results.push([`cards<=${expect.cardsMax}`, r.cards.length <= expect.cardsMax, `got ${r.cards.length}`]);
     if (expect.cardsMin != null) results.push([`cards>=${expect.cardsMin}`, r.cards.length >= expect.cardsMin, `got ${r.cards.length}`]);
     if (expect.allCardsWithinKm) {

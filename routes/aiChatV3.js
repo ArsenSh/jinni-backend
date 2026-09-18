@@ -1899,7 +1899,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             //    V3_AGENT=true in the env turns it on; any failure falls back
             //    to the classic pipeline below. ──
             let agentOut = null, agentAsk = null, agentIntro = null, agentBlurbs = null;
-            if (String(process.env.V3_AGENT || '').toLowerCase() === 'true') {
+            if (String(process.env.V3_AGENT || '').toLowerCase() === 'true' && !refillActive) {
                 stage('searching', 'Looking around…');
                 try {
                     const { runDeckAgent } = require('../engine/agent/deckAgent');
@@ -1916,6 +1916,12 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         provider: deepseekProvider,
                         retrieve: (args) => findPlaces(args, { loadCandidates }),
                         lookup: (name, o) => require('../engine/geo/gazetteer').lookupPlace(name, o),
+                        // Progress the traveler can see while the brain works.
+                        onEvent: ({ tool, args }) => {
+                            if (tool === 'lookup_place') stage('searching', `Checking ${args.name}…`);
+                            else if (tool === 'search_places') stage('searching', `Searching ${args.query}${args.centre && args.centre !== 'traveler' ? ` around ${args.centre}` : ''}…`);
+                            else if (tool === 'deal') stage('writing', 'Almost there — putting it together…');
+                        },
                     });
                     console.log(`[v3][agent] ${agentOut.kind}${agentOut.reason ? ` (${agentOut.reason})` : ''} steps=${agentOut.steps} searches=${agentOut.searches} calls=${(agentOut.toolCalls || []).map(c => c.name).join(',')}`);
                     meta.toolCalls = (agentOut.toolCalls || []).map(c => ({ name: c.name, args: c.args }));
@@ -2446,6 +2452,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     blurbs = _realigned;
                 }
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
+                for (const p of hoisted.places) if (p && p._agentKind && !p._kind) p._kind = p._agentKind;
                 recommendations = hoisted.places.map((p, i) =>
                     toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode,
                         // V3: a blurb may not claim open/closed for a place with no hours.

@@ -72,12 +72,12 @@ const DEAL_TOOL = {
     type: 'function',
     function: {
         name: 'deal',
-        description: 'End the turn by showing cards. Only ids returned by search_places in THIS turn are allowed. Choose the ones that truly fit the ask (usually 3, up to 6), best first; leave out anything that contradicts the ask. Write a short intro in the traveler\'s language that answers the ask and names 1–2 of the chosen places, a 1–2 sentence blurb per card using only the facts you saw, and optionally one follow-up question.',
+        description: 'End the turn by showing cards. Only ids returned by search_places in THIS turn are allowed. Choose the ones that truly fit the ask (3 unless more are clearly wanted, max 6), best first; leave out anything that contradicts the ask. Keep it SHORT — every word you write here is time the traveler waits: intro = 1–2 sentences in the traveler\'s language that answer the ask and name 1–2 chosen places; blurb = ONE sentence, max 18 words, only facts you saw; question optional, one line.',
         parameters: {
             type: 'object',
             properties: {
                 intro: { type: 'string' },
-                cards: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, blurb: { type: 'string' } }, required: ['id', 'blurb'] } },
+                cards: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, blurb: { type: 'string' }, kind: { type: 'string', description: 'What the place IS, one or two words in English (cafe, coworking space, lakeside hotel, park…) — read the name and facts, do not copy a raw type like "parking".' } }, required: ['id', 'blurb'] } },
                 question: { type: 'string' },
             },
             required: ['intro', 'cards'],
@@ -143,6 +143,7 @@ async function runDeckAgent({
     findArgsBase = {}, sessionCards = [],
 } = {}, deps = {}) {
     const provider = deps.provider;
+    const onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : () => {};
     const retrieve = deps.retrieve;           // (args) => retrieval.findPlaces(args, { loadCandidates })
     const lookup = deps.lookup;               // (name, { near }) => gazetteer hit | null
     const extraTools = deps.extraTools || []; // e.g. place_details / get_route schemas
@@ -225,6 +226,7 @@ async function runDeckAgent({
             for (const c of (Array.isArray(cards) ? cards : []).slice(0, 6)) {
                 const p = c && known.get(String(c.id));
                 if (!p || chosen.includes(p)) continue;          // only what a search returned, once
+                if (typeof c.kind === 'string' && c.kind.trim()) p._agentKind = clip(c.kind, 40);
                 chosen.push(p); blurbs.push(clip(c.blurb, 240) || null);
             }
             if (!chosen.length) return { error: 'no_valid_cards', hint: 'use ids from search_places results, or ask_traveler' };
@@ -266,6 +268,7 @@ async function runDeckAgent({
                 try { args = JSON.parse(call.function?.arguments || '{}'); } catch { /* junk → {} */ }
                 let result;
                 const fn = exec[name];
+                try { onEvent({ tool: name, args }); } catch { /* progress is best-effort */ }
                 if (!fn) result = { error: `unknown_tool: ${name}` };
                 else { try { result = await fn(args); } catch (err) { result = { error: `tool_failed: ${err.message}` }; } }
                 toolCalls.push({ name, args, result: name === 'search_places' ? { ...result, results: undefined, result_count: result.result_count } : result });
