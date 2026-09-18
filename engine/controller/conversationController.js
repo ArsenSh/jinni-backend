@@ -95,6 +95,7 @@ Rules that override everything else:
 - When the traveler ANSWERS a clarify question ("food", "a drink", "walk"), that answer IS the ask: lane deck, place_search_query built from it and the hour ("late-night food Yerevan"), answers_pending_question true.
 - "thanks", "ok thanks", "great", "bye", "perfect" CLOSE the exchange: lane chitchat, answers_pending_question false — a thank-you is not a yes to Jinni's offer (live 2026-09-14: "ok thanks" dealt six more restaurants). Only a message that actually decides the offer answers it.
 - lane deck ONLY when there is something to search for: the message (or the follow-up it continues) names what to show. A deck with nothing to look for is never right.
+- A place described by KIND rather than name — "near a lake", "by the sea", "in the mountains", "somewhere with hot springs" — is still a WHERE. Given where the traveler is (the location line), when exactly ONE real place unmistakably fits, name it in place_names and search there: for a traveler in Armenia "a lake" is Sevan — that is geography, not invention. When two or more fit, or you are not sure, lane = clarify and offer them BY NAME. Dealing city hotels to a lakeside ask is never right (founder 2026-09-18: "why doesn't it search for lakes, then hotels near lakes?").
 - OUTPUT COMPACTLY: omit every key whose value would be "" / false / 0 / [] / null — an absent key means that default. Always include language, is_travel, action_type, lane, and reply_language.`;
 
 // The v2 intent schema + rules are STATIC, so they live in the system prompt,

@@ -207,3 +207,22 @@ describe('vague places asks are asked about, not guessed at (founder 2026-09-16)
         expect(d.clarifyQuestion).toBeNull();
     });
 });
+
+// Founder 2026-09-18: "I want to stay near a lake for several days" from
+// Yerevan dealt city hotels. The controller may name the one place that
+// fits a place described by kind (Armenia's lake = Sevan); the decision
+// must carry it through as the search destination.
+describe('a place described by kind becomes the destination', () => {
+    test('place_names from the controller survive shaping and set the deck centre', () => {
+        const d = shapeDecision({ ...GOOD, lane: 'deck', action_type: 'hotels', place_names: ['Sevan'], place_search_query: 'lakeside hotel several days', flights: null, answers_pending_question: false },
+            'I want to stay near a lake for several days');
+        expect(d.lane).toBe('deck');
+        expect(d.intent.placeNames).toEqual(['Sevan']);
+        expect(d.intent.actionType).toBe('hotels');
+    });
+    test('the rule is in the prompt, with the clarify branch for several candidates', () => {
+        const { system } = buildControllerMessages({ message: 'stay near a lake', recentTurns: [], state: STATE, dateNote: DATE });
+        expect(system).toMatch(/described by KIND/);
+        expect(system).toMatch(/two or more fit.*clarify/);
+    });
+});
