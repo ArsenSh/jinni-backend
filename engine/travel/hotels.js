@@ -236,7 +236,7 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no live price'])),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-            note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,
+            note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels. A matched hotel\'s live price is what the card shows — quote IT, not an owner\'s listed price for the same place' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,
             diag: out.diag || null,
         };
     };
