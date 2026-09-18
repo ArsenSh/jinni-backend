@@ -56,6 +56,12 @@ const recommendationSchema = new mongoose.Schema({
   // user verifies a date we cannot verify ourselves — so it has to survive a
   // reload, or the date outlives the evidence for it.
   sourceUrl: String,
+  // Live partner hotel price + booking link, and the owner's listed price
+  // (2026-09-19). Strict mode would strip them on save otherwise — the
+  // "from $X / night" row and the Check-rates pill vanished on reload.
+  hotelPrice: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  bookingUrl: String,
+  listedPrice: { type: mongoose.Schema.Types.Mixed, default: undefined },
   // An event is not a place: it keeps its own name and borrows the venue's
   // geography. venueName is where it is held; venuePlaceId is the venue's Google
   // id, deliberately NOT copied into placeId (identity everywhere in this app
