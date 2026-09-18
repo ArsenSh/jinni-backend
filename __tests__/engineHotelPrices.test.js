@@ -13,7 +13,7 @@ const HOTELS = { data: [
 ], total: 4 };
 const EXTRA = [{ id: 'lp9', name: 'Hotel du Cygne Paris', stars: 3, latitude: 40.57, longitude: 44.97 }];   // outside the area pool, found by name
 const RATES = { data: [{ hotelId: 'lp1', price: 180 }, { hotelId: 'lp2', price: 320 }, { hotelId: 'lp3', price: 60 }, { hotelId: 'lp4', price: 0 }, { hotelId: 'lp9', price: 150 }], sandbox: true };
-const fakeFetch = (log = []) => async (url, init = {}) => {
+const fakeFetch = (log = []) => async (url, init = {}) => {   // tests pass noPace to skip the 250 ms pacer
     log.push({ url, init });
     const ok = (body) => ({ ok: true, json: async () => body });
     if (url.includes('/data/hotels') && url.includes('hotelName=')) {
@@ -38,7 +38,7 @@ describe('hotel prices (liteAPI)', () => {
         const log = [];
         const out = await hotels.hotelPrices(
             { centre: SEVAN, names: ['Noy Land', { name: 'Black Diamond', lat: 40.58, lng: 44.98 }, 'Nowhere Inn'], checkIn: '2026-10-02', checkOut: '2026-10-04', currency: 'usd', guestNationality: 'am' },
-            { env: ENV, fetch: fakeFetch(log) });
+            { env: ENV, fetch: fakeFetch(log), noPace: true });
         expect(out.ok).toBe(true);
         expect(log[0].url).toContain('/data/hotels?countryCode=AM&latitude=40.55&longitude=44.95&radius=15000');
         expect(log[0].init.headers['X-API-Key']).toBe('sand_x');
@@ -55,7 +55,7 @@ describe('hotel prices (liteAPI)', () => {
     });
     test('no whitelabel domain ⇒ price without a link; no dates ⇒ the coming Saturday night; memoised', async () => {
         const log = [];
-        const deps = { env: { HOTEL_PRICES_TOKEN: 'k' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z' };
+        const deps = { env: { HOTEL_PRICES_TOKEN: 'k' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
         const a = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
         expect(a.check_in).toBe('2026-09-26'); expect(a.check_out).toBe('2026-09-27'); expect(a.nights).toBe(1);
         expect(a.matched['Harsnaqar'].price_per_night).toBe(60);
@@ -64,7 +64,7 @@ describe('hotel prices (liteAPI)', () => {
         expect(log).toHaveLength(2);                         // second call served from memory
     });
     test('an unresolved centre or an empty index is reported, never invented', async () => {
-        const a = await hotels.hotelPrices({ centre: { lat: 1, lng: 2 } }, { env: ENV, fetch: fakeFetch() });
+        const a = await hotels.hotelPrices({ centre: { lat: 1, lng: 2 } }, { env: ENV, fetch: fakeFetch(), noPace: true });
         expect(a.reason).toBe('centre_unresolved');
         const b = await hotels.hotelPrices({ centre: SEVAN }, { env: ENV, fetch: async () => ({ ok: true, json: async () => ({ data: [] }) }) });
         expect(b.reason).toBe('no_hotels_in_index_here');
@@ -83,7 +83,7 @@ describe('hotel prices (liteAPI)', () => {
             provider, lookup: async () => null,
             retrieve: async () => ({ places: [{ placeId: 'g1', name: 'Noy Land', source: 'cache', distanceKm: 3 }] }),
             extraTools: [hotels.HOTEL_PRICES_TOOL],
-            extraExec: { hotel_prices: async (a) => { const r = await hotels.hotelPrices({ centre: SEVAN, names: a.hotel_names }, { env: ENV, fetch: fakeFetch() }); return { matched: r.matched }; } },
+            extraExec: { hotel_prices: async (a) => { const r = await hotels.hotelPrices({ centre: SEVAN, names: a.hotel_names }, { env: ENV, fetch: fakeFetch(), noPace: true }); return { matched: r.matched }; } },
         });
         expect(seen[0]).toContain('hotel_prices');
         expect(out.kind).toBe('deal');
@@ -95,7 +95,7 @@ describe('hotel prices (liteAPI)', () => {
 describe('named hotels outside the area pool', () => {
     test('are looked up by name (accent-folded) and priced; the pool stays first', async () => {
         const log = [];
-        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Hôtel du Cygne Paris', 'Noy Land'] }, { env: ENV, fetch: fakeFetch(log), now: '2026-09-18T21:00:00Z' });
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Hôtel du Cygne Paris', 'Noy Land'] }, { env: ENV, fetch: fakeFetch(log), now: '2026-09-18T21:00:00Z', noPace: true });
         const nameCalls = log.filter(l => l.url.includes('hotelName='));
         expect(nameCalls).toHaveLength(1);                   // Noy Land is already in the pool — no lookup for it
         expect(decodeURIComponent(nameCalls[0].url)).toContain('hotelName=Hotel du Cygne Paris');
@@ -107,6 +107,20 @@ describe('named hotels outside the area pool', () => {
     });
 });
 
+describe('rate limit', () => {
+    test('a 429 on the rates call is retried once and then priced', async () => {
+        let ratesHits = 0;
+        const f = async (url, init) => {
+            if (url.includes('/hotels/min-rates')) { ratesHits++; return ratesHits === 1 ? { ok: false, status: 429, json: async () => ({}) } : { ok: true, json: async () => RATES }; }
+            return { ok: true, json: async () => HOTELS };
+        };
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, { env: ENV, fetch: f, noPace: true });
+        expect(ratesHits).toBe(2);
+        expect(out.matched['Harsnaqar'].price_per_night).toBe(60);
+        expect(out.diag.rates_call).toBe('ok');
+    });
+});
+
 describe('dates and partner errors', () => {
     test('a past stay keeps its day and rolls to the next year; a stay 2+ years back is dropped', () => {
         expect(hotels.rollForward({ checkIn: '2025-10-10', checkOut: '2025-10-12' }, new Date('2026-09-18T21:00:00Z'))).toEqual({ checkIn: '2026-10-10', checkOut: '2026-10-12' });
@@ -115,7 +129,7 @@ describe('dates and partner errors', () => {
     });
     test('the partner "no availability" error is named in diag, and nothing is priced', async () => {
         const fetchNoAvail = async (url) => ({ ok: true, json: async () => url.includes('/data/hotels') ? HOTELS : { error: { code: 2001, message: 'no availability found' } } });
-        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'], checkIn: '2025-10-10', checkOut: '2025-10-11' }, { env: ENV, fetch: fetchNoAvail, now: '2026-09-18T21:00:00Z' });
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'], checkIn: '2025-10-10', checkOut: '2025-10-11' }, { env: ENV, fetch: fetchNoAvail, now: '2026-09-18T21:00:00Z', noPace: true });
         expect(out.ok).toBe(true);
         expect(out.check_in).toBe('2026-10-10');
         expect(out.hotels).toEqual([]);

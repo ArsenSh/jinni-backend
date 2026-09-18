@@ -37,6 +37,18 @@ function _remember(key, value) {
     _memo.set(key, { at: Date.now(), value });
     return value;
 }
+// Partner rate limit: sandbox 5 req/s (live Paris run: 8 parallel name lookups,
+// then 429 on the rates call). A process-wide pacer keeps us under it, and a
+// 429 is retried once after a short wait.
+const MIN_GAP_MS = 250;
+let _nextSlot = 0;
+async function _pace(deps = {}) {
+    if (deps.noPace) return;
+    const now = Date.now();
+    const slot = Math.max(now, _nextSlot);
+    _nextSlot = slot + MIN_GAP_MS;
+    if (slot > now) await new Promise(r => setTimeout(r, slot - now));
+}
 async function _call(path, { method = 'GET', query = null, body = null } = {}, deps = {}) {
     const env = deps.env || process.env;
     const url = `${BASE}${path}${query ? `?${_q(query)}` : ''}`;
@@ -45,6 +57,7 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
     if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
     const doFetch = deps.fetch || (typeof fetch === 'function' ? fetch : null);
     if (!doFetch) return null;
+    await _pace(deps);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), deps.timeoutMs || TIMEOUT_MS);
     try {
@@ -53,6 +66,12 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
             headers: { Accept: 'application/json', 'X-API-Key': env.HOTEL_PRICES_TOKEN, ...(body ? { 'Content-Type': 'application/json' } : {}) },
             ...(body ? { body: JSON.stringify(body) } : {}),
         });
+        if (res.status === 429 && !deps._retried) {
+            clearTimeout(timer);
+            console.warn(`[hotels] ${method} ${path} → 429, retrying once`);
+            await new Promise(r => setTimeout(r, deps.noPace ? 0 : 1200));
+            return _call(path, { method, query, body }, { ...deps, _retried: true });
+        }
         if (!res.ok) { _lastError = { path, status: res.status }; console.warn(`[hotels] ${method} ${path} → ${res.status}`); return null; }
         return _remember(key, await res.json());
     } catch (err) {
