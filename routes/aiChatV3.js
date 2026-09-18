@@ -1894,7 +1894,39 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 taste,
                 excludes: shown,          // already shown this session → follow-ups get NEW places
             };
-            let result = await findPlaces(findArgs, { loadCandidates });
+            // ── DECK AGENT (founder 2026-09-18: "ai should have brain"): the
+            //    model looks with tools, then deals or asks. Dark launch —
+            //    V3_AGENT=true in the env turns it on; any failure falls back
+            //    to the classic pipeline below. ──
+            let agentOut = null, agentAsk = null, agentIntro = null, agentBlurbs = null;
+            if (String(process.env.V3_AGENT || '').toLowerCase() === 'true') {
+                stage('searching', 'Looking around…');
+                try {
+                    const { runDeckAgent } = require('../engine/agent/deckAgent');
+                    agentOut = await runDeckAgent({
+                        message, recentTurns, langName,
+                        dateNote: describeDate(buildTimeContext({ timezone: userTimezone, lng: center?.lng })),
+                        traveler: center ? { lat: center.lat, lng: center.lng, label: meta.searchCity || null } : null,
+                        preferences: intent._preferences || null,
+                        lastDeck: shown?.names ? [...shown.names].slice(0, 8) : [],
+                        lastQuestion: sessionPeek?.lastReply?.text ? String(sessionPeek.lastReply.text).split(/(?<=\?)/).pop() : null,
+                        activeDestination: sessionPeek?.activeDestination?.name || null,
+                        findArgsBase: findArgs, sessionCards,
+                    }, {
+                        provider: deepseekProvider,
+                        retrieve: (args) => findPlaces(args, { loadCandidates }),
+                        lookup: (name, o) => require('../engine/geo/gazetteer').lookupPlace(name, o),
+                    });
+                    console.log(`[v3][agent] ${agentOut.kind}${agentOut.reason ? ` (${agentOut.reason})` : ''} steps=${agentOut.steps} searches=${agentOut.searches} calls=${(agentOut.toolCalls || []).map(c => c.name).join(',')}`);
+                    meta.toolCalls = (agentOut.toolCalls || []).map(c => ({ name: c.name, args: c.args }));
+                    if (agentOut.kind === 'ask') agentAsk = agentOut.question;
+                    else if (agentOut.kind === 'deal') { agentIntro = agentOut.intro; agentBlurbs = agentOut.blurbs; }
+                } catch (err) { console.warn(`[v3][agent] failed: ${err.message} — classic pipeline`); agentOut = null; }
+            }
+            let result = (agentOut && agentOut.kind === 'deal')
+                ? { places: agentOut.places, degraded: false, reason: null, provenance: { candidateCount: agentOut.places.length, lexical: 0, vector: false, cacheHit: false, agent: true } }
+                : (agentAsk ? { places: [], degraded: false, reason: 'agent_ask', provenance: { candidateCount: 0, lexical: 0, vector: false, cacheHit: false, agent: true } }
+                            : await findPlaces(findArgs, { loadCandidates }));
             // Out-of-town decks: stamp each place's nearest TOWN (local
             // gazetteer, $0) so the narrator can frame areas honestly and
             // cards show where a bare street address actually is (live
@@ -1954,8 +1986,13 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             stats.taste = !!result.provenance.taste;
             stats.evidence = [category ? 'category' : null, result.provenance.lexical ? 'text' : null]
                 .filter(Boolean).join('+') || 'none';
-            if (result.degraded || !result.places.length) stats.path = 'empty';
-            if (result.degraded || !result.places.length) {
+            if (!agentAsk && (result.degraded || !result.places.length)) stats.path = 'empty';
+            if (agentAsk) {
+                reply = agentAsk;
+                stats.path = 'clarify';
+                send(res, { type: 'token', content: reply });
+                console.log(`[v3][agent] ask → "${reply.slice(0, 80)}"`);
+            } else if (result.degraded || !result.places.length) {
                 // Honest empty, split by CAUSE and spoken in the traveler's
                 // language (Dilijan 23:21, 2026-08-30: an Armenian ask got a
                 // hardcoded-English "you've seen everything" when the truth
@@ -2275,6 +2312,14 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 // caps cost nothing when unused — only truncation does.
                 const narrationTokens = narrationBudget(result.places.length, intent._userLanguage || 'en');
                 let intro = '', blurbs = [], streamedOk = false, unfit = [];
+                if (agentIntro != null) {
+                    intro = greetGateOn ? stripLeadingGreeting(agentIntro) : agentIntro;
+                    blurbs = agentBlurbs || [];
+                    meta.followUpQuestion = agentOut.question || null;
+                    streamedOk = true;
+                    stats.path = 'agent';
+                    for (const chunk of intro.match(/.{1,60}(\s|$)/gs) || [intro]) send(res, { type: 'token', content: chunk });
+                } else
                 try {
                     const proseGate = makeGreetingGate((text) => send(res, { type: 'token', content: text }), { enabled: greetGateOn });
                     const splitter = new DelimitedSplitter((text) => proseGate.feed(text));
