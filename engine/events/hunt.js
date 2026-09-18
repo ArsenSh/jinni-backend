@@ -373,7 +373,16 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
     const newSources = [];                            // discovered pages that actually produced events
     let renderBudget = MAX_RENDERS;
     let pagesRead = 0;
+    // Wall-clock budget for a hunt someone is WAITING on (Paris, no registered
+    // source, live 2026-09-19: 100 s reading the web in-turn). Past it we stop
+    // opening pages and deal what was found; the nightly sweep has no budget.
+    const budgetMs = Number.isFinite(deps.budgetMs) ? deps.budgetMs : null;
+    const huntStart = Date.now();
     for (const u of urls) {
+        if (budgetMs != null && Date.now() - huntStart > budgetMs) {
+            console.log(`[hunt] budget ${budgetMs}ms spent after ${pagesRead} page(s) — dealing ${found.length} event(s), ${urls.length - pagesRead} page(s) left unread`);
+            break;
+        }
         const beforeCount = found.length;
         try {
             let html = await fetchHtml(u.url, { timeoutMs: deps.timeoutMs || 10000 });

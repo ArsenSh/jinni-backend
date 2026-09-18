@@ -475,7 +475,7 @@ async function loadCandidates(params = {}, deps = {}) {
                     // hunt's own source-freshness skip, not just this
                     // threshold — "see in internet" means READ, now.
                     force: !!params.eventsHunt.force,
-                }, { webSearchCfg: params.eventsHunt.webSearch || null });
+                }, { webSearchCfg: params.eventsHunt.webSearch || null, budgetMs: params.eventsHunt.budgetMs || 25000 });
                 if (extra.length) evs = mergeAndDedupe(evs, extra);
             } catch (err) {
                 console.warn(`[canonicalStore] events hunt failed: ${err.message} — serving owned events only`);

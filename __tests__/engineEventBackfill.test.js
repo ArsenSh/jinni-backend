@@ -19,3 +19,20 @@ test('reads each poor row\'s own page and stores the poster it finds', async () 
     expect(updates[0][0]).toBe('a');
     expect(updates[0][1].image).toBe('https://cdn/organ-poster.jpg');
 });
+
+test('an in-turn hunt stops opening pages once its wall-clock budget is spent', async () => {
+    const { huntEvents } = require('../engine/events/hunt');
+    let now = 0; const nowFn = () => now;
+    const realNow = Date.now; Date.now = () => now;
+    try {
+        const opened = [];
+        const fetchHtml = async (url) => { opened.push(url); now += 20000; return '<html><body>nothing dated here</body></html>'; };
+        const out = await huntEvents({ city: 'Paris', window: { start: '2026-09-19', end: '2026-09-21', label: 'weekend' } }, {
+            AiFoundEvent: { find: () => ({ lean: async () => [] }), bulkWrite: async () => ({}) }, EventSource: { find: () => ({ lean: async () => [] }) },
+            searchWeb: async () => ['https://a.example/1', 'https://a.example/2', 'https://a.example/3', 'https://a.example/4'].map(url => ({ url, title: 'events' })),
+            fetchHtml, budgetMs: 25000, nowFn, allowExtracted: false,
+        });
+        expect(Array.isArray(out)).toBe(true);
+        expect(opened.length).toBeLessThanOrEqual(2);   // 20 s per page, 25 s budget → 2 pages at most
+    } finally { Date.now = realNow; }
+});
