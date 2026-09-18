@@ -865,10 +865,17 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // WHETHER it is a reference is the intent LLM's judgement
                 // (any language), never a phrase list (founder 2026-09-05).
                 const _refPhrase = intent.anchorReference === true;
+                // The paid, fuzzy Google lookup only for something that looks
+                // like a NAME (a capital letter) or that the intent model also
+                // read as a place. "near lake several days" is neither — it
+                // resolved to Swan Lake, a pond, and the deck was city hotels
+                // (live 2026-09-18). Exact-match tiers still run for all.
+                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName) || (intent.placeNames || []).length > 0;
+                if (!_refPhrase && !_nameLike) console.log(`[destination] "${statedName}" is not name-shaped — no paid lookup for it`);
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,
                     { sessionCards, near: gpsCenter },
-                    _refPhrase ? { findPlaces: null }
+                    (_refPhrase || !_nameLike) ? { findPlaces: null }
                                : { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) },
                 ).catch(() => null);
                 if (_refPhrase && statedPosition && statedPosition.source === 'gazetteer') statedPosition = null;

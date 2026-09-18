@@ -195,6 +195,16 @@ const AT_LOCATION_RES = [
     /(?:я|мы)\s+(?:сейчас\s+)?(?:в|на|у|около)\s+(.{2,48})/i,
 ];
 const _AT_STOP_RE = /\s+(?:and|but|so|what|where|which|can|could|should|would|now|please|я|и|а|что|где)\b|[.,;!?—–]/i;
+/* A stated position is a NAME. "near lake several days" is not one — the
+ * regex above fires on any words after "near", and a paid Google text search
+ * then returns SOMETHING (Swan Lake, a pond in Yerevan; Sea Lake, a town in
+ * Australia — live 2026-09-18). Surface form only, no meaning: a capital
+ * letter anywhere in the phrase, in any cased script. Scripts without case
+ * (Arabic, Chinese) return false and rely on the intent model's place list. */
+function looksLikeProperName(name) {
+    return /\p{Lu}/u.test(String(name || ''));
+}
+
 function parseAtLocation(message) {
     const m = String(message || '');
     for (const re of AT_LOCATION_RES) {
@@ -542,5 +552,6 @@ function stripGeoTokens(query, geoTokens = []) {
     return kept.length ? kept.join(' ') : null;
 }
 
-module.exports = { effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, narrationBudget, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
+module.exports = {
+    looksLikeProperName, effectiveRadiusKm, buildRetrievalQuery, stripGeoTokens, stripRadiusPhrase, isBrowseAsk, parseCurrencyConvert, parseSeasonWindow, inSeason, isItineraryAsk, parseItineraryDays, isCorrectionLead, hasReturnDeadline, narrationBudget, CHAT_STOPWORDS, isRightNowAsk, isTransportAsk, isNearbyAsk, isWalkingAsk, isClosestAsk,
     parseAtLocation, parseRadiusKm, parseCorridorAsk, alsoTypesFor, namesVenueType, isEntityQuestion, parseReferentAsk, rankingWeights, parseRefillAsk, parseDeckCount, LOCAL_DISCOVERY_CAP_KM };

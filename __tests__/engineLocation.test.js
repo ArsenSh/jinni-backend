@@ -23,6 +23,18 @@ describe('parseAtLocation — "I\'m at Khor Virap"', () => {
     });
 });
 
+describe('looksLikeProperName — only a NAME earns a paid lookup (live 2026-09-18)', () => {
+    const { looksLikeProperName } = require('../engine/retrieval/tuning');
+    test('common-noun phrases are not names', () => {
+        for (const n of ['lake several days', 'sea/lake several days', 'the beach', 'озеро'])
+            expect(looksLikeProperName(n)).toBe(false);
+    });
+    test('capitalised phrases are, in any cased script', () => {
+        for (const n of ['Khor Virap', 'Lake Sevan', 'Севан', 'Սևան'])
+            expect(looksLikeProperName(n)).toBe(true);
+    });
+});
+
 describe('parseRadiusKm — "within 10 km"', () => {
     test('reads the number and the unit', () => {
         expect(parseRadiusKm('What can I do within 10 km?')).toBe(10);
