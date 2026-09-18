@@ -190,6 +190,23 @@
           }
         }
       ]
+    },
+    {
+      "id": "hotel-price-dubai",
+      "why": "Big-city control for the price partner: dated stay in Dubai Marina — separates 'sandbox is thin in Armenia' from 'the call is wrong'.",
+      "turns": [
+        {
+          "say": "I'll be in Dubai Marina on 10-12 October, what does a decent 4-star hotel cost per night there?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
     }
   ]
 }

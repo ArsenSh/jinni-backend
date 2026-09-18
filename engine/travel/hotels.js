@@ -134,6 +134,10 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
         matched[n.name] = best ? { ...best } : null;
     }
     const diag = { hotels_in_index: pool.length, hotels_priced: priceById.size, rates_call: rates === null ? `failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'ok' };
+    if (rates && !priceById.size) {   // priced nothing — show the shape we got, so a doc/reality mismatch is visible
+        const first = Array.isArray(rates.data) ? rates.data[0] : null;
+        diag.rates_shape = { keys: Object.keys(rates).slice(0, 8), data_length: Array.isArray(rates.data) ? rates.data.length : null, first_keys: first && typeof first === 'object' ? Object.keys(first).slice(0, 10) : null, sample: JSON.stringify(first || rates).slice(0, 300) };
+    }
     return { ok: true, area: centre.name || null, ...base, hotels, matched, diag };
 }
 
