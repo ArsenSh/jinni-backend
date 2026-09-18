@@ -284,6 +284,19 @@ function dbDocToCandidate(d, source, center) {
         types: Array.isArray(d.type) ? d.type : [],
         primaryType: null,
         priceLevel: null,
+        // The owner's own price block (Destination/Business `pricing`):
+        // founder 2026-09-19 — "black diamond is added by me and i am sure i
+        // added approximate price". Carried as a fact for the agent and the
+        // card; null when free or empty, never derived into a $-tier guess.
+        ownedPrice: (() => {
+            const pr = d.pricing;
+            if (!pr || pr.isFree) return null;
+            const min = Number.isFinite(+pr.min) && +pr.min > 0 ? +pr.min : null;
+            const max = Number.isFinite(+pr.max) && +pr.max > 0 ? +pr.max : null;
+            const average = Number.isFinite(+pr.average) && +pr.average > 0 ? +pr.average : null;
+            if (min == null && average == null) return null;
+            return { min, max, average, currency: String(pr.currency || 'USD').toUpperCase() };
+        })(),
         // Validator/business hours (day-name schedule) converted to Google
         // periods so the SAME open-now math covers all three sources; null
         // when no valid schedule (unknown → kept).

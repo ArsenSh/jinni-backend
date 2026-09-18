@@ -214,6 +214,9 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         // 2026-09-19). Absent ⇒ the card shows no price — never a guess.
         hotelPrice: place.hotelPrice || null,
         bookingUrl: place.hotelPrice?.url || null,
+        // The owner's listed price (Destination/Business pricing block) —
+        // shown as "from X" / "≈ X" when no partner price exists for the card.
+        listedPrice: place.ownedPrice || null,
         _isExpired: false,
         _action: action || 'general',
         metadata: {

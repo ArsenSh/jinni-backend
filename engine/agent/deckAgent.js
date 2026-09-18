@@ -126,6 +126,9 @@ function summarize(c) {
         distance_from_search_centre_km: Number.isFinite(c.distanceKm) ? Math.round(c.distanceKm * 10) / 10 : null,
         rating: c.rating ?? null,
         price_tier: c.priceLevel || c._styleTier || null,
+        // The owner's listed price when the place is ours — a real number the
+        // model may quote ("from 150 USD"), unlike price_tier which is a band.
+        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`) + (c.ownedPrice.max != null && c.ownedPrice.min != null ? ` to ${c.ownedPrice.max}` : '') + ' (owner\'s listing)' : null,
         tags: (c.interests || []).slice(0, 5),
         open_now: c._openNow === true ? true : (c._openNow === false ? false : null),
         source: c.source === 'destination' || c.source === 'business' ? 'owned' : (c.source || null),

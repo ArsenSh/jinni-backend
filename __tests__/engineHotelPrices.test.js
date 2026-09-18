@@ -85,3 +85,27 @@ describe('hotel prices (liteAPI)', () => {
         expect(out.toolCalls[1].result.matched['Noy Land'].price_per_night).toBe(180);
     });
 });
+
+describe("owner's listed price (Destination/Business pricing)", () => {
+    const { summarize } = require('../engine/agent/deckAgent');
+    const { toRecommendation } = require('../engine/narrator/cards');
+    const store = require('../engine/places/canonicalStore');
+    const doc = { _id: 'd1', name: 'Black Diamond Sevan', type: ['hotel'], location: { coordinates: { lat: 40.56, lng: 44.99 }, city: 'Sevan' }, pricing: { isFree: false, min: 120, max: 260, average: 180, currency: 'USD' } };
+    test('rides from the record to the agent facts and the card', () => {
+        const c = store.dbDocToCandidate(doc, 'destination', null);
+        expect(c.ownedPrice).toEqual({ min: 120, max: 260, average: 180, currency: 'USD' });
+        expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: true, average: 5 } }, 'destination', null).ownedPrice).toBeNull();
+        expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: false, average: 300, currency: 'usd' } }, 'business', null).ownedPrice).toEqual({ min: null, max: null, average: 300, currency: 'USD' });
+    });
+    test('agent sees a quotable number; free or empty pricing stays silent', () => {
+        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toBe("from 120 USD to 260 (owner's listing)");
+        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toBe("about 180 AMD (owner's listing)");
+        expect(summarize({ name: 'x' }).price).toBeNull();
+    });
+    test('card carries listedPrice, and never a partner hotelPrice it did not get', () => {
+        const rec = toRecommendation({ name: 'x', source: 'destination', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }, 0, {});
+        expect(rec.listedPrice).toEqual({ min: 120, max: 260, average: 180, currency: 'USD' });
+        expect(rec.hotelPrice).toBeNull();
+        expect(rec.bookingUrl).toBeNull();
+    });
+});
