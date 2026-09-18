@@ -73,7 +73,9 @@ async function turn(sessionId, message) {
 function cardLine(c) {
     const lat = c.latitude ?? c.lat ?? c.geometry?.lat, lng = c.longitude ?? c.lng ?? c.geometry?.lng;
     const price = c.hotelPrice ? ` from ${c.hotelPrice.perNight} ${c.hotelPrice.currency}/night${c.bookingUrl ? ' (link)' : ''}` : (c.listedPrice ? ` listed ${c.listedPrice.min != null ? 'from ' + c.listedPrice.min : '≈ ' + c.listedPrice.average} ${c.listedPrice.currency}` : '');
-    return `${c.name}${c.category ? ` [${c.category}]` : ''}${c.distance ? ` ${c.distance}` : ''}${price}${c.address || c.location ? ` — ${String(c.address || c.location).slice(0, 60)}` : ''}${Number.isFinite(lat) ? ` (${lat.toFixed(3)},${lng.toFixed(3)})` : ''}`;
+    const ev = c.eventSchedule ? ` 📅 ${JSON.stringify(c.eventSchedule).slice(0, 70)}${c.eventPrice ? ` 🎫 ${c.eventPrice}` : ''}` : '';
+    const img = (c.image || c.cachedImageUrl) ? '' : ' [no image]';
+    return `${c.name}${c.category ? ` [${c.category}]` : ''}${c.distance ? ` ${c.distance}` : ''}${price}${ev}${img}${c.address || c.location ? ` — ${String(c.address || c.location).slice(0, 60)}` : ''}${Number.isFinite(lat) ? ` (${lat.toFixed(3)},${lng.toFixed(3)})` : ''}`;
 }
 
 function check(expect, r) {
@@ -89,6 +91,19 @@ function check(expect, r) {
         const { lat, lng, km: max } = expect.allCardsWithinKm;
         const far = r.cards.filter(c => { const a = c.latitude ?? c.lat ?? c.geometry?.lat, b = c.longitude ?? c.lng ?? c.geometry?.lng; return Number.isFinite(a) && km(lat, lng, a, b) > max; });
         results.push([`all cards within ${max} km of ${lat},${lng}`, far.length === 0, far.length ? `far: ${far.map(c => c.name).join(', ')}` : `${r.cards.length} card(s)`]);
+    }
+    if (expect.allCardsDatedEvents) {
+        const undated = r.cards.filter(c => !c.eventSchedule);
+        results.push(['all cards are dated events', undated.length === 0, undated.length ? `venues/undated: ${undated.map(c => c.name).join(', ')}` : `${r.cards.length} event(s)`]);
+    }
+    if (expect.cardsWithImageMin != null) {
+        const withImg = r.cards.filter(c => c.image || c.cachedImageUrl).length;
+        results.push([`cards with image>=${expect.cardsWithImageMin}`, withImg >= expect.cardsWithImageMin, `got ${withImg}/${r.cards.length}`]);
+    }
+    if (expect.cardsWithTimeMin != null) {
+        // A start at exactly midnight is the hunter's "date known, time unknown" marker.
+        const withTime = r.cards.filter(c => c.eventSchedule?.startDate && !/T00:00:00/.test(new Date(c.eventSchedule.startDate).toISOString())).length;
+        results.push([`cards with a start time>=${expect.cardsWithTimeMin}`, withTime >= expect.cardsWithTimeMin, `got ${withTime}/${r.cards.length}`]);
     }
     if (expect.replyIncludes) results.push([`reply includes "${expect.replyIncludes}"`, r.text.toLowerCase().includes(String(expect.replyIncludes).toLowerCase()), '']);
     return results;
@@ -114,7 +129,7 @@ function check(expect, r) {
             if (r.meta?.followUpQuestion) console.log(`    question: ${r.meta.followUpQuestion}`);
             for (const c of r.cards) console.log(`    • ${cardLine(c)}`);
             for (const [name, ok, note] of check(t.expect, r)) { ok ? pass++ : fail++; console.log(`    ${ok ? 'PASS' : 'FAIL'} ${name}${note ? ` (${note})` : ''}`); }
-            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng, hotelPrice: c.hotelPrice || null, listedPrice: c.listedPrice || null, bookingUrl: c.bookingUrl || null })) });
+            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng, hotelPrice: c.hotelPrice || null, listedPrice: c.listedPrice || null, bookingUrl: c.bookingUrl || null, eventSchedule: c.eventSchedule || null, eventPrice: c.eventPrice || null, image: c.image || c.cachedImageUrl || null, sourceUrl: c.sourceUrl || null, venueName: c.venueName || null })) });
             // Persist the transcript the way the app does, so the next turn has history.
             const now = new Date().toISOString();
             messages.push({ id: `u-${Date.now()}`, sender: 'user', text: t.say, timestamp: now });

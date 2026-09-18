@@ -11,6 +11,11 @@ const SEVAN = { name: 'Lake Sevan', lat: 40.35, lng: 45.2, kind: 'landmark', wat
 const HOTEL = (name, km) => ({ placeId: `g_${name}`, name, source: 'cache', distanceKm: km, rating: 4.5, types: ['hotel'], interests: ['nature'] });
 
 describe('deck agent', () => {
+    test('summary tells events from venues', () => {
+        const { summarize } = require('../engine/agent/deckAgent');
+        expect(summarize({ name: 'Opera', eventSchedule: { startDate: '2026-09-24T15:00:00.000Z' } })).toMatchObject({ is_dated_event: true, event_start: '2026-09-24 15:00 UTC' });
+        expect(summarize({ name: 'Tashir Arena', types: ['event_venue'] })).toMatchObject({ is_dated_event: false, event_start: null });
+    });
     test('looks up the lake, searches its shore, deals only returned ids', async () => {
         const searches = [];
         const out = await runDeckAgent({ message: 'I want to stay near a lake for several days', traveler: { lat: 40.2, lng: 44.5, label: 'Yerevan' }, findArgsBase: { preferences: { travelStyle: 'luxury' } } }, {

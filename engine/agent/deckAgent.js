@@ -131,6 +131,11 @@ function summarize(c) {
         price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`) + (c.ownedPrice.max != null && c.ownedPrice.min != null ? ` to ${c.ownedPrice.max}` : '') + ' (owner\'s listing)' : null,
         tags: (c.interests || []).slice(0, 5),
         open_now: c._openNow === true ? true : (c._openNow === false ? false : null),
+        // Events are not places: a dated event carries its start; a venue or an
+        // attraction in an events search carries none — deal it as an event
+        // and the traveler gets "check its schedule" padding (live 2026-09-19).
+        is_dated_event: !!(c.eventSchedule && c.eventSchedule.startDate),
+        event_start: c.eventSchedule?.startDate ? new Date(c.eventSchedule.startDate).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : null,
         source: c.source === 'destination' || c.source === 'business' ? 'owned' : (c.source || null),
         area: c._town?.city || c.city || null,
         address: clip(c.address, 80) || null,

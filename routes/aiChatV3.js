@@ -2472,6 +2472,20 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     result.places = result.places.filter((_, i) => !keep.has(i));
                     blurbs = blurbs.filter((_, i) => !keep.has(i));
                 }
+                // Events ask: once at least one DATED event is in the deck, a venue
+                // or attraction beside it is padding ("Tashir Arena — check its
+                // schedule", live 2026-09-19). A deck with no dated event at all is
+                // left alone — the narrator already says the listings were thin.
+                if (category === 'events') {
+                    const dated = result.places.filter(p => p?.eventSchedule?.startDate);
+                    if (dated.length && dated.length < result.places.length) {
+                        const dropped = result.places.filter(p => !p?.eventSchedule?.startDate).map(p => p.name);
+                        console.log(`[v3] events deck: dropped ${dropped.length} undated card(s) — ${dropped.join(', ')}`);
+                        meta.undatedDropped = dropped;
+                        blurbs = blurbs.filter((_, i) => !!result.places[i]?.eventSchedule?.startDate);
+                        result.places = dated;
+                    }
+                }
                 const _realigned = realignBlurbs(result.places, blurbs);
                 if (_realigned.some((b, i2) => b !== blurbs[i2])) {
                     console.log('[v3] blurbs realigned to their named cards');

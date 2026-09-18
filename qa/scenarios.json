@@ -262,6 +262,85 @@
           }
         }
       ]
+    },
+    {
+      "id": "events-yerevan-romantic",
+      "why": "Founder's own ask (style luxury, interest romantic): only DATED events may be dealt — a venue with 'check its schedule' is padding; posters should be present.",
+      "turns": [
+        {
+          "say": "suggest events please for the upcoming days with my girlfriend",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6,
+            "allCardsDatedEvents": true,
+            "cardsWithImageMin": 4,
+            "cardsWithTimeMin": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "events-dubai-weekend",
+      "why": "Big city with 9 registered sources: weekend events with posters and times.",
+      "turns": [
+        {
+          "say": "what's on in Dubai this weekend?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6,
+            "allCardsDatedEvents": true,
+            "cardsWithImageMin": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "events-tbilisi",
+      "why": "Neighbour with thinner coverage: honest 'few/none' beats padding with venues.",
+      "turns": [
+        {
+          "say": "any concerts or festivals in Tbilisi next week?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6,
+            "allCardsDatedEvents": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "events-paris-fr",
+      "why": "French ask in a city that may have no registered source: the reply must not invent events.",
+      "turns": [
+        {
+          "say": "Il y a quoi comme événements à Paris ce week-end ?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6,
+            "allCardsDatedEvents": true
+          }
+        }
+      ]
     }
   ]
 }
