@@ -1,0 +1,80 @@
+{
+  "_readme": "QA scenarios for scripts/qaRun.js (founder 2026-09-18). Each turn's `expect` is checked against the stream's metadata and cards; anything not listed is judged by reading the report. Add a scenario for every live incident.",
+  "scenarios": [
+    {
+      "id": "lake-stay",
+      "why": "2026-09-18: 'near a lake' became Sea Lake, Australia (v2), then Swan Lake pond; v3 must ask, then search the lake's shore, then narrow to luxury.",
+      "turns": [
+        { "say": "I want to stay near a lake for several days", "expect": { "v3lane": "clarify", "cardsMax": 0 } },
+        { "say": "no, sevan", "expect": { "cardsMin": 1, "allCardsWithinKm": { "lat": 40.548, "lng": 44.953, "km": 60 } } },
+        { "say": "something luxurious", "expect": { "cardsMin": 1, "allCardsWithinKm": { "lat": 40.548, "lng": 44.953, "km": 60 } } }
+      ]
+    },
+    {
+      "id": "sea-lake-namesake",
+      "why": "2026-09-18: 'sea/lake' → Google → Sea Lake, Victoria, 13,086 km away; every card must stay in the traveler's region.",
+      "turns": [
+        { "say": "I want to stay near sea/lake several days", "expect": { "allCardsWithinKm": { "lat": 40.18, "lng": 44.51, "km": 300 } } }
+      ]
+    },
+    {
+      "id": "open-now-vague",
+      "why": "2026-09-16 03:00: 'what is open right now' dealt groceries; the vague ask must become one question with choices (v3).",
+      "turns": [
+        { "say": "what is open right now", "expect": { "v3lane": "clarify", "cardsMax": 0 } }
+      ]
+    },
+    {
+      "id": "thanks-closes",
+      "why": "2026-09-14: 'ok thanks' dealt six more restaurants; a thank-you closes the exchange.",
+      "turns": [
+        { "say": "find me a good cafe", "expect": { "cardsMin": 1 } },
+        { "say": "ok thanks", "expect": { "cardsMax": 0 } }
+      ]
+    },
+    {
+      "id": "flights-yes",
+      "why": "2026-09-13: 'yes please' after a flight offer failed; the answer belongs to the lane that asked.",
+      "turns": [
+        { "say": "find flight to Moscow next week", "expect": { "v3lane": "flights", "cardsMax": 0 } },
+        { "say": "yes please", "expect": { "v3lane": "flights", "cardsMax": 0 } }
+      ]
+    },
+    {
+      "id": "stay-4-days",
+      "why": "2026-09-13: 'stay 4 days' was read as a hotel noun after a flight search.",
+      "turns": [
+        { "say": "find flight to Moscow next week", "expect": { "v3lane": "flights" } },
+        { "say": "I need to stay 4 days", "expect": { "v3lane": "flights", "cardsMax": 0 } }
+      ]
+    },
+    {
+      "id": "mood-quiet",
+      "why": "Founder 2026-09-18: moods must find places — a stated mood is a deck.",
+      "turns": [
+        { "say": "somewhere quiet to read for an hour", "expect": { "cardsMin": 1 } }
+      ]
+    },
+    {
+      "id": "mood-bored",
+      "why": "A mood with no shape gets one question with choices, not six random cards.",
+      "turns": [
+        { "say": "I'm bored", "expect": { "v3lane": "clarify", "cardsMax": 0 } }
+      ]
+    },
+    {
+      "id": "mood-celebrate",
+      "why": "'I want to celebrate tonight' names a mood and a time — a deck.",
+      "turns": [
+        { "say": "I want to celebrate tonight", "expect": { "cardsMin": 1 } }
+      ]
+    },
+    {
+      "id": "howto-prose",
+      "why": "A how-to question is answered in prose, never with cards ('how do I book a taxi' once returned six museums).",
+      "turns": [
+        { "say": "how do I get a SIM card in Yerevan", "expect": { "cardsMax": 0 } }
+      ]
+    }
+  ]
+}

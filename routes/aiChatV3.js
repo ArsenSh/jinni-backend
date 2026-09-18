@@ -2562,6 +2562,9 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             } }).catch(() => {});
     }
 
+    // What the engine decided, for the QA runner (scripts/qaRun.js) and
+    // anyone reading the stream: same facts the ChatTurn record keeps.
+    meta.qa = { engine: 'v3', path: stats.path || null, lane: v3Decision?.lane || null, controllerSource: v3Decision?.source || null, radiusKm: stats.radiusKm ?? null, city: meta.searchCity || null };
     send(res, {
         type: 'complete',
         contentParts: buildContentParts(reply || '', recommendations.length, meta.followUpQuestion || null),

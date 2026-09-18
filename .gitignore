@@ -8,3 +8,7 @@ node_modules/
 logs/
 *.log
 .DS_Store
+
+# QA runner login token (scripts/qaRun.js) — never commit
+.qa-token
+qa/reports/

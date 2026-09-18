@@ -2459,6 +2459,8 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             } }).catch(() => {});
     }
 
+    // Diagnostics only (routing untouched): what the engine did, for the QA runner.
+    meta.qa = { engine: 'v2', path: stats.path || null, radiusKm: stats.radiusKm ?? null, city: meta.searchCity || null };
     send(res, {
         type: 'complete',
         contentParts: buildContentParts(reply || '', recommendations.length, meta.followUpQuestion || null),
