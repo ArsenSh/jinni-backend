@@ -1948,7 +1948,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                                         currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
                                         guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
                                     });
-                                    if (!out.ok) return { error: out.reason };
+                                    console.log(`[v3][hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'} → ${out.ok ? `${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
+                                    if (!out.ok) return { error: out.reason, centre: centre ? { name: centre.name, country: centre.countryCode } : null };
                                     for (const [name, m] of Object.entries(out.matched || {})) if (m) agentPrices.set(name.toLowerCase(), m);
                                     const pn = out.hotels.map(h => h.price_per_night);
                                     return {
@@ -1978,7 +1979,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         }
                     }
                     console.log(`[v3][agent] ${agentOut.kind}${agentOut.reason ? ` (${agentOut.reason})` : ''} steps=${agentOut.steps} searches=${agentOut.searches} calls=${(agentOut.toolCalls || []).map(c => c.name).join(',')}`);
-                    meta.toolCalls = (agentOut.toolCalls || []).map(c => ({ name: c.name, args: c.args }));
+                    meta.toolCalls = (agentOut.toolCalls || []).map(c => ({ name: c.name, args: c.args, ...(c.name === 'hotel_prices' || c.name === 'lookup_place' ? { result: c.result } : {}) }));
                     if (agentOut.kind === 'ask') agentAsk = agentOut.question;
                     else if (agentOut.kind === 'deal') { agentIntro = agentOut.intro; agentBlurbs = agentOut.blurbs; }
                 } catch (err) { console.warn(`[v3][agent] failed: ${err.message} — classic pipeline`); agentOut = null; }
