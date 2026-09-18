@@ -126,7 +126,21 @@ async function resolveStatedLocation(name, { sessionCards = [], near = null } = 
             const first = (found || [])[0];
             const loc = first?.geometry?.location;
             if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
-                return _warnIfFar({ lat: loc.lat, lng: loc.lng, name: first.name || wanted, source: 'google' }, near);
+                // Google's text search is fuzzy: "sea/lake several days" came
+                // back as SEA LAKE, a town in Victoria, Australia, 13,086 km
+                // from a traveler in Yerevan, and the whole conversation ran
+                // there (live 2026-09-18, brand-new account). A far Google
+                // match is a namesake unless the traveler actually WROTE that
+                // name — the returned name must appear verbatim in what they
+                // said. A near match keeps the old lenient behaviour.
+                const km = (near && Number.isFinite(near.lat) && Number.isFinite(near.lng))
+                    ? haversineKm(near.lat, near.lng, loc.lat, loc.lng) : null;
+                const said = first.name && wanted.toLowerCase().includes(String(first.name).toLowerCase());
+                if (km != null && km > FAR_FROM_GPS_KM && !said) {
+                    console.log(`[whereAmI] google "${first.name}" is ${Math.round(km)}km away and not what the traveler wrote ("${wanted}") — rejected as a namesake`);
+                } else {
+                    return _warnIfFar({ lat: loc.lat, lng: loc.lng, name: first.name || wanted, source: 'google' }, near);
+                }
             }
         }
     } catch { /* fall through */ }

@@ -337,7 +337,9 @@ router.get('/chat-sessions/:id/export', async (req, res) => {
                     for (const line of t.log || []) out.push(`  | ${line}`);
                 }
             } else {
-                out.push(`[${fmt(m.timestamp)}] JINNI: ${m.text || ''}`);
+                // v2/v3 save streamed replies as contentParts; `text` may be empty.
+                const replyText = m.text || (Array.isArray(m.contentParts) ? m.contentParts.filter(p => p && p.type === 'text' && p.content).map(p => p.content).join('\n') : '');
+                out.push(`[${fmt(m.timestamp)}] JINNI: ${replyText}`);
                 const recs = Array.isArray(m.recommendations) ? m.recommendations : [];
                 for (const r of recs) out.push(`  • ${r.name}${r.category ? ` (${r.category})` : ''}${r.description ? ` — ${r.description}` : ''}`);
             }

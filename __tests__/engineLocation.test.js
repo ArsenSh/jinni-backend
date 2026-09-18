@@ -89,6 +89,21 @@ describe('whereAmI — cheapest source first', () => {
         });
         expect(r.source).toBe('google');
     });
+    // Live 2026-09-18: "I want to stay near sea/lake several days" → Google
+    // returned SEA LAKE (Victoria, Australia), 13,086 km from Yerevan, and the
+    // conversation ran there. A far Google match must be what they wrote.
+    test('a FAR google match the traveler did not write is rejected as a namesake', async () => {
+        const r = await resolveStatedLocation('sea/lake several days',
+            { near: { lat: 40.2016, lng: 44.5321 } },
+            { gazetteer: null, placeCache: async () => [], findPlaces: async () => [{ name: 'Sea Lake', geometry: { location: { lat: -35.504, lng: 142.850 } } }] });
+        expect(r).toBeNull();
+    });
+    test('a FAR google match the traveler DID write still resolves (planning abroad)', async () => {
+        const r = await resolveStatedLocation('Burj Khalifa',
+            { near: { lat: 40.2016, lng: 44.5321 } },
+            { gazetteer: null, placeCache: async () => [], findPlaces: async () => [{ name: 'Burj Khalifa', geometry: { location: { lat: 25.197, lng: 55.274 } } }] });
+        expect(r).toMatchObject({ source: 'google', lat: 25.197 });
+    });
     test('namesakes: the cache row NEAREST the traveler wins, not natural order', async () => {
         // Live 2026-09-03: "Armenian restaurant near Republic Square" centred on a
         // Texan "Republic Square" strip mall because findOne returned it first.
