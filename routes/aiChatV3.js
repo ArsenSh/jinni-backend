@@ -926,7 +926,11 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 // Same guard as v2 (2026-09-18): the paid, fuzzy Google lookup
                 // only for a name-shaped phrase or a place the intent model
                 // also read — "a lake for several days" bought Swan Lake here.
-                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName) || (intent.placeNames || []).length > 0;
+                // The PHRASE must be name-shaped; a place the intent model listed
+                // goes through resolveDestination on its own (2026-09-18: a place
+                // named in a clarify question re-enabled the paid lookup and bought
+                // "Lake Gosh" for "a lake for several days").
+                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName);
                 if (!_refPhrase && !_nameLike) console.log(`[destination] "${statedName}" is not name-shaped — no paid lookup for it`);
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,

@@ -227,3 +227,16 @@ describe('a place described by kind becomes the destination', () => {
         expect(system).toMatch(/Otherwise lane = clarify/);
     });
 });
+
+describe('a clarify carries no search destination (2026-09-18)', () => {
+    test('places named in the question are dropped from the decision', () => {
+        const d = shapeDecision({ ...GOOD, lane: 'clarify', action_type: 'hotels', place_names: ['Lake Sevan'], clarify_question: 'Sevan, or somewhere abroad?', flights: null, answers_pending_question: false },
+            'I want to stay near a lake for several days');
+        expect(d.lane).toBe('clarify');
+        expect(d.intent.placeNames).toEqual([]);
+    });
+    test('the style rule is in the prompt', () => {
+        const { system } = buildControllerMessages({ message: 'hotels', recentTurns: [], state: STATE, dateNote: DATE });
+        expect(system).toMatch(/saved travel style is part of every PRICED ask/);
+    });
+});

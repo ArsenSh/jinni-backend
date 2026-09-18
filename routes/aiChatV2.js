@@ -870,7 +870,11 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
                 // read as a place. "near lake several days" is neither — it
                 // resolved to Swan Lake, a pond, and the deck was city hotels
                 // (live 2026-09-18). Exact-match tiers still run for all.
-                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName) || (intent.placeNames || []).length > 0;
+                // The PHRASE must be name-shaped; a place the intent model listed
+                // goes through resolveDestination on its own (2026-09-18: a place
+                // named in a clarify question re-enabled the paid lookup and bought
+                // "Lake Gosh" for "a lake for several days").
+                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName);
                 if (!_refPhrase && !_nameLike) console.log(`[destination] "${statedName}" is not name-shaped — no paid lookup for it`);
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,

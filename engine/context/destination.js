@@ -164,7 +164,10 @@ async function resolveDestination({
             if (!name) continue;
             const geo = await _geocode(name, gpsCenter, deps);
             if (!geo) continue;
-            if (!isGeographic(geo)) {
+            // A lake or sea is not a venue: its shore is a place to search
+            // (live 2026-09-18: "Lake Sevan" was refused as a venue and the
+            // search stayed centred on Yerevan).
+            if (!isGeographic(geo) && !geo.waterBody) {
                 console.log(`[destination] "${name}" resolved to a venue ("${geo.name}") — not re-centring`);
                 continue;
             }

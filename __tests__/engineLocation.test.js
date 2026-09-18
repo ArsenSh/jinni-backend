@@ -448,3 +448,13 @@ describe('corridor endpoints survive a follow-up', () => {
             .toMatchObject({ to: 'Dilijan other results please' });
     });
 });
+
+describe('a water body re-centres the search (2026-09-18)', () => {
+    test('"Lake Sevan" from the gazetteer is not a venue — the centre moves to it', async () => {
+        const lake = { lat: 40.35, lng: 45.2, name: 'Lake Sevan', kind: 'landmark', scale: 'town', population: 0, types: ['natural_feature'], waterBody: true, source: 'gazetteer' };
+        const dest = await resolveDestination({ placeNames: ['Lake Sevan'], gps: { lat: 40.2, lng: 44.5 } },
+            { gazetteer: { lookupPlace: async () => lake }, findPlaces: async () => [] });
+        expect(dest.center).toMatchObject({ lat: 40.35, lng: 45.2 });
+        expect(dest.waterBody).toBe(true);
+    });
+});

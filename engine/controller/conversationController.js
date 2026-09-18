@@ -95,6 +95,7 @@ Rules that override everything else:
 - When the traveler ANSWERS a clarify question ("food", "a drink", "walk"), that answer IS the ask: lane deck, place_search_query built from it and the hour ("late-night food Yerevan"), answers_pending_question true.
 - "thanks", "ok thanks", "great", "bye", "perfect" CLOSE the exchange: lane chitchat, answers_pending_question false — a thank-you is not a yes to Jinni's offer (live 2026-09-14: "ok thanks" dealt six more restaurants). Only a message that actually decides the offer answers it.
 - lane deck ONLY when there is something to search for: the message (or the follow-up it continues) names what to show. A deck with nothing to look for is never right.
+- The saved travel style is part of every PRICED ask (hotels, restaurants, shops, activities): fold it into place_search_query as a word the search can use — "luxury lakeside hotel Sevan", "budget guesthouse Dilijan" — and when the message itself states a level ("something luxurious", "very cheap") that wins over the saved style. Never fold style into unpriced asks (parks, monuments, viewpoints).
 - A place described by KIND rather than name — "near a lake", "by the sea", "in the mountains", "somewhere with hot springs" — is a WHERE, but not yet a where you can search. Never assume it means their own country: a traveler in Yerevan may mean Sevan or Lake Como (founder 2026-09-18: "the traveler may want any location without giving a specific one"). Search only when the conversation or state already shows the area (a destination in play, a country they are planning, "here", "nearby") — then name the real place that fits there in place_names (Armenia + "a lake" = Sevan; that is geography, not invention). Otherwise lane = clarify with ONE question that names the nearest real option first and leaves the world open: "Sevan, an hour from Yerevan — or are you thinking of somewhere abroad?" When a lake, sea or coast is what they chose, put the WATER BODY in place_names ("Lake Sevan", not "Sevan" the town) so the search covers its whole shore. Dealing city hotels to a lakeside ask is never right.
 - OUTPUT COMPACTLY: omit every key whose value would be "" / false / 0 / [] / null — an absent key means that default. Always include language, is_travel, action_type, lane, and reply_language.`;
 
@@ -171,6 +172,10 @@ function shapeDecision(raw, message) {
     const clarifyQuestion = lane === 'clarify' && typeof raw.clarify_question === 'string' && raw.clarify_question.trim()
         ? raw.clarify_question.trim().slice(0, 300) : null;
     if (lane === 'clarify' && !clarifyQuestion) lane = null;      // a clarify with no question is no decision
+    // A question is not a search: places the model NAMES IN ITS QUESTION
+    // ("Sevan, or abroad?") must not become a search destination this turn
+    // (live 2026-09-18: they bought a paid lookup and re-centred mid-clarify).
+    if (lane === 'clarify') intent.placeNames = [];
     const flights = lane === 'flights' ? shapeFlights(raw.flights) : null;
     // A deck needs something to search for. The model once said "deck" for
     // "ok thanks" with no query, no refill, no category — and six cards
