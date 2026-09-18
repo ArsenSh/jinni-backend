@@ -592,4 +592,42 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
     }, center));
 }
 
-module.exports = { huntEvents, _cleanVenue, _onlyVerified };
+/**
+ * Nightly back-fill (founder 2026-09-19: "some cards does not had images"):
+ * stored future events whose listing gave no poster, a midnight "time
+ * unknown" start, no price or no venue get their own detail page read — the
+ * same _followDetails the live hunt runs, but with time to spare, so the
+ * per-turn budget of 12 stops deciding which cards stay blank.
+ */
+async function backfillEventDetails(deps = {}) {
+    // Fail open without a live connection (jest, cold boot): a buffered query
+    // here hangs the sweep instead of skipping it.
+    if (!deps.AiFoundEvent) { try { if (require('mongoose').connection?.readyState !== 1) return { checked: 0, updated: 0, skipped: 'no_db' }; } catch { return { checked: 0, updated: 0, skipped: 'no_db' }; } }
+    const Model = deps.AiFoundEvent || require('../../models/AiFoundEvent');
+    const fetchHtml = deps.fetchHtml || _fetchListingHtml;
+    const budget = Number.isFinite(deps.budget) ? deps.budget : 40;
+    let docs = [];
+    try {
+        docs = await Model.find({ startDate: { $gte: new Date() }, sourceUrl: { $regex: /^https?:\/\// } })
+            .sort({ startDate: 1 }).limit(300).lean();
+    } catch (err) { console.warn(`[event-backfill] query failed: ${err.message}`); return { checked: 0, updated: 0 }; }
+    const rows = docs.map(d => ({ _id: d._id, name: d.name, image: d.image || null, price: d.price || null, venueName: d.venueName || null,
+        startDate: new Date(d.startDate), url: d.sourceUrl }));
+    const before = new Map(rows.map(r => [String(r._id), { image: r.image, price: r.price, venueName: r.venueName, start: r.startDate.getTime() }]));
+    await _followDetails(rows, { fetchHtml, pageUrl: null, timeoutMs: deps.timeoutMs || 15000, budget });
+    let updated = 0;
+    for (const r of rows) {
+        const b = before.get(String(r._id));
+        const set = {};
+        if (r.image && r.image !== b.image) set.image = r.image;
+        if (r.price && r.price !== b.price) set.price = r.price;
+        if (r.venueName && r.venueName !== b.venueName) set.venueName = r.venueName;
+        if (r.startDate.getTime() !== b.start) set.startDate = r.startDate;
+        if (!Object.keys(set).length) continue;
+        try { await Model.updateOne({ _id: r._id }, { $set: set }); updated++; } catch (err) { console.warn(`[event-backfill] ${r.name}: ${err.message}`); }
+    }
+    console.log(`[event-backfill] ${rows.length} future event(s) checked, ${updated} enriched (budget ${budget})`);
+    return { checked: rows.length, updated };
+}
+
+module.exports = { backfillEventDetails, huntEvents, _cleanVenue, _onlyVerified };

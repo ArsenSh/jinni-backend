@@ -46,6 +46,9 @@ async function sweepEventSources(deps = {}) {
     // (2026-08-29) skips recently-read sources, their events stay stored but
     // are not re-counted here — the old wording made a healthy shelf read as
     // empty ("→ 0 event(s) on the shelf" while 42 sat stored).
+    // Then give stored events their posters/times/prices from their own pages.
+    try { await (deps.backfillEventDetails || require('./hunt').backfillEventDetails)({ ...deps, timeoutMs: SWEEP_TIMEOUT_MS }); }
+    catch (err) { console.warn(`[source-sweep] backfill: ${err.message}`); }
     console.log(`[source-sweep] ${groups.length} location(s) swept → ${events} event(s) newly read (fresh sources skipped keep their stored events)`);
     return { locations: groups.length, events };
 }
