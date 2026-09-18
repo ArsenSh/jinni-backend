@@ -917,6 +917,7 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             // it capped a whole COUNTRY to 15 km around its centroid.
             meta.destScale = dest.scale || 'town';
             meta.destPopulation = dest.population || 0;
+            meta.destWaterBody = !!dest.waterBody;
             meta.destCountryName = dest.countryName || null;
             // They named somewhere they are not, while the toggle said nearby.
             // The switch applies to THIS turn only — an inferred change never
@@ -1630,6 +1631,13 @@ router.post('/chat-stream-v2', auth, usageTracker, async (req, res) => {
             if (!intent.priceDirection && ledger.price) {
                 intent.priceDirection = ledger.price;
                 console.log(`[ledger] price carried: ${ledger.price}`);
+            }
+            // A named LAKE or SEA means its shore, not a town circle around
+            // its centroid (gazetteer feature code, 2026-09-18): 40 km reaches
+            // both shores of Sevan. An explicit radius ask below still wins.
+            if (meta.destWaterBody && meta.centreSource === 'named' && radiusKm < 40) {
+                console.log(`[destination] water body → search radius ${radiusKm} km widened to 40 km (the shore, not the centre)`);
+                radiusKm = 40;
             }
             if (ledger.radiusCapKm) radiusKm = Math.min(radiusKm, ledger.radiusCapKm);
             // A modifier-only turn changes ONE thing; the search is the SAME

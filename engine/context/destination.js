@@ -212,6 +212,7 @@ async function resolveDestination({
                 // The caller flips the turn out of nearby mode and says so.
                 ...(nearbyMode ? { switchedFromNearby: true } : {}),
                 scale,
+                waterBody: !!geo.waterBody,
                 population: geo.population || 0,
                 countryName: geo.countryName || null,
                 city: geo.name,

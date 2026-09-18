@@ -109,9 +109,18 @@ const _km = (aLat, aLng, bLat, bLng) => {
 
 /** Rows → the shape `context/destination._geocode` already returns, so the
  *  caller cannot tell a local hit from a Google one except by `.source`. */
+// GeoNames hydrographic codes: a lake, reservoir, sea, bay or lagoon. A
+// traveler who names one means its SHORE, which for Lake Sevan runs 70+ km —
+// the town-sized radius that fits "Sevan" (pop 19k) covers one corner of it
+// (founder 2026-09-18: "Noy Land is near Lake Sevan, not Sevan city").
+const WATER_CODES = new Set(['LK', 'LKS', 'LKN', 'LKO', 'RSV', 'SEA', 'BAY', 'GULF', 'LGN', 'STRT', 'FJD']);
+function isWaterBody(featureCode) { return WATER_CODES.has(String(featureCode || '').toUpperCase()); }
+
 function _toGeo(doc) {
     if (!doc || doc.lat == null || doc.lng == null) return null;
     return {
+        featureCode: doc.featureCode || null,
+        waterBody: isWaterBody(doc.featureCode),
         lat: doc.lat,
         lng: doc.lng,
         name: doc.name,
@@ -353,6 +362,7 @@ async function nearestTown({ lat, lng } = {}, deps = {}) {
 }
 
 module.exports = {
+    isWaterBody,
     lookupPlace, regionAt, mainCities, radiusForPopulation, nearestTown, geofenceKmForScale,
     normalizeName, isSeeded, TYPES_BY_KIND, SUBPLACE_CODES, _toGeo, _km,
 };

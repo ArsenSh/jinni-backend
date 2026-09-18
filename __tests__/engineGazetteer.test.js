@@ -778,3 +778,11 @@ describe('narration budget follows the script (live 2026-09-06: EN blurbs=6/6, H
         expect(narrationBudget(NaN, null)).toBeGreaterThan(0);
     });
 });
+
+describe('isWaterBody — a lake or sea means its shore (2026-09-18)', () => {
+    const { isWaterBody } = require('../engine/geo/gazetteer');
+    test('hydrographic feature codes', () => {
+        for (const c of ['LK', 'RSV', 'SEA', 'BAY']) expect(isWaterBody(c)).toBe(true);
+        for (const c of ['PPL', 'PPLC', 'ADM1', 'MT', null, undefined]) expect(isWaterBody(c)).toBe(false);
+    });
+});

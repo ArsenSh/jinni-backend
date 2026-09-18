@@ -923,10 +923,15 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 // WHETHER it is a reference is the intent LLM's judgement
                 // (any language), never a phrase list (founder 2026-09-05).
                 const _refPhrase = intent.anchorReference === true;
+                // Same guard as v2 (2026-09-18): the paid, fuzzy Google lookup
+                // only for a name-shaped phrase or a place the intent model
+                // also read — "a lake for several days" bought Swan Lake here.
+                const _nameLike = require('../engine/retrieval/tuning').looksLikeProperName(statedName) || (intent.placeNames || []).length > 0;
+                if (!_refPhrase && !_nameLike) console.log(`[destination] "${statedName}" is not name-shaped — no paid lookup for it`);
                 statedPosition = await require('../engine/geo/whereAmI').resolveStatedLocation(
                     statedName,
                     { sessionCards, near: gpsCenter },
-                    _refPhrase ? { findPlaces: null }
+                    (_refPhrase || !_nameLike) ? { findPlaces: null }
                                : { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) },
                 ).catch(() => null);
                 if (_refPhrase && statedPosition && statedPosition.source === 'gazetteer') statedPosition = null;
@@ -968,6 +973,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             // it capped a whole COUNTRY to 15 km around its centroid.
             meta.destScale = dest.scale || 'town';
             meta.destPopulation = dest.population || 0;
+            meta.destWaterBody = !!dest.waterBody;
             meta.destCountryName = dest.countryName || null;
             // They named somewhere they are not, while the toggle said nearby.
             // The switch applies to THIS turn only — an inferred change never
@@ -1703,6 +1709,13 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             if (!intent.priceDirection && ledger.price) {
                 intent.priceDirection = ledger.price;
                 console.log(`[ledger] price carried: ${ledger.price}`);
+            }
+            // A named LAKE or SEA means its shore, not a town circle around
+            // its centroid (gazetteer feature code, 2026-09-18): 40 km reaches
+            // both shores of Sevan. An explicit radius ask below still wins.
+            if (meta.destWaterBody && meta.centreSource === 'named' && radiusKm < 40) {
+                console.log(`[destination] water body → search radius ${radiusKm} km widened to 40 km (the shore, not the centre)`);
+                radiusKm = 40;
             }
             if (ledger.radiusCapKm) radiusKm = Math.min(radiusKm, ledger.radiusCapKm);
             // A modifier-only turn changes ONE thing; the search is the SAME
