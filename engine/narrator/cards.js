@@ -209,6 +209,11 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         venueName: place.venueName || null,
         // Source link shown below event cards (frontend rec.sourceUrl).
         sourceUrl: place.sourceUrl || null,
+        // Real "from" price per night + partner booking link, when the deck
+        // agent's hotel_prices tool matched this hotel (Travelpayouts/Hotellook,
+        // 2026-09-19). Absent ⇒ the card shows no price — never a guess.
+        hotelPrice: place.hotelPrice || null,
+        bookingUrl: place.hotelPrice?.url || null,
         _isExpired: false,
         _action: action || 'general',
         metadata: {

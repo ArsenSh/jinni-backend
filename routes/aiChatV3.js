@@ -48,6 +48,7 @@ const { resolveLaneFlags } = require('../engine/controller/laneOverride');
 const { runToolLoop } = require('../engine/narrator/toolLoop');
 const { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, makeExecutors } = require('../engine/narrator/tools');
 const { flightsEnabled } = require('../engine/travel/flights');
+const hotels = require('../engine/travel/hotels');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
 const { resolveDestination } = require('../engine/context/destination');
@@ -1899,6 +1900,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             //    V3_AGENT=true in the env turns it on; any failure falls back
             //    to the classic pipeline below. ──
             let agentOut = null, agentAsk = null, agentIntro = null, agentBlurbs = null;
+            const agentPrices = new Map();   // hotel name (lower) → matched price row from hotel_prices
             if (String(process.env.V3_AGENT || '').toLowerCase() === 'true' && !refillActive) {
                 stage('searching', 'Looking around…');
                 try {
@@ -1916,13 +1918,52 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         provider: deepseekProvider,
                         retrieve: (args) => findPlaces(args, { loadCandidates }),
                         lookup: (name, o) => require('../engine/geo/gazetteer').lookupPlace(name, o),
+                        // Real hotel prices (founder 2026-09-19) — the tool exists
+                        // only when the Travelpayouts token is set, so the model
+                        // never reaches for a dead tool. Prices it returns are
+                        // remembered by hotel name and ride on the dealt cards.
+                        ...(hotels.hotelsEnabled() ? {
+                            extraTools: [hotels.HOTEL_PRICES_TOOL],
+                            extraExec: {
+                                hotel_prices: async (a = {}) => {
+                                    const names = (Array.isArray(a.hotel_names) ? a.hotel_names : []).slice(0, 8).map(n => {
+                                        const sc = sessionCards.find(c => c?.name && c.name.toLowerCase() === String(n).toLowerCase());
+                                        return sc && Number.isFinite(sc.latitude ?? sc.lat) ? { name: String(n), lat: sc.latitude ?? sc.lat, lng: sc.longitude ?? sc.lng } : { name: String(n) };
+                                    });
+                                    const out = await hotels.hotelPrices({
+                                        area: String(a.area || '').slice(0, 80), near: center || null, names,
+                                        checkIn: a.check_in || null, checkOut: a.check_out || null,
+                                        currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
+                                    });
+                                    if (!out.ok) return { error: out.reason };
+                                    for (const [name, m] of Object.entries(out.matched || {})) if (m) agentPrices.set(name.toLowerCase(), m);
+                                    const pn = out.hotels.map(h => h.price_per_night);
+                                    return {
+                                        area: out.area, stay: `${out.check_in} → ${out.check_out} (${out.nights} night${out.nights > 1 ? 's' : ''})`, currency: out.currency,
+                                        area_range_per_night: pn.length ? { cheapest: pn[0], median: pn[Math.floor(pn.length / 2)], priciest: pn[pn.length - 1], hotels_priced: pn.length } : null,
+                                        matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no cached price'])),
+                                        priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
+                                        cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
+                                        note: 'cached "from" prices per night; quote only these numbers, and only for the matched hotels',
+                                    };
+                                },
+                            },
+                        } : {}),
                         // Progress the traveler can see while the brain works.
                         onEvent: ({ tool, args }) => {
                             if (tool === 'lookup_place') stage('searching', `Checking ${args.name}…`);
                             else if (tool === 'search_places') stage('searching', `Searching ${args.query}${args.centre && args.centre !== 'traveler' ? ` around ${args.centre}` : ''}…`);
+                            else if (tool === 'hotel_prices') stage('searching', `Checking hotel prices${args.area ? ` in ${args.area}` : ''}…`);
                             else if (tool === 'deal') stage('writing', 'Almost there — putting it together…');
                         },
                     });
+                    // Prices the brain fetched ride on the cards it dealt.
+                    if (agentOut && agentOut.kind === 'deal' && agentPrices.size) {
+                        for (const p of agentOut.places) {
+                            const m = p?.name && (agentPrices.get(p.name.toLowerCase()) || [...agentPrices.entries()].find(([k]) => k.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(k))?.[1]);
+                            if (m) p.hotelPrice = { perNight: m.price_per_night, currency: m.currency, nights: 1, checkIn: null, checkOut: null, stars: m.stars, url: m.booking_url };
+                        }
+                    }
                     console.log(`[v3][agent] ${agentOut.kind}${agentOut.reason ? ` (${agentOut.reason})` : ''} steps=${agentOut.steps} searches=${agentOut.searches} calls=${(agentOut.toolCalls || []).map(c => c.name).join(',')}`);
                     meta.toolCalls = (agentOut.toolCalls || []).map(c => ({ name: c.name, args: c.args }));
                     if (agentOut.kind === 'ask') agentAsk = agentOut.question;
