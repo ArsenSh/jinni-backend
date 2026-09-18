@@ -223,6 +223,7 @@ describe('a place described by kind becomes the destination', () => {
     test('the rule is in the prompt, with the clarify branch for several candidates', () => {
         const { system } = buildControllerMessages({ message: 'stay near a lake', recentTurns: [], state: STATE, dateNote: DATE });
         expect(system).toMatch(/described by KIND/);
-        expect(system).toMatch(/two or more fit.*clarify/);
+        expect(system).toMatch(/Never assume it means their own country/);
+        expect(system).toMatch(/Otherwise lane = clarify/);
     });
 });
