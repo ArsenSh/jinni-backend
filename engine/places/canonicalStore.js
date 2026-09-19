@@ -457,6 +457,7 @@ async function loadCandidates(params = {}, deps = {}) {
         const unseenEvents = evs.filter(c => c
             && !_exIds.has(c.placeId) && !_exIds.has(c.verifiedId)
             && !_exNames.has(normalizePlaceName(c.name || ''))).length;
+        if (!(unseenEvents < 3 || params.eventsHunt?.force) && params.eventsHunt?.onStats) { try { params.eventsHunt.onStats({ mode: 'shelf', shelf_events: unseenEvents }); } catch { /* telemetry */ } }
         if ((unseenEvents < 3 || params.eventsHunt?.force) && params.eventsHunt && params.eventWindow) {
             // The longest wait in the whole engine (8–24s of reading listing
             // pages). Say so, or the app looks frozen.
@@ -475,7 +476,7 @@ async function loadCandidates(params = {}, deps = {}) {
                     // hunt's own source-freshness skip, not just this
                     // threshold — "see in internet" means READ, now.
                     force: !!params.eventsHunt.force,
-                }, { webSearchCfg: params.eventsHunt.webSearch || null, budgetMs: params.eventsHunt.budgetMs || 25000 });
+                }, { webSearchCfg: params.eventsHunt.webSearch || null, budgetMs: params.eventsHunt.budgetMs || 25000, onStats: params.eventsHunt.onStats || null });
                 if (extra.length) evs = mergeAndDedupe(evs, extra);
             } catch (err) {
                 console.warn(`[canonicalStore] events hunt failed: ${err.message} — serving owned events only`);

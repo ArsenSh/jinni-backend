@@ -11,6 +11,17 @@ const SEVAN = { name: 'Lake Sevan', lat: 40.35, lng: 45.2, kind: 'landmark', wat
 const HOTEL = (name, km) => ({ placeId: `g_${name}`, name, source: 'cache', distanceKm: km, rating: 4.5, types: ['hotel'], interests: ['nature'] });
 
 describe('deck agent', () => {
+    test('an events search reports how the listings were obtained', async () => {
+        const call = (name, args, id = 'c1') => ({ id, function: { name, arguments: JSON.stringify(args) } });
+        let i = 0; const script = [[call('search_places', { query: 'concerts', category: 'events' })], [call('ask_traveler', { question: 'Which night?' }, 'c2')]];
+        const provider = { completeWithTools: async () => ({ message: { content: null, tool_calls: script[i++] || [] }, usage: {} }) };
+        const out = await runDeckAgent({ message: 'events?', traveler: { lat: 40.2, lng: 44.5 } }, {
+            provider, lookup: async () => null,
+            retrieve: async (args) => { args.eventsHunt.onStats({ mode: 'web_search', pages_read: 3, found: 0, budget_cut: true }); return { places: [] }; },
+        });
+        expect(out.toolCalls[0].result.events_listings).toMatchObject({ mode: 'web_search', pages_read: 3, budget_cut: true });
+        expect(out.toolCalls[0].result.events_note).toMatch(/web search/);
+    });
     test('summary tells events from venues', () => {
         const { summarize } = require('../engine/agent/deckAgent');
         expect(summarize({ name: 'Opera', eventSchedule: { startDate: '2026-09-24T15:00:00.000Z' } })).toMatchObject({ is_dated_event: true, event_start: '2026-09-24 15:00 UTC' });

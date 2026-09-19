@@ -308,6 +308,10 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
     // free fetches, no paid search. Web search remains only the automatic
     // fallback for locations nobody has curated ("one time claude search").
     const q = `events ${city} ${_fmtWindow(win)}`;
+    // What happened, for the brain (founder 2026-09-19: "how it succeeded or
+    // failed?"): registered sources vs discovery vs paid web search, pages read,
+    // events found, budget cut. Best-effort, never throws.
+    const report = (extra) => { try { deps.onStats?.({ city, ...extra }); } catch { /* telemetry only */ } };
     let curated = [];
     try {
         // Real model only when Mongo is actually connected — a buffering
@@ -334,6 +338,7 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
         const stale = curated.filter(s => !s.lastReadAt || (_now - new Date(s.lastReadAt).getTime()) > FRESH_READ_MS);
         if (!stale.length) {
             console.log(`[hunt] all ${curated.length} source(s) for ${city} read within ${FRESH_READ_MS / 60000} min — serving the shelf, no re-read`);
+            report({ mode: 'shelf_fresh', registered_sources: curated.length });
             return [];
         }
         if (stale.length < curated.length) {
@@ -365,7 +370,8 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
             ? discovered.map((f) => ({ url: f.url, _discovered: f }))
             : _onlyVerified(await search(q, { count: 5, webSearchCfg: deps.webSearchCfg || null }), verifiedDomains, city).slice(0, MAX_PAGES));
     if (curated.length) console.log(`[hunt] curated: reading ${curated.length} registered source(s) for ${city} — no web search`);
-    if (!urls.length) return [];
+    const huntMode = curated.length ? 'registered_sources' : (discovered.length ? 'discovered_sources' : 'web_search');
+    if (!urls.length) { report({ mode: huntMode, pages_read: 0, found: 0, note: 'no listing page to read' }); return []; }
 
     const wStart = new Date(win.start), wEnd = new Date(win.end);
     const found = [];
@@ -378,9 +384,11 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
     // opening pages and deal what was found; the nightly sweep has no budget.
     const budgetMs = Number.isFinite(deps.budgetMs) ? deps.budgetMs : null;
     const huntStart = Date.now();
+    let budgetSpent = false;
     for (const u of urls) {
         if (budgetMs != null && Date.now() - huntStart > budgetMs) {
             console.log(`[hunt] budget ${budgetMs}ms spent after ${pagesRead} page(s) — dealing ${found.length} event(s), ${urls.length - pagesRead} page(s) left unread`);
+            budgetSpent = true;
             break;
         }
         const beforeCount = found.length;
@@ -541,6 +549,7 @@ async function huntEvents({ city, country = null, center = null, window: win, fo
             }
         } catch { /* bookkeeping only */ }
     }
+    report({ mode: huntMode, registered_sources: curated.length, pages_listed: urls.length, pages_read: pagesRead, found: found.length, budget_cut: budgetSpent, seconds: Math.round((Date.now() - huntStart) / 1000) });
     if (!found.length) {
         console.log(`[hunt] "${q}" → 0 dated events on ${urls.length} page(s)`);
         return [];

@@ -210,6 +210,9 @@ async function runDeckAgent({
                 enforceOpenNow: a.open_now === true,
                 preferences: { ...(findArgsBase.preferences || {}), ...(style ? { travelStyle: style } : {}) },
             };
+            // Events: let the brain see HOW the listings were obtained (or why not).
+            let huntStats = null;
+            if (category === 'events') args.eventsHunt = { ...(findArgsBase.eventsHunt || {}), onStats: (st) => { huntStats = st; } };
             let out;
             try { out = await retrieve(args); } catch (err) { return { error: `search_failed: ${err.message}` }; }
             const places = Array.isArray(out?.places) ? out.places.slice(0, count) : [];
@@ -220,6 +223,7 @@ async function runDeckAgent({
                 result_count: places.length, reason: places.length ? null : (out?.reason || 'nothing_found'),
                 results: places.map(summarize),
                 searches_left: SEARCH_BUDGET - searches,
+                ...(huntStats ? { events_listings: huntStats, events_note: huntStats.mode === 'shelf' ? 'served from listings already read' : (huntStats.mode === 'shelf_fresh' ? 'all registered listings were read minutes ago — the shelf is current' : (huntStats.mode === 'web_search' ? 'no registered listing for this city — a web search found the pages read' : `read ${huntStats.pages_read ?? 0} listing page(s)`)) } : {}),
             };
         },
         ask_traveler: async ({ question } = {}) => {
