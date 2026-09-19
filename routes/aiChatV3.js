@@ -1945,7 +1945,9 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     // Prices the brain fetched ride on the cards it dealt.
                     if (agentOut && agentOut.kind === 'deal' && agentPrices.size) {
                         for (const p of agentOut.places) {
-                            const m = p?.name && (agentPrices.get(p.name.toLowerCase()) || [...agentPrices.entries()].find(([k]) => k.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(k))?.[1]);
+                            // Exact name only — the agent asked for prices by these very names; a
+                            // substring fallback here put one hotel's price on another's card.
+                            const m = p?.name && agentPrices.get(p.name.toLowerCase());
                             if (m) p.hotelPrice = { perNight: m.price_per_night, currency: m.currency, nights: 1, checkIn: null, checkOut: null, stars: m.stars, url: m.booking_url };
                         }
                     }

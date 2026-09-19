@@ -83,6 +83,20 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
 
 const _q = (o) => Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 const _norm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\b(hotel|hotels|resort|spa|the|and|&|de|du|des|la|le)\b/g, ' ').replace(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/g, ' ').trim();
+const GENERIC = new Set(['hotel','hotels','resort','resorts','spa','the','and','by','a','an','of','de','du','des','la','le','les','el','al','apartments','apartment','suites','suite','inn','boutique','collection','luxury','guesthouse','guest','house','hostel','residence','residences','villa','villas','palace','grand','royal','plaza','city','centre','center','central','old','town','marina','beach']);
+/** Distinctive name tokens: accent-folded, lower-cased, minus generic hotel words and the city's own words. */
+function _tokens(name, cityTokens = new Set()) {
+    return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+        .split(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/).filter(t => t.length > 1 && !GENERIC.has(t) && !cityTokens.has(t));
+}
+/** Same hotel? The shorter distinctive set must sit inside the longer, and be worth something on its own. */
+function _sameHotel(a, b) {
+    if (!a.length || !b.length) return false;
+    const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+    const L = new Set(long);
+    if (!short.every(t => L.has(t))) return false;
+    return short.length >= 2 || short[0].length >= 5;   // "cygne" counts; "ani" alone does not
+}
 const haversineKm = (a, b, c, d) => { const R = 6371, t = x => x * Math.PI / 180; const dl = t(c - a), dn = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dn / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
 const _iso = (d) => d.toISOString().slice(0, 10);
 
@@ -163,18 +177,29 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
             booking_url: bookingUrl({ hotelId: h.id, checkIn: stay.checkIn, checkOut: stay.checkOut, currency: cur, locale }, env),
         };
     }).sort((a, b) => a.price_per_night - b.price_per_night);
-    // Match the agent's candidates by name (normalised, either way round), then by block + a shared word.
+    // Match the agent's candidates to partner hotels — STRICTLY. Live 2026-09-19
+    // (founder): a card's price and "Check rates" opened a different hotel whose
+    // name "matched a little". The old rule accepted substring names and a
+    // shared word inside 600 m — and "Yerevan" is a shared word in half the
+    // city. Now: distinctive tokens only (city words and hotel-generic words
+    // removed), the shorter token set must be fully inside the longer one and
+    // carry ≥ 2 tokens (or 1 token of ≥ 5 letters), and when both sides have
+    // coordinates they must be within 1.5 km. No match ⇒ no price — honest.
+    const cityTokens = new Set(_tokens(centre.name || '', new Set()));
     const matched = {};
     for (const want of (Array.isArray(names) ? names : [])) {
         const n = typeof want === 'string' ? { name: want } : (want || {});
-        const key = _norm(n.name); if (!key) continue;
-        let best = hotels.find(h => { const hn = _norm(h.name); return hn && (hn === key || hn.includes(key) || key.includes(hn)); }) || null;
-        if (!best && Number.isFinite(n.lat) && Number.isFinite(n.lng)) {
-            best = hotels.filter(h => h.lat != null && haversineKm(n.lat, n.lng, h.lat, h.lng) <= MATCH_KM)
-                .sort((a, b) => haversineKm(n.lat, n.lng, a.lat, a.lng) - haversineKm(n.lat, n.lng, b.lat, b.lng))[0] || null;
-            if (best && !_norm(best.name).split(' ').some(w => w.length > 3 && key.includes(w))) best = null;
+        if (!n.name) continue;
+        const a = _tokens(n.name, cityTokens);
+        let best = null, bestD = Infinity;
+        for (const h of hotels) {
+            if (!_sameHotel(a, _tokens(h.name, cityTokens))) continue;
+            const d = Number.isFinite(n.lat) && h.lat != null ? haversineKm(n.lat, n.lng, h.lat, h.lng) : null;
+            if (d != null && d > 1.5) continue;                 // a namesake across town is not this hotel
+            if ((d ?? 0.5) < bestD) { best = h; bestD = d ?? 0.5; }
         }
-        matched[n.name] = best ? { ...best } : null;
+        if (best) console.log(`[hotels] match "${n.name}" → "${best.name}"${Number.isFinite(bestD) && bestD !== 0.5 ? ` (${bestD.toFixed(2)} km)` : ''}`);
+        matched[n.name] = best ? { ...best, partner_name: best.name } : null;
     }
     const diag = { hotels_in_index: pool.length, hotels_priced: priceById.size, rates_call: rates === null ? `failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : (partnerError ? `partner: ${partnerError.message || partnerError.code}` : 'ok') };
     if (rates && !priceById.size && !partnerError) {   // priced nothing — show the shape we got, so a doc/reality mismatch is visible
@@ -242,4 +267,4 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
     };
 }
 
-module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, rollForward, makeExecutor, HOTEL_PRICES_TOOL, _memo, _norm };
+module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, rollForward, makeExecutor, _tokens, _sameHotel, HOTEL_PRICES_TOOL, _memo, _norm };

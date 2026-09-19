@@ -162,3 +162,27 @@ describe("owner's listed price (Destination/Business pricing)", () => {
         expect(rec.bookingUrl).toBeNull();
     });
 });
+
+describe('strict hotel matching (founder 2026-09-19: the link opened a different hotel)', () => {
+    const { _tokens, _sameHotel } = hotels;
+    const same = (a, b, city = 'Yerevan') => { const c = new Set(_tokens(city)); return _sameHotel(_tokens(a, c), _tokens(b, c)); };
+    test('a shared city word or a generic word is not a match', () => {
+        expect(same('Yerevan Place', 'Republica Hotel Yerevan')).toBe(false);
+        expect(same('Grand Hotel Yerevan', 'Grand Yerevan Apartments')).toBe(false);   // only "grand" left, generic
+        expect(same('Ani Plaza Hotel', 'Ani Central Inn')).toBe(false);                 // "ani" is 3 letters, alone
+        expect(same('Hotel Alexander', 'Alexander Marina Hotel', 'Dubai')).toBe(true);  // one distinctive 9-letter token
+    });
+    test('the real pairs still match', () => {
+        expect(same('Black Diamond', 'Black Diamond Hotel & Spa', 'Sevan')).toBe(true);
+        expect(same('Hôtel du Cygne Paris', 'Hotel du Cygne', 'Paris')).toBe(true);
+        expect(same('Noy Land', 'Noy Land Resort', 'Sevan')).toBe(true);
+        expect(same('Armenia Marriott Hotel Yerevan', 'Armenia Marriott Hotel Yerevan')).toBe(true);
+        expect(same('Paragraph Freedom Square, a Luxury Collection Hotel', 'Paragraph Freedom Square', 'Tbilisi')).toBe(true);
+    });
+    test('a namesake more than 1.5 km away is refused even when the name fits', async () => {
+        const far = { data: [{ id: 'lpX', name: 'Noy Land Resort', stars: 4, latitude: 40.80, longitude: 45.20 }] };
+        const f = async (url) => ({ ok: true, json: async () => url.includes('/data/hotels') ? far : { data: [{ hotelId: 'lpX', price: 100 }] } });
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: [{ name: 'Noy Land', lat: 40.60, lng: 45.00 }] }, { env: ENV, fetch: f, noPace: true });
+        expect(out.matched['Noy Land']).toBeNull();
+    });
+});
