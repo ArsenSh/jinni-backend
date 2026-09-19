@@ -83,11 +83,21 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
 
 const _q = (o) => Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 const _norm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\b(hotel|hotels|resort|spa|the|and|&|de|du|des|la|le)\b/g, ' ').replace(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/g, ' ').trim();
+/** Amount in one currency → another, via the app's rate table; same currency or unknown rate ⇒ unchanged. */
+function _convert(amount, from, to) {
+    if (!from || !to || from === to) return amount;
+    try {
+        const cs = require('../../services/currencyService');
+        const usd = cs.convertToUSD(amount, from);
+        const outAmt = cs.convertFromUSD(usd, to);
+        return Number.isFinite(outAmt) && outAmt > 0 ? Math.round(outAmt) : amount;
+    } catch { return amount; }
+}
 const GENERIC = new Set(['hotel','hotels','resort','resorts','spa','the','and','by','a','an','of','de','du','des','la','le','les','el','al','apartments','apartment','suites','suite','inn','boutique','collection','luxury','guesthouse','guest','house','hostel','residence','residences','villa','villas','palace','grand','royal','plaza','city','centre','center','central','old','town','marina','beach']);
 /** Distinctive name tokens: accent-folded, lower-cased, minus generic hotel words and the city's own words. */
 function _tokens(name, cityTokens = new Set()) {
     return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-        .split(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/).filter(t => t.length > 1 && !GENERIC.has(t) && !cityTokens.has(t));
+        .split(/[^a-z0-9\u0400-\u04ff\u0530-\u058f]+/).map(t => t.replace(/^(\d+)(st|nd|rd|th)$/, '$1')).filter(t => t.length > 1 && !GENERIC.has(t) && !cityTokens.has(t));   // "14th" = "14"
 }
 /** Same hotel? The shorter distinctive set must sit inside the longer, and be worth something on its own. */
 function _sameHotel(a, b) {
@@ -222,7 +232,8 @@ const HOTEL_PRICES_TOOL = {
                 hotel_names: { type: 'array', items: { type: 'string' }, description: 'Names of hotels from search_places results to price (max 8).' },
                 check_in: { type: 'string', description: 'YYYY-MM-DD, only when the traveler gave dates.' },
                 check_out: { type: 'string', description: 'YYYY-MM-DD, only when the traveler gave dates.' },
-                budget_per_night: { type: 'number', description: 'The traveler\'s stated budget per night, converted to their display currency (e.g. 50000 AMD ≈ 130 USD → 130). Returns the priced hotels closest to it.' },
+                budget_per_night: { type: 'number', description: 'The traveler\'s stated budget per night, AS THEY SAID IT (e.g. 50000). Returns the priced hotels closest to it, converted for you.' },
+                budget_currency: { type: 'string', description: 'ISO code of that budget as the traveler meant it (AMD, USD, EUR, RUB, AED, GBP). Default: their display currency.' },
             },
             required: ['area'],
         },
@@ -264,9 +275,13 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
         // lets us, FETCHED and REGISTERED as dealable candidates with their price
         // attached (live 2026-09-19: the tool named three $130 hotels, the brain
         // had no search left to bring them in and dealt a five-star instead).
-        let nearBudget = null;
+        let nearBudget = null, budgetInCur = null;
         if (Number.isFinite(+a.budget_per_night) && +a.budget_per_night > 0 && out.hotels.length) {
-            const budget = +a.budget_per_night;
+            // The budget in the price currency: "50000" said in AMD is ~130 USD, not
+            // 50000 USD (live 2026-09-19: the raw number matched the priciest hotels).
+            const convert = deps.convert || _convert;
+            const budget = convert(+a.budget_per_night, String(a.budget_currency || out.currency).toUpperCase(), out.currency);
+            budgetInCur = budget;
             nearBudget = out.hotels.map(h => ({ ...h, gap: Math.abs(h.price_per_night - budget) })).sort((x, y) => x.gap - y.gap).slice(0, 6)
                 .map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars, guest_rating: h.guest_rating, _row: h }));
             if (typeof deps.retrieve === 'function' && typeof ctx.register === 'function') {
@@ -299,7 +314,7 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             // The traveler's budget: the priced hotels nearest to it, so the brain can
             // bring them into the deck by name (live 2026-09-19: "50000 per night" got a
             // $591 five-star and a no-price guesthouse).
-            ...(nearBudget ? { near_budget: nearBudget, near_budget_note: nearBudget.some(h => h.id) ? `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — the ones with an id are ready to deal` : `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — to show one, search_places by its exact name` } : {}),
+            ...(nearBudget ? { near_budget: nearBudget, near_budget_note: nearBudget.some(h => h.id) ? `priced hotels closest to ${budgetInCur} ${out.currency} per night — the ones with an id are ready to deal` : `priced hotels closest to ${budgetInCur} ${out.currency} per night — to show one, search_places by its exact name` } : {}),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels. A matched hotel\'s live price is what the card shows — quote IT, not an owner\'s listed price for the same place' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,

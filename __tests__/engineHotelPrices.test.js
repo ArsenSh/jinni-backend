@@ -171,7 +171,8 @@ describe('strict hotel matching (founder 2026-09-19: the link opened a different
         expect(same('Grand Hotel Yerevan', 'Grand Yerevan Apartments')).toBe(false);   // only "grand" left, generic
         expect(same('Ani Plaza Hotel', 'Ani Central Inn')).toBe(false);                 // "ani" is 3 letters, alone
         expect(same('Hotel Alexander', 'Alexander Marina Hotel', 'Dubai')).toBe(true);  // one distinctive 9-letter token
-        expect(same('Hotel Alexander', 'Alex Hotel')).toBe(false);                      // live 2026-09-19: Alexander's card opened Alex Hotel at $91
+        expect(same('Hotel Alexander', 'Alex Hotel')).toBe(false);
+        expect(same('14th Floor Hotel', '14 Floor Hotel')).toBe(true);                   // ordinal = number                      // live 2026-09-19: Alexander's card opened Alex Hotel at $91
     });
     test('the real pairs still match', () => {
         expect(same('Black Diamond', 'Black Diamond Hotel & Spa', 'Sevan')).toBe(true);
@@ -211,4 +212,14 @@ test('near-budget hotels are fetched and registered as dealable, price attached'
     expect(out.near_budget[0]).toMatchObject({ name: 'Harsnaqar', price_per_night: 60, id: 'p1' });
     expect(registered[0].hotelPrice.perNight).toBe(60);
     expect(out.near_budget_note).toMatch(/ready to deal/);
+});
+
+test('a budget said in AMD is converted before ranking', async () => {
+    const exec = hotels.makeExecutor({ center: { lat: 40.55, lng: 44.95 }, sessionCards: [], currency: 'USD' }, {
+        env: ENV, fetch: fakeFetch(), noPace: true, convert: (amt, from, to) => from === 'AMD' && to === 'USD' ? Math.round(amt / 385) : amt,
+        gazetteer: { lookupPlace: async () => ({ name: 'Sevan', lat: 40.55, lng: 44.95, countryCode: 'AM' }), regionAt: async () => null },
+    });
+    const out = await exec({ area: 'Sevan', budget_per_night: 25000, budget_currency: 'AMD' }, { known: [] });   // ≈ 65 USD
+    expect(out.near_budget[0].name).toBe('Harsnaqar');                                   // 60, the nearest to 65
+    expect(out.near_budget_note).toMatch(/closest to 65 USD/);
 });

@@ -1932,7 +1932,12 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         // remembered by hotel name and ride on the dealt cards.
                         ...(hotels.hotelsEnabled() ? {
                             extraTools: [hotels.HOTEL_PRICES_TOOL],
-                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }, { retrieve: (args) => findPlaces({ ...findArgs, ...args }, { loadCandidates }) }) },
+                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }, { retrieve: (args) => findPlaces({
+                                // Fetch BY NAME: no style gate (the luxury gate dropped every $130 hotel the
+                                // partner named — live 2026-09-19), no open-now, no event hunt.
+                                ...findArgs, ...args, enforceOpenNow: false, eventsHunt: null,
+                                preferences: { ...(findArgs.preferences || {}), travelStyle: null },
+                            }, { loadCandidates }) }) },
                         } : {}),
                         // Progress the traveler can see while the brain works.
                         onEvent: ({ tool, args }) => {
