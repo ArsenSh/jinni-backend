@@ -2495,13 +2495,18 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 // schedule", live 2026-09-19). A deck with no dated event at all is
                 // left alone — the narrator already says the listings were thin.
                 if (category === 'events') {
+                    // Padding = an undated card that came out of the EVENTS search (a venue
+                    // with "check its schedule"). A place the agent fetched on purpose from
+                    // another search — the romantic dinner beside the opera (live
+                    // 2026-09-19) — stays.
+                    const isPadding = (p) => !p?.eventSchedule?.startDate && (!p?._agentCat || p._agentCat === 'events' || p._agentCat === 'general');
                     const dated = result.places.filter(p => p?.eventSchedule?.startDate);
-                    if (dated.length && dated.length < result.places.length) {
-                        const dropped = result.places.filter(p => !p?.eventSchedule?.startDate).map(p => p.name);
+                    if (dated.length && result.places.some(isPadding)) {
+                        const dropped = result.places.filter(isPadding).map(p => p.name);
                         console.log(`[v3] events deck: dropped ${dropped.length} undated card(s) — ${dropped.join(', ')}`);
                         meta.undatedDropped = dropped;
-                        blurbs = blurbs.filter((_, i) => !!result.places[i]?.eventSchedule?.startDate);
-                        result.places = dated;
+                        blurbs = blurbs.filter((_, i) => !isPadding(result.places[i]));
+                        result.places = result.places.filter(p => !isPadding(p));
                     }
                 }
                 const _realigned = realignBlurbs(result.places, blurbs);

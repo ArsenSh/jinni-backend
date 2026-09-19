@@ -218,7 +218,7 @@ async function runDeckAgent({
             let out;
             try { out = await retrieve(args); } catch (err) { return { error: `search_failed: ${err.message}` }; }
             const places = Array.isArray(out?.places) ? out.places.slice(0, count) : [];
-            for (const p of places) { if (!p._agentId) p._agentId = `p${++idSeq}`; known.set(p._agentId, p); }
+            for (const p of places) { if (!p._agentId) p._agentId = `p${++idSeq}`; if (!p._agentCat) p._agentCat = category; known.set(p._agentId, p); }   // which search dealt it — a restaurant picked on purpose beside events is not padding
             return {
                 centre: centreName, note: `distances below are from the search centre "${centreName}", not from the traveler`,
                 radius_km: radiusKm || out?.provenance?.radiusKm || null, category, query,
