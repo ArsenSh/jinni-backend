@@ -151,8 +151,8 @@ describe("owner's listed price (Destination/Business pricing)", () => {
         expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: false, average: 300, currency: 'usd' } }, 'business', null).ownedPrice).toEqual({ min: null, max: null, average: 300, currency: 'USD' });
     });
     test('agent sees a quotable number; free or empty pricing stays silent', () => {
-        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toBe("from 120 USD to 260 (owner's listing)");
-        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toBe("about 180 AMD (owner's listing)");
+        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toBe("from 120 to 260 USD (owner's listing, per night)");
+        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toBe("about 180 AMD (owner's listing, per night)");
         expect(summarize({ name: 'x' }).price).toBeNull();
     });
     test('card carries listedPrice, and never a partner hotelPrice it did not get', () => {
@@ -171,6 +171,7 @@ describe('strict hotel matching (founder 2026-09-19: the link opened a different
         expect(same('Grand Hotel Yerevan', 'Grand Yerevan Apartments')).toBe(false);   // only "grand" left, generic
         expect(same('Ani Plaza Hotel', 'Ani Central Inn')).toBe(false);                 // "ani" is 3 letters, alone
         expect(same('Hotel Alexander', 'Alexander Marina Hotel', 'Dubai')).toBe(true);  // one distinctive 9-letter token
+        expect(same('Hotel Alexander', 'Alex Hotel')).toBe(false);                      // live 2026-09-19: Alexander's card opened Alex Hotel at $91
     });
     test('the real pairs still match', () => {
         expect(same('Black Diamond', 'Black Diamond Hotel & Spa', 'Sevan')).toBe(true);
@@ -184,5 +185,17 @@ describe('strict hotel matching (founder 2026-09-19: the link opened a different
         const f = async (url) => ({ ok: true, json: async () => url.includes('/data/hotels') ? far : { data: [{ hotelId: 'lpX', price: 100 }] } });
         const out = await hotels.hotelPrices({ centre: SEVAN, names: [{ name: 'Noy Land', lat: 40.60, lng: 45.00 }] }, { env: ENV, fetch: f, noPace: true });
         expect(out.matched['Noy Land']).toBeNull();
+    });
+});
+
+describe('budget and coordinates through the executor', () => {
+    test('near_budget lists the priced hotels closest to the budget; this turn\'s candidates supply coordinates', async () => {
+        const exec = hotels.makeExecutor({ center: { lat: 40.55, lng: 44.95 }, sessionCards: [] }, {
+            env: ENV, fetch: fakeFetch(), noPace: true,
+            gazetteer: { lookupPlace: async () => ({ name: 'Sevan', lat: 40.55, lng: 44.95, countryCode: 'AM' }), regionAt: async () => null },
+        });
+        const out = await exec({ area: 'Sevan', hotel_names: ['Noy Land'], budget_per_night: 100 }, { known: [{ name: 'Noy Land', geometry: { lat: 40.60, lng: 45.00 } }] });
+        expect(out.near_budget.map(h => h.name)).toEqual(['Harsnaqar', 'Noy Land Resort', 'Black Diamond Hotel & Spa']);   // 60, 180, 320 vs 100 (1 night)
+        expect(out.matched['Noy Land'].price_per_night).toBe(180);
     });
 });

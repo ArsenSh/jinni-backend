@@ -222,6 +222,7 @@ const HOTEL_PRICES_TOOL = {
                 hotel_names: { type: 'array', items: { type: 'string' }, description: 'Names of hotels from search_places results to price (max 8).' },
                 check_in: { type: 'string', description: 'YYYY-MM-DD, only when the traveler gave dates.' },
                 check_out: { type: 'string', description: 'YYYY-MM-DD, only when the traveler gave dates.' },
+                budget_per_night: { type: 'number', description: 'The traveler\'s stated budget per night, converted to their display currency (e.g. 50000 AMD ≈ 130 USD → 130). Returns the priced hotels closest to it.' },
             },
             required: ['area'],
         },
@@ -236,10 +237,15 @@ const HOTEL_PRICES_TOOL = {
  */
 function makeExecutor({ center = null, sessionCards = [], currency = 'USD', locale = 'en', guestNationality = 'US', fallbackName = null, onMatch = null } = {}, deps = {}) {
     const gaz = deps.gazetteer || require('../geo/gazetteer');
-    return async (a = {}) => {
+    return async (a = {}, ctx = {}) => {
+        // Coordinates for the strict matcher: this turn's search results first
+        // (the agent names hotels it just found), then earlier cards.
+        const pool = [...(Array.isArray(ctx.known) ? ctx.known : []), ...sessionCards];
         const names = (Array.isArray(a.hotel_names) ? a.hotel_names : []).slice(0, 8).map(n => {
-            const sc = sessionCards.find(c => c?.name && c.name.toLowerCase() === String(n).toLowerCase());
-            return sc && Number.isFinite(sc.latitude ?? sc.lat) ? { name: String(n), lat: sc.latitude ?? sc.lat, lng: sc.longitude ?? sc.lng } : { name: String(n) };
+            const key = String(n).toLowerCase();
+            const sc = pool.find(c => c?.name && c.name.toLowerCase() === key);
+            const lat = sc ? (sc.geometry?.lat ?? sc.latitude ?? sc.lat) : null, lng = sc ? (sc.geometry?.lng ?? sc.longitude ?? sc.lng) : null;
+            return Number.isFinite(lat) ? { name: String(n), lat, lng } : { name: String(n) };
         });
         const areaName = String(a.area || '').slice(0, 80);
         let hit = null;
@@ -259,6 +265,13 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             area: out.area, stay: `${out.check_in} → ${out.check_out} (${out.nights} night${out.nights > 1 ? 's' : ''})`, currency: out.currency,
             area_range_per_night: pn.length ? { cheapest: pn[0], median: pn[Math.floor(pn.length / 2)], priciest: pn[pn.length - 1], hotels_priced: pn.length } : null,
             matched: Object.fromEntries(Object.entries(out.matched || {}).map(([n, m]) => [n, m ? { price_per_night: m.price_per_night, stars: m.stars } : 'no live price'])),
+            // The traveler's budget: the priced hotels nearest to it, so the brain can
+            // bring them into the deck by name (live 2026-09-19: "50000 per night" got a
+            // $591 five-star and a no-price guesthouse).
+            ...(Number.isFinite(+a.budget_per_night) && +a.budget_per_night > 0 && out.hotels.length ? { near_budget: out.hotels
+                .map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars, guest_rating: h.guest_rating, gap: Math.abs(h.price_per_night - +a.budget_per_night) }))
+                .sort((x, y) => x.gap - y.gap).slice(0, 6).map(({ gap, ...h }) => h),
+                near_budget_note: `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — to show any of them, search_places by its exact name` } : {}),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels. A matched hotel\'s live price is what the card shows — quote IT, not an owner\'s listed price for the same place' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,

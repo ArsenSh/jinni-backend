@@ -128,7 +128,7 @@ function summarize(c) {
         price_tier: c.priceLevel || c._styleTier || null,
         // The owner's listed price when the place is ours — a real number the
         // model may quote ("from 150 USD"), unlike price_tier which is a band.
-        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`) + (c.ownedPrice.max != null && c.ownedPrice.min != null ? ` to ${c.ownedPrice.max}` : '') + ' (owner\'s listing)' : null,
+        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min}${c.ownedPrice.max != null ? ` to ${c.ownedPrice.max}` : ''} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`) + ' (owner\'s listing, per night)' : null,
         tags: (c.interests || []).slice(0, 5),
         open_now: c._openNow === true ? true : (c._openNow === false ? false : null),
         // Events are not places: a dated event carries its start; a venue or an
@@ -282,7 +282,7 @@ async function runDeckAgent({
                 const fn = exec[name];
                 try { onEvent({ tool: name, args }); } catch { /* progress is best-effort */ }
                 if (!fn) result = { error: `unknown_tool: ${name}` };
-                else { try { result = await fn(args); } catch (err) { result = { error: `tool_failed: ${err.message}` }; } }
+                else { try { result = await fn(args, { known: [...known.values()] }); } catch (err) { result = { error: `tool_failed: ${err.message}` }; } }
                 toolCalls.push({ name, args, result: name === 'search_places' ? { ...result, results: undefined, result_count: result.result_count } : result });
                 convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
                 if (terminal) break;
