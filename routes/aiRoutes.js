@@ -8689,6 +8689,13 @@ router.patch('/chat-sessions/:id', auth, async (req, res) => {
                 // eventSchedule above survives — leaving a date on screen with no
                 // way to tell where it came from.
                 ...(rec.sourceUrl && { sourceUrl: rec.sourceUrl }),
+                // Live partner price + booking link and the owner's listed price
+                // (2026-09-19). Third place that stripped them: the frontend list,
+                // the schema, and THIS whitelist all have to carry a field, or the
+                // "Book" pill vanishes on every reload.
+                ...(rec.hotelPrice && { hotelPrice: rec.hotelPrice }),
+                ...(rec.bookingUrl && { bookingUrl: rec.bookingUrl }),
+                ...(rec.listedPrice && { listedPrice: rec.listedPrice }),
                 ...(rec.venueName && { venueName: rec.venueName }),
                 ...(rec.venuePlaceId && { venuePlaceId: rec.venuePlaceId }),
                 ...(rec.provenance && { provenance: rec.provenance }),
