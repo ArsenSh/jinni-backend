@@ -260,6 +260,37 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
         console.log(`[hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'} → ${out.ok ? `${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
         if (!out.ok) return { error: out.reason, centre: centre ? { name: centre.name, country: centre.countryCode } : null };
         if (onMatch) for (const [name, m] of Object.entries(out.matched || {})) if (m) onMatch(name.toLowerCase(), m);
+        // A stated budget: the priced hotels nearest to it — and, when the loop
+        // lets us, FETCHED and REGISTERED as dealable candidates with their price
+        // attached (live 2026-09-19: the tool named three $130 hotels, the brain
+        // had no search left to bring them in and dealt a five-star instead).
+        let nearBudget = null;
+        if (Number.isFinite(+a.budget_per_night) && +a.budget_per_night > 0 && out.hotels.length) {
+            const budget = +a.budget_per_night;
+            nearBudget = out.hotels.map(h => ({ ...h, gap: Math.abs(h.price_per_night - budget) })).sort((x, y) => x.gap - y.gap).slice(0, 6)
+                .map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars, guest_rating: h.guest_rating, _row: h }));
+            if (typeof deps.retrieve === 'function' && typeof ctx.register === 'function') {
+                const knownNames = new Set((Array.isArray(ctx.known) ? ctx.known : []).map(c => String(c?.name || '').toLowerCase()));
+                let fetches = 0;
+                for (const nb of nearBudget) {
+                    if (fetches >= 3 || knownNames.has(String(nb.name).toLowerCase())) continue;
+                    fetches++;
+                    let found = null;
+                    try {
+                        const r = await deps.retrieve({ query: nb.name, category: 'hotels', center: nb._row.lat != null ? { lat: nb._row.lat, lng: nb._row.lng } : { lat: centre.lat, lng: centre.lng }, radiusKm: 3, count: 3 });
+                        const tok = _tokens(nb.name, new Set(_tokens(centre.name || '', new Set())));
+                        found = (r?.places || []).find(p => _sameHotel(tok, _tokens(p.name, new Set(_tokens(centre.name || '', new Set()))))
+                            && (nb._row.lat == null || !p.geometry || haversineKm(nb._row.lat, nb._row.lng, p.geometry.lat, p.geometry.lng) <= 1.5)) || null;
+                    } catch { found = null; }
+                    if (!found) continue;
+                    found.hotelPrice = { perNight: nb._row.price_per_night, currency: nb._row.currency, nights: 1, checkIn: null, checkOut: null, stars: nb._row.stars, url: nb._row.booking_url };
+                    if (onMatch) onMatch(String(found.name).toLowerCase(), { ...nb._row, partner_name: nb._row.name });
+                    const summary = ctx.register(found);
+                    if (summary?.id) nb.id = summary.id;
+                }
+            }
+            nearBudget = nearBudget.map(({ _row, ...h }) => h);
+        }
         const pn = out.hotels.map(h => h.price_per_night);
         return {
             area: out.area, stay: `${out.check_in} → ${out.check_out} (${out.nights} night${out.nights > 1 ? 's' : ''})`, currency: out.currency,
@@ -268,10 +299,7 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             // The traveler's budget: the priced hotels nearest to it, so the brain can
             // bring them into the deck by name (live 2026-09-19: "50000 per night" got a
             // $591 five-star and a no-price guesthouse).
-            ...(Number.isFinite(+a.budget_per_night) && +a.budget_per_night > 0 && out.hotels.length ? { near_budget: out.hotels
-                .map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars, guest_rating: h.guest_rating, gap: Math.abs(h.price_per_night - +a.budget_per_night) }))
-                .sort((x, y) => x.gap - y.gap).slice(0, 6).map(({ gap, ...h }) => h),
-                near_budget_note: `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — to show any of them, search_places by its exact name` } : {}),
+            ...(nearBudget ? { near_budget: nearBudget, near_budget_note: nearBudget.some(h => h.id) ? `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — the ones with an id are ready to deal` : `priced hotels closest to ${+a.budget_per_night} ${out.currency} per night — to show one, search_places by its exact name` } : {}),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels. A matched hotel\'s live price is what the card shows — quote IT, not an owner\'s listed price for the same place' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,

@@ -557,11 +557,11 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
         //    commands and transport/how-to questions never move the centre. ──
         const sessionCards = shownPlaces(sessionPeek?.messages);
         // Shared hotel_prices executor (agent loop + answer loops) — only when the partner key exists.
-        const hotelPricesExec = (o = {}) => hotels.makeExecutor({
+        const hotelPricesExec = (o = {}, deps = {}) => hotels.makeExecutor({
             center, sessionCards, fallbackName: meta.searchCity || null,
             currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
             guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2), ...o,
-        });
+        }, deps);
         const HOTEL_TOOLS = hotels.hotelsEnabled() ? [hotels.HOTEL_PRICES_TOOL] : [];
         const hotelExecs = () => hotels.hotelsEnabled() ? { hotel_prices: hotelPricesExec() } : {};
         // Per-deck ledger for the narrator: the AI resolves "the first two" /
@@ -1932,7 +1932,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         // remembered by hotel name and ride on the dealt cards.
                         ...(hotels.hotelsEnabled() ? {
                             extraTools: [hotels.HOTEL_PRICES_TOOL],
-                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }) },
+                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }, { retrieve: (args) => findPlaces({ ...findArgs, ...args }, { loadCandidates }) }) },
                         } : {}),
                         // Progress the traveler can see while the brain works.
                         onEvent: ({ tool, args }) => {

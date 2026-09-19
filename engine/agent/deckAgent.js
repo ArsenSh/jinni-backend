@@ -282,7 +282,13 @@ async function runDeckAgent({
                 const fn = exec[name];
                 try { onEvent({ tool: name, args }); } catch { /* progress is best-effort */ }
                 if (!fn) result = { error: `unknown_tool: ${name}` };
-                else { try { result = await fn(args, { known: [...known.values()] }); } catch (err) { result = { error: `tool_failed: ${err.message}` }; } }
+                else {
+                    // Extra tools see this turn's candidates and may REGISTER new ones
+                    // (e.g. hotel_prices fetching the hotels nearest a budget) so the
+                    // brain can deal them by id like any search result.
+                    const ctx = { known: [...known.values()], register: (p) => { if (!p) return null; if (!p._agentId) p._agentId = `p${++idSeq}`; known.set(p._agentId, p); return summarize(p); } };
+                    try { result = await fn(args, ctx); } catch (err) { result = { error: `tool_failed: ${err.message}` }; }
+                }
                 toolCalls.push({ name, args, result: name === 'search_places' ? { ...result, results: undefined, result_count: result.result_count } : result });
                 convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
                 if (terminal) break;
