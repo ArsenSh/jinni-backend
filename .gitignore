@@ -10,5 +10,5 @@ logs/
 .DS_Store
 
 # QA runner login token (scripts/qaRun.js) — never commit
-.qa-token
+.qa-token*
 qa/reports/
