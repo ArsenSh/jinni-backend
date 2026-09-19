@@ -59,6 +59,35 @@ const { messageNamesPlace, looseTokenMatch } = require('../engine/places/matchin
 const deepseekProvider = require('../engine/narrator/providers/deepseek');
 const { loadTaste, dislikeExcludes, recordViews } = require('../engine/personalization/taste');
 
+// ── Live hotel price + Book link for cards that did not come through the v3
+//    agent (the v1 hotel quick action, the saved panel, Discovery). The frontend
+//    sends the cards' names and coordinates after they render; the strict
+//    matcher does the rest. Founder 2026-09-19: "lets think about hotels in
+//    quick-action-stream". Fails open: no partner key ⇒ empty map. ──
+router.post('/hotel-prices', auth, async (req, res) => {
+    try {
+        if (!hotels.hotelsEnabled()) return res.json({ success: true, prices: {} });
+        const list = (Array.isArray(req.body?.hotels) ? req.body.hotels : []).slice(0, 8)
+            .map(h => ({ name: String(h?.name || '').slice(0, 120), lat: +h?.latitude, lng: +h?.longitude }))
+            .filter(h => h.name && Number.isFinite(h.lat) && Number.isFinite(h.lng));
+        if (!list.length) return res.json({ success: true, prices: {} });
+        const lat = list.reduce((a, h) => a + h.lat, 0) / list.length, lng = list.reduce((a, h) => a + h.lng, 0) / list.length;
+        let reg = null; try { reg = await require('../engine/geo/gazetteer').regionAt({ lat, lng }, { maxKm: 60 }); } catch { reg = null; }
+        if (!reg?.countryCode) return res.json({ success: true, prices: {} });
+        const out = await hotels.hotelPrices({
+            centre: { lat, lng, countryCode: reg.countryCode, name: reg.city || null }, names: list, radiusKm: 15,
+            currency: String(req.body?.currency || 'USD').slice(0, 3), locale: String(req.body?.language || 'en').slice(0, 2),
+            guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
+        });
+        const prices = {};
+        for (const [name, m] of Object.entries(out.matched || {})) if (m) prices[name] = { perNight: m.price_per_night, currency: m.currency, stars: m.stars, url: m.booking_url, partnerName: m.partner_name || m.name };
+        res.json({ success: true, prices, stay: out.ok ? { checkIn: out.check_in, checkOut: out.check_out } : null });
+    } catch (err) {
+        console.warn(`[hotel-prices] ${err.message}`);
+        res.json({ success: true, prices: {} });
+    }
+});
+
 router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
     const { message, location = null, userTimezone = null, nearbyMode = false, sessionId = null } = req.body || {};
     if (!message || typeof message !== 'string') {
