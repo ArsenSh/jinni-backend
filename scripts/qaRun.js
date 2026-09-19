@@ -128,6 +128,16 @@ function check(expect, r) {
         for (const t of sc.turns) {
             let r;
             try { r = await turn(sessionId, t.say); } catch (err) { console.log(`  ✗ "${t.say}" → ${err.message}`); rec.turns.push({ say: t.say, error: err.message }); fail++; continue; }
+            // Mirror the app: hotel cards that arrived without a price ask /hotel-prices (any engine, any turn).
+            const wantPrice = r.cards.filter(c => /hotel/i.test(String(c.category || c.type || '')) && !c.hotelPrice && Number.isFinite(c.latitude ?? c.lat) && Number.isFinite(c.longitude ?? c.lng));
+            if (wantPrice.length) {
+                try {
+                    const pr = await json('POST', '/api/ai/hotel-prices', { hotels: wantPrice.map(c => ({ name: c.name, latitude: c.latitude ?? c.lat, longitude: c.longitude ?? c.lng })), currency: 'USD', language: 'en' });
+                    let n = 0;
+                    for (const c of r.cards) { const m = pr?.prices?.[c.name]; if (m && Number.isFinite(m.perNight)) { c.hotelPrice = { perNight: m.perNight, currency: m.currency, url: m.url }; if (m.url) c.bookingUrl = m.url; n++; } }
+                    console.log(`    (priced after render via /hotel-prices: ${n}/${wantPrice.length})`);
+                } catch (err) { console.log(`    (/hotel-prices: ${err.message.slice(0, 120)})`); }
+            }
             const qa = r.meta?.qa || {};
             console.log(`\n  ▶ "${t.say}"  ${r.ms} ms · lane=${qa.lane || '-'} path=${qa.path || '-'} centre=${r.meta?.searchCity || qa.city || '-'} r=${qa.radiusKm ?? '-'}km${r.meta?.statedAt ? ` statedAt=${r.meta.statedAt}` : ''}${r.meta?.emptyCause ? ` empty=${r.meta.emptyCause}` : ''}`);
             console.log(`    reply: ${r.text.replace(/\s+/g, ' ').slice(0, 260)}${r.text.length > 260 ? '…' : ''}`);

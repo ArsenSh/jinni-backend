@@ -359,6 +359,50 @@
           }
         }
       ]
+    },
+    {
+      "id": "hotel-followup",
+      "why": "Continued conversation: the second and third hotel turns (refills skip the agent) must still end with prices + Book — the frontend prices any hotel deck via /hotel-prices after it renders; the runner mirrors that step.",
+      "turns": [
+        {
+          "say": "good hotels in Yerevan center",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question"
+            ],
+            "cardsMax": 6
+          }
+        },
+        {
+          "say": "show me other options, a bit cheaper",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question",
+              "refill"
+            ],
+            "cardsMax": 6
+          }
+        },
+        {
+          "say": "and something with a pool?",
+          "expect": {
+            "v3laneIn": [
+              "deck",
+              "places",
+              "clarify",
+              "place_question",
+              "refill"
+            ],
+            "cardsMax": 6
+          }
+        }
+      ]
     }
   ]
 }
