@@ -295,7 +295,8 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
                     fetches++;
                     const near = nb._row.lat != null ? { lat: nb._row.lat, lng: nb._row.lng } : { lat: centre.lat, lng: centre.lng };
                     const tok = _tokens(nb.name, cityTok);
-                    const fits = (p) => p && p.name && _sameHotel(tok, _tokens(p.name, cityTok))
+                    const exact = (p) => p && p.name && _norm(p.name) === _norm(nb.name);   // full-name hit ⇒ accept even when only a short token survives ("Ani Plaza")
+                    const fits = (p) => p && p.name && (exact(p) || _sameHotel(tok, _tokens(p.name, cityTok)))
                         && (nb._row.lat == null || !p.geometry || haversineKm(nb._row.lat, nb._row.lng, p.geometry.lat, p.geometry.lng) <= 1.5);
                     let found = null, returned = [];
                     try {
@@ -322,7 +323,11 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
                 }
             }
             if (fetchLog.length) out.diag = { ...(out.diag || {}), near_budget_fetch: fetchLog };
-            nearBudget = nearBudget.map(({ _row, ...h }) => h);
+            // Dealable ones first, each with an explicit status — the brain named
+            // hotels it could not deal (live 2026-09-19: text said Best Western,
+            // cards showed DoubleTree).
+            nearBudget = nearBudget.map(({ _row, ...h }) => ({ ...h, status: h.id ? 'ready to deal' : 'not in Jinni\'s index — do not name it as a pick' }))
+                .sort((x, y) => (y.id ? 1 : 0) - (x.id ? 1 : 0));
         }
         const pn = out.hotels.map(h => h.price_per_night);
         return {
