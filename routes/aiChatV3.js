@@ -1932,7 +1932,18 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                         // remembered by hotel name and ride on the dealt cards.
                         ...(hotels.hotelsEnabled() ? {
                             extraTools: [hotels.HOTEL_PRICES_TOOL],
-                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }, { retrieve: (args) => findPlaces({
+                            extraExec: { hotel_prices: hotelPricesExec({ onMatch: (k, m) => agentPrices.set(k, m) }, {
+                                // Exact name → one place (owned → PlaceCache → Google), shaped as a
+                                // deck candidate through the cache row it leaves behind.
+                                lookupByName: async (name, near) => {
+                                    const { getCachedPlaceDetails } = require('./aiRoutes').shared;
+                                    const det = await getCachedPlaceDetails(name, true, `v3h-${Date.now()}`, near || center || null, null, null, true);
+                                    const pid = det?.placeId || det?.place_id || det?.id;
+                                    if (!pid) return null;
+                                    const doc = await require('../models/PlaceCache').findOne({ placeId: pid }).lean();
+                                    return doc ? require('../engine/places/canonicalStore').cacheDocToCandidate(doc, center || near || null) : null;
+                                },
+                                retrieve: (args) => findPlaces({
                                 // Fetch BY NAME: no style gate (the luxury gate dropped every $130 hotel the
                                 // partner named — live 2026-09-19), no open-now, no event hunt.
                                 ...findArgs, ...args, enforceOpenNow: false, eventsHunt: null,

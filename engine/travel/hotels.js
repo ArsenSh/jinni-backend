@@ -284,19 +284,36 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             budgetInCur = budget;
             nearBudget = out.hotels.map(h => ({ ...h, gap: Math.abs(h.price_per_night - budget) })).sort((x, y) => x.gap - y.gap).slice(0, 6)
                 .map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars, guest_rating: h.guest_rating, _row: h }));
-            if (typeof deps.retrieve === 'function' && typeof ctx.register === 'function') {
+            const canFetch = (typeof deps.lookupByName === 'function' || typeof deps.retrieve === 'function') && typeof ctx.register === 'function';
+            const fetchLog = [];
+            if (canFetch) {
                 const knownNames = new Set((Array.isArray(ctx.known) ? ctx.known : []).map(c => String(c?.name || '').toLowerCase()));
+                const cityTok = new Set(_tokens(centre.name || '', new Set()));
                 let fetches = 0;
                 for (const nb of nearBudget) {
                     if (fetches >= 3 || knownNames.has(String(nb.name).toLowerCase())) continue;
                     fetches++;
-                    let found = null;
+                    const near = nb._row.lat != null ? { lat: nb._row.lat, lng: nb._row.lng } : { lat: centre.lat, lng: centre.lng };
+                    const tok = _tokens(nb.name, cityTok);
+                    const fits = (p) => p && p.name && _sameHotel(tok, _tokens(p.name, cityTok))
+                        && (nb._row.lat == null || !p.geometry || haversineKm(nb._row.lat, nb._row.lng, p.geometry.lat, p.geometry.lng) <= 1.5);
+                    let found = null, returned = [];
                     try {
-                        const r = await deps.retrieve({ query: nb.name, category: 'hotels', center: nb._row.lat != null ? { lat: nb._row.lat, lng: nb._row.lng } : { lat: centre.lat, lng: centre.lng }, radiusKm: 3, count: 3 });
-                        const tok = _tokens(nb.name, new Set(_tokens(centre.name || '', new Set())));
-                        found = (r?.places || []).find(p => _sameHotel(tok, _tokens(p.name, new Set(_tokens(centre.name || '', new Set()))))
-                            && (nb._row.lat == null || !p.geometry || haversineKm(nb._row.lat, nb._row.lng, p.geometry.lat, p.geometry.lng) <= 1.5)) || null;
-                    } catch { found = null; }
+                        // Exact-name lookup first (owned → cache → Google, one place); the
+                        // ranked retrieval only as a fallback — it returns whatever ranks
+                        // near the point, not the hotel asked for (live 2026-09-19: 0 of 3).
+                        if (typeof deps.lookupByName === 'function') {
+                            const p = await deps.lookupByName(nb.name, near);
+                            returned = p ? [p.name] : [];
+                            if (fits(p)) found = p;
+                        }
+                        if (!found && typeof deps.retrieve === 'function') {
+                            const r = await deps.retrieve({ query: nb.name, category: 'hotels', center: near, radiusKm: 3, count: 3 });
+                            returned = returned.concat((r?.places || []).map(p => p.name));
+                            found = (r?.places || []).find(fits) || null;
+                        }
+                    } catch (err) { returned.push(`error: ${err.message}`); }
+                    fetchLog.push({ wanted: nb.name, returned, registered: !!found });
                     if (!found) continue;
                     found.hotelPrice = { perNight: nb._row.price_per_night, currency: nb._row.currency, nights: 1, checkIn: null, checkOut: null, stars: nb._row.stars, url: nb._row.booking_url };
                     if (onMatch) onMatch(String(found.name).toLowerCase(), { ...nb._row, partner_name: nb._row.name });
@@ -304,6 +321,7 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
                     if (summary?.id) nb.id = summary.id;
                 }
             }
+            if (fetchLog.length) out.diag = { ...(out.diag || {}), near_budget_fetch: fetchLog };
             nearBudget = nearBudget.map(({ _row, ...h }) => h);
         }
         const pn = out.hotels.map(h => h.price_per_night);

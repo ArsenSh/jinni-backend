@@ -203,15 +203,17 @@ describe('budget and coordinates through the executor', () => {
 
 test('near-budget hotels are fetched and registered as dealable, price attached', async () => {
     const registered = [];
-    const retrieve = async ({ query }) => ({ places: [{ name: query === 'Harsnaqar' ? 'Harsnaqar Hotel' : query, geometry: { lat: 40.56, lng: 44.96 }, source: 'cache' }] });
+    const lookupByName = async (name) => ({ name: name === 'Harsnaqar' ? 'Harsnaqar Hotel' : name, geometry: { lat: 40.56, lng: 44.96 }, source: 'cache' });
+    const retrieve = async () => ({ places: [] });
     const exec = hotels.makeExecutor({ center: { lat: 40.55, lng: 44.95 }, sessionCards: [] }, {
-        env: ENV, fetch: fakeFetch(), noPace: true, retrieve,
+        env: ENV, fetch: fakeFetch(), noPace: true, retrieve, lookupByName,
         gazetteer: { lookupPlace: async () => ({ name: 'Sevan', lat: 40.55, lng: 44.95, countryCode: 'AM' }), regionAt: async () => null },
     });
     const out = await exec({ area: 'Sevan', budget_per_night: 70 }, { known: [], register: (p) => { registered.push(p); return { id: `p${registered.length}` }; } });
     expect(out.near_budget[0]).toMatchObject({ name: 'Harsnaqar', price_per_night: 60, id: 'p1' });
     expect(registered[0].hotelPrice.perNight).toBe(60);
     expect(out.near_budget_note).toMatch(/ready to deal/);
+    expect(out.diag.near_budget_fetch[0]).toMatchObject({ wanted: 'Harsnaqar', registered: true });
 });
 
 test('a budget said in AMD is converted before ranking', async () => {
