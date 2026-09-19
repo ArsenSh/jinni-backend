@@ -10,6 +10,25 @@ const fakeProvider = (script) => {
 const SEVAN = { name: 'Lake Sevan', lat: 40.35, lng: 45.2, kind: 'landmark', waterBody: true, population: 0, countryName: 'Armenia' };
 const HOTEL = (name, km) => ({ placeId: `g_${name}`, name, source: 'cache', distanceKm: km, rating: 4.5, types: ['hotel'], interests: ['nature'] });
 
+describe('event kinds (a fact for the brain)', () => {
+    const { eventKind } = require('../engine/events/kinds');
+    test('reads the kind off the title in the shelf languages', () => {
+        expect(eventKind('Չայկովսկի․ «Եվգենի Օնեգին» օպերա | Համերգային Կատարում')).toBe('classical');
+        expect(eventKind('Երգեհոնային երաժշտության 4-րդ միջազգային փառատոն. բացման համերգ')).toBe('classical');
+        expect(eventKind('Retro Stars vol. 1 - Disco Legends')).toBe('party');
+        expect(eventKind('Candlenight concerts illuminated by thousands of candles: Yerevan')).toBe('concert');
+        expect(eventKind('Leonid Agutin')).toBe('event');
+        expect(eventKind('«Ջա՜ն Աշուն » փառատոն')).toBe('festival');
+        expect(eventKind('NEW - The Big Sushi Brunch')).toBe('food_wine');
+        expect(eventKind('Ligue 1: Olympique de Marseille – Paris Saint-Germain')).toBe('event');
+    });
+    test('the agent summary carries it for events only', () => {
+        const { summarize } = require('../engine/agent/deckAgent');
+        expect(summarize({ name: 'Disco Legends', eventSchedule: { startDate: '2026-09-20T17:00:00Z' } }).event_kind).toBe('party');
+        expect(summarize({ name: 'Disco Legends' }).event_kind).toBeUndefined();
+    });
+});
+
 describe('deck agent', () => {
     test('an events search reports how the listings were obtained', async () => {
         const call = (name, args, id = 'c1') => ({ id, function: { name, arguments: JSON.stringify(args) } });

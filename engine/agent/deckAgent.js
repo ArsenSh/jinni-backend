@@ -110,6 +110,7 @@ function systemPrompt({ langName, dateNote, traveler, preferences, lastDeck, las
         lastDeck && lastDeck.length ? `- Cards already on screen (do not repeat unless asked): ${lastDeck.slice(0, 8).join(', ')}` : null,
         lastQuestion ? `- Your previous reply ended with the question: "${clip(lastQuestion, 160)}" — a short answer to it continues that thread.` : null,
         '',
+        '- A subjective ask (romantic, fun, a date, with friends, impress someone) has no single right kind of place or event — deal a SPREAD of kinds (e.g. a concert, a party, a dinner show, something outdoors) rather than several of one, and let the closing question name the kinds so the traveler can steer.',
         'Finish EVERY turn with exactly one of: deal(...) or ask_traveler(...). Do not answer in plain text.',
     ];
     return lines.filter(l => l !== null).join('\n');
@@ -135,6 +136,7 @@ function summarize(c) {
         // attraction in an events search carries none — deal it as an event
         // and the traveler gets "check its schedule" padding (live 2026-09-19).
         is_dated_event: !!(c.eventSchedule && c.eventSchedule.startDate),
+        event_kind: c.eventSchedule ? require('../events/kinds').eventKind(c.name, c.description || c.blurb || '') : undefined,
         event_start: c.eventSchedule?.startDate ? new Date(c.eventSchedule.startDate).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : null,
         source: c.source === 'destination' || c.source === 'business' ? 'owned' : (c.source || null),
         area: c._town?.city || c.city || null,
