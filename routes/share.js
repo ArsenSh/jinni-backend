@@ -146,6 +146,8 @@ router.post('/', rateLimit, async (req, res) => {
     if (type === 'message') {
       payload.message = message;
       payload.recommendations = (recommendations || []).slice(0, 10);
+      // Large-card flag from the chat message — the share page sizes cards by it.
+      payload.isChatRecommendation = req.body.isChatRecommendation === true;
       // ✅ store contentParts to preserve interleaved text + inline rec cards
       if (contentParts && Array.isArray(contentParts)) { payload.contentParts = contentParts }
     }
