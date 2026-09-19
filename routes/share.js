@@ -142,6 +142,8 @@ router.post('/', rateLimit, async (req, res) => {
     const SHARE_LOCALES = ['en', 'ru', 'ar', 'zh', 'fr'];
     if (SHARE_LOCALES.includes(language)) payload.language = language;
 
+    // The sharer's font choice (Settings) — the share page renders in it.
+    if (['standard', 'classic', 'elegant', 'modern'].includes(req.body.fontStyle)) payload.fontStyle = req.body.fontStyle;
     if (type === 'recommendation') payload.rec = rec;
     if (type === 'message') {
       payload.message = message;
