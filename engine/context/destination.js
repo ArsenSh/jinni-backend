@@ -267,30 +267,14 @@ async function resolveDestination({
     //    Yerevan; Rome was then picked in Preferences and the next question
     //    still answered Yerevan. A destination the traveler just saved is the
     //    most recent decision, so it wins and the session follows it.
-    const saved = _savedCentre(savedDestination);
-    if (sessionDestination && sessionDestination.latitude != null && sessionDestination.longitude != null) {
-        const sessionAt = sessionDestination.updatedAt ? new Date(sessionDestination.updatedAt).getTime() : 0;
-        const savedAt = saved && saved.lastUpdated ? new Date(saved.lastUpdated).getTime() : 0;
-        const elsewhere = saved && _haversineKm(saved.lat, saved.lng, sessionDestination.latitude, sessionDestination.longitude) > 1;
-        if (saved && savedAt > sessionAt && elsewhere) {
-            return {
-                center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name,
-                remember: { name: saved.name, latitude: saved.lat, longitude: saved.lng, placeId: null, singleTown: true, scale: 'town', updatedAt: new Date() },
-            };
-        }
+    const inPlay = destinationInPlay({ sessionDestination, savedDestination });
+    if (inPlay) {
         return {
-            center: { lat: sessionDestination.latitude, lng: sessionDestination.longitude },
-            source: 'session',
-            city: sessionDestination.name || null,
-            remember: null,
+            center: { lat: inPlay.lat, lng: inPlay.lng }, source: inPlay.source, city: inPlay.name,
+            remember: inPlay.supersedes
+                ? { name: inPlay.name, latitude: inPlay.lat, longitude: inPlay.lng, placeId: null, singleTown: true, scale: 'town', updatedAt: new Date() }
+                : null,
         };
-    }
-
-    // 5. The destination chosen in Settings. A fresh chat has no session
-    //    destination, so without this the setting was invisible on exactly the
-    //    turn that matters most — the first one.
-    if (saved) {
-        return { center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name, remember: null };
     }
 
     // 5. Where they actually are.
@@ -300,6 +284,28 @@ async function resolveDestination({
 /** The Settings destination, or null when it is unset. `coordinates` defaults
  *  to {lat: 0, lng: 0} in the schema, and 0,0 is the Gulf of Guinea — treating
  *  the default as a location would send every traveler to the Atlantic. */
+/**
+ * The destination the conversation is about, before anything is retrieved:
+ * the session's own, unless Settings chose a NEWER one somewhere else; a fresh
+ * session takes the Settings one. One rule, read by the centre resolution AND
+ * by the controller — live 2026-09-22: the controller saw only the session
+ * destination (empty on a fresh chat) and asked a Rome-bound traveler whether
+ * they meant Lake Sevan. `supersedes` = the saved one overrides a session one.
+ */
+function destinationInPlay({ sessionDestination = null, savedDestination = null } = {}) {
+    const saved = _savedCentre(savedDestination);
+    const s = sessionDestination;
+    if (s && s.latitude != null && s.longitude != null) {
+        const sessionAt = s.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+        const savedAt = saved && saved.lastUpdated ? new Date(saved.lastUpdated).getTime() : 0;
+        const elsewhere = saved && _haversineKm(saved.lat, saved.lng, s.latitude, s.longitude) > 1;
+        if (saved && savedAt > sessionAt && elsewhere) return { name: saved.name, lat: saved.lat, lng: saved.lng, source: 'saved', supersedes: true };
+        return { name: s.name || null, lat: s.latitude, lng: s.longitude, source: 'session', supersedes: false };
+    }
+    if (saved) return { name: saved.name, lat: saved.lat, lng: saved.lng, source: 'saved', supersedes: false };
+    return null;
+}
+
 function _haversineKm(a, b, c, d) { const R = 6371, t = x => x * Math.PI / 180; const dl = t(c - a), dn = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dn / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
 function _savedCentre(saved) {
     const c = saved?.coordinates || saved || {};
@@ -311,4 +317,4 @@ function _savedCentre(saved) {
     return { lat, lng, name, lastUpdated: saved?.lastUpdated || null };
 }
 
-module.exports = { resolveDestination, isGeographic, scaleOf, _samePlace, _savedCentre, GEO_DESTINATION_TYPES, SCALE_BY_TYPE };
+module.exports = { resolveDestination, destinationInPlay, isGeographic, scaleOf, _samePlace, _savedCentre, GEO_DESTINATION_TYPES, SCALE_BY_TYPE };

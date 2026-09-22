@@ -272,3 +272,24 @@ describe('a destination saved in Settings AFTER the session chose one (founder 2
         expect(out.source).toBe('nearby');
     });
 });
+
+describe('destinationInPlay — the one rule the centre AND the controller read', () => {
+    const { destinationInPlay } = require('../engine/context/destination');
+    const rome = { city: 'Rome', countryName: 'Italy', coordinates: { lat: 41.9, lng: 12.5 }, lastUpdated: new Date('2026-09-22T10:00:00Z') };
+    const yerevanSession = { name: 'Yerevan', latitude: 40.18, longitude: 44.51, updatedAt: new Date('2026-09-22T09:00:00Z') };
+
+    test('a fresh chat takes the Settings destination (the live Rome/Sevan failure)', () => {
+        expect(destinationInPlay({ sessionDestination: null, savedDestination: rome })).toMatchObject({ name: 'Rome', source: 'saved', supersedes: false });
+    });
+    test('a NEWER saved destination somewhere else supersedes the session one', () => {
+        expect(destinationInPlay({ sessionDestination: yerevanSession, savedDestination: rome })).toMatchObject({ name: 'Rome', source: 'saved', supersedes: true });
+    });
+    test('an OLDER saved destination leaves the session in charge', () => {
+        const older = { ...rome, lastUpdated: new Date('2026-09-22T08:00:00Z') };
+        expect(destinationInPlay({ sessionDestination: yerevanSession, savedDestination: older })).toMatchObject({ name: 'Yerevan', source: 'session' });
+    });
+    test('nothing chosen anywhere = null; an unset Settings placeholder (0,0) counts as nothing', () => {
+        expect(destinationInPlay({})).toBeNull();
+        expect(destinationInPlay({ savedDestination: { city: 'Select a city', coordinates: { lat: 0, lng: 0 } } })).toBeNull();
+    });
+});

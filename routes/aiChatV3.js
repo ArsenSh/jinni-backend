@@ -51,7 +51,7 @@ const { flightsEnabled } = require('../engine/travel/flights');
 const hotels = require('../engine/travel/hotels');
 const { lookupFacts, topicFor, topicForQuery } = require("../engine/knowledge/sync");
 const { resolveRegion } = require('../engine/context/region');
-const { resolveDestination } = require('../engine/context/destination');
+const { resolveDestination, destinationInPlay } = require('../engine/context/destination');
 const { approxIn } = require('../engine/money/price');
 const { validateProposal, isAffirmative, isNegative, applyProposal, isExplicit, refusalReason, radiusKmFor, parseBudgetReply } = require('../engine/preferences/proposal');
 const { buildToolAnswerMessages } = require('../engine/narrator/prompts/grounded');
@@ -319,7 +319,11 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     lastLane: sessionPeek?.lastLane || null,
                     lastReply: sessionPeek?.lastReply?.text || null,
                     lastFlights: sessionPeek?.lastFlights || null,
-                    activeDestination: sessionPeek?.activeDestination || null,
+                    // The trip being planned — session, or the newer Settings
+                    // choice (same rule the centre uses; see destinationInPlay).
+                    // Live 2026-09-22: a fresh chat with Rome saved was asked
+                    // "Sevan, or abroad?" because only the session was consulted.
+                    activeDestination: destinationInPlay({ sessionDestination: sessionPeek?.activeDestination || null, savedDestination: _saved })?.name || null,
                     lastDiscussed: sessionPeek?.lastDiscussed?.name || null,
                     lastDeck: (() => {
                         const ms = sessionPeek?.messages || [];

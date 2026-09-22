@@ -240,3 +240,12 @@ describe('a clarify carries no search destination (2026-09-18)', () => {
         expect(system).toMatch(/saved travel style is part of every PRICED ask/);
     });
 });
+
+describe('stateBlock — the destination line', () => {
+    const { stateBlock } = require('../engine/controller/conversationController');
+    test('a destination in play is presented as the trip being planned, apart from where the traveler is', () => {
+        const s = stateBlock({ travelerLocation: 'Yerevan, Armenia', activeDestination: 'Rome' });
+        expect(s).toMatch(/traveler IS now .*Yerevan, Armenia/);
+        expect(s).toMatch(/Destination in play — the trip being planned: Rome/);
+    });
+});

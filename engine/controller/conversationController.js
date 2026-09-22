@@ -55,7 +55,7 @@ function stateBlock(state = {}, dateNote = null) {
             + `${a.depart_from ? `, ${a.depart_from}..${a.depart_to || a.depart_from}` : (a.depart_date ? `, ${a.depart_date}` : '')}`
             + `; ${offers.length} fare(s)${offers.length ? ': ' + offers.slice(0, 6).map(o => o.label || '').filter(Boolean).join(' | ') : ''}`);
     }
-    if (state.activeDestination) lines.push(`Destination in play: ${clip(state.activeDestination, 120)}`);
+    if (state.activeDestination) lines.push(`Destination in play — the trip being planned: ${clip(state.activeDestination, 120)}. Plan, suggest and ask about THIS place; the traveler's current location matters only as a trip origin`);
     if (state.lastDiscussed) lines.push(`Place last discussed: ${clip(state.lastDiscussed, 80)}`);
     if (Array.isArray(state.lastDeck) && state.lastDeck.length) lines.push(`Cards last shown, in order: ${state.lastDeck.map((n, i) => `${i + 1}. ${n}`).join('; ')}`);
     if (state.preferences && typeof state.preferences === 'object') {
@@ -84,7 +84,7 @@ In ADDITION to the object above, add these keys to the SAME JSON object:
 "answers_pending_question": true when this message answers or reacts to the question Jinni's previous reply ended with ("yes", "no", "4 days", "the second one", "not sure yet"). Such a reply is NEVER chitchat — it belongs to the lane that asked.
 "topic_changed": true when the message starts a new topic rather than continuing the previous one.
 "flights": null unless lane is flights, else {"origin":"<city>","destination":"<city>","depart_date":"YYYY-MM-DD or YYYY-MM or empty","depart_from":"YYYY-MM-DD or empty","depart_to":"YYYY-MM-DD or empty","return_date":"YYYY-MM-DD or empty","return_from":"YYYY-MM-DD or empty","return_to":"YYYY-MM-DD or empty","stay_days":<number, 0 when not stated>}. Resolve every relative date ("tomorrow", "this week", "in October") from the traveler's date line. Carry origin and destination from the fares last fetched when the message does not restate them; swap them for "back", "return", "the other direction", "vice versa". A return after a stay length = each outbound date plus the stay: give return_from = earliest outbound + stay and return_to = latest outbound + stay.
-"clarify_question": "" unless lane is clarify — then ONE short question, in the traveler's language, asking for exactly the missing detail.
+"clarify_question": "" unless lane is clarify — then ONE short question asking for exactly the missing detail, written in reply_language (the language of the current message — never the interface language), and about the destination in play when there is one.
 "reply_language": the ISO 639-1 code the reply should be written in — the language of the current message; for a bare yes/ok/number, the language of the conversation.
 
 Rules that override everything else:
