@@ -240,3 +240,35 @@ describe('the destination saved in Settings', () => {
         expect(d.source).toBe('gps');
     });
 });
+
+describe('a destination saved in Settings AFTER the session chose one (founder 2026-09-22)', () => {
+    const yerevanSession = { name: 'Yerevan', latitude: 40.18, longitude: 44.51, updatedAt: new Date('2026-09-22T10:00:00Z') };
+    const gps = { lat: 40.18, lng: 44.51 };
+    test('a newer saved destination elsewhere wins and is remembered', async () => {
+        const out = await resolveDestination({
+            placeNames: [], gps, sessionDestination: yerevanSession,
+            savedDestination: { city: 'Rome', countryName: 'Italy', coordinates: { lat: 41.9028, lng: 12.4964 }, lastUpdated: new Date('2026-09-22T11:00:00Z') },
+            nearbyMode: false, currentRegion: null,
+        }, { findPlaces: async () => [] });
+        expect(out.source).toBe('saved');
+        expect(out.city).toBe('Rome');
+        expect(out.remember).toMatchObject({ name: 'Rome', latitude: 41.9028, longitude: 12.4964 });
+    });
+    test('an older saved destination leaves the session in charge', async () => {
+        const out = await resolveDestination({
+            placeNames: [], gps, sessionDestination: yerevanSession,
+            savedDestination: { city: 'Rome', countryName: 'Italy', coordinates: { lat: 41.9028, lng: 12.4964 }, lastUpdated: new Date('2026-09-22T09:00:00Z') },
+            nearbyMode: false, currentRegion: null,
+        }, { findPlaces: async () => [] });
+        expect(out.source).toBe('session');
+        expect(out.city).toBe('Yerevan');
+    });
+    test('Nearby still means GPS, whatever was saved', async () => {
+        const out = await resolveDestination({
+            placeNames: [], gps, sessionDestination: yerevanSession,
+            savedDestination: { city: 'Rome', coordinates: { lat: 41.9028, lng: 12.4964 }, lastUpdated: new Date('2026-09-22T11:00:00Z') },
+            nearbyMode: true, currentRegion: null,
+        }, { findPlaces: async () => [] });
+        expect(out.source).toBe('nearby');
+    });
+});

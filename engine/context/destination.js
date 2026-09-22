@@ -262,8 +262,22 @@ async function resolveDestination({
     // 3. "Around me" means GPS, and nothing else.
     if (nearbyMode) return { center: gpsCenter, source: gpsCenter ? 'nearby' : 'none', city: null, remember: null };
 
-    // 4. The session's chosen destination.
+    // 4. The session's chosen destination — unless Settings chose a NEWER one.
+    //    Live 2026-09-22 (founder): "hotels in Yerevan" set the session to
+    //    Yerevan; Rome was then picked in Preferences and the next question
+    //    still answered Yerevan. A destination the traveler just saved is the
+    //    most recent decision, so it wins and the session follows it.
+    const saved = _savedCentre(savedDestination);
     if (sessionDestination && sessionDestination.latitude != null && sessionDestination.longitude != null) {
+        const sessionAt = sessionDestination.updatedAt ? new Date(sessionDestination.updatedAt).getTime() : 0;
+        const savedAt = saved && saved.lastUpdated ? new Date(saved.lastUpdated).getTime() : 0;
+        const elsewhere = saved && _haversineKm(saved.lat, saved.lng, sessionDestination.latitude, sessionDestination.longitude) > 1;
+        if (saved && savedAt > sessionAt && elsewhere) {
+            return {
+                center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name,
+                remember: { name: saved.name, latitude: saved.lat, longitude: saved.lng, placeId: null, singleTown: true, scale: 'town', updatedAt: new Date() },
+            };
+        }
         return {
             center: { lat: sessionDestination.latitude, lng: sessionDestination.longitude },
             source: 'session',
@@ -272,10 +286,9 @@ async function resolveDestination({
         };
     }
 
-    // 4. The destination chosen in Settings. A fresh chat has no session
+    // 5. The destination chosen in Settings. A fresh chat has no session
     //    destination, so without this the setting was invisible on exactly the
     //    turn that matters most — the first one.
-    const saved = _savedCentre(savedDestination);
     if (saved) {
         return { center: { lat: saved.lat, lng: saved.lng }, source: 'saved', city: saved.name, remember: null };
     }
@@ -294,7 +307,7 @@ function _savedCentre(saved) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     if (lat === 0 && lng === 0) return null;
     const name = saved?.city || saved?.countryName || saved?.name || null;
-    return { lat, lng, name };
+    return { lat, lng, name, lastUpdated: saved?.lastUpdated || null };
 }
 
 module.exports = { resolveDestination, isGeographic, scaleOf, _samePlace, _savedCentre, GEO_DESTINATION_TYPES, SCALE_BY_TYPE };
