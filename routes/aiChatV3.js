@@ -1027,6 +1027,18 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             }
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
+            // The intent model wrote its search text knowing where the traveler IS
+            // (GPS), before the destination was resolved — so with Rome saved the
+            // query still read "luxury romantic restaurant Yerevan", and the Google
+            // text search became "... Yerevan Rome" (live 2026-09-22). When the
+            // centre is somewhere else, the traveler's own city has no place in it.
+            const hereCity = hereRegion && hereRegion.city ? String(hereRegion.city) : null;
+            if (hereCity && dest.city && dest.source !== 'gps' && dest.source !== 'nearby' && intent.searchQuery
+                && hereCity.toLowerCase() !== String(dest.city).toLowerCase()) {
+                const re = new RegExp(`(^|[^\\p{L}])${hereCity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^\\p{L}])`, 'giu');
+                const cleaned = intent.searchQuery.replace(re, '$1').replace(/\s{2,}/g, ' ').trim();
+                if (cleaned !== intent.searchQuery) { console.log(`[v3] query: dropped traveler's city "${hereCity}" — centre is ${dest.city}`); intent.searchQuery = cleaned; }
+            }
             if (dest.source === 'named' && dest.center && dest.city) {
                 namedPlace = { city: dest.city, country: null, countryCode: '', lat: dest.center.lat, lng: dest.center.lng };
             }
