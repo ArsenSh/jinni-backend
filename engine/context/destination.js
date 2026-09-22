@@ -300,6 +300,7 @@ async function resolveDestination({
 /** The Settings destination, or null when it is unset. `coordinates` defaults
  *  to {lat: 0, lng: 0} in the schema, and 0,0 is the Gulf of Guinea — treating
  *  the default as a location would send every traveler to the Atlantic. */
+function _haversineKm(a, b, c, d) { const R = 6371, t = x => x * Math.PI / 180; const dl = t(c - a), dn = t(d - b); const h = Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dn / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
 function _savedCentre(saved) {
     const c = saved?.coordinates || saved || {};
     const lat = Number(c.lat ?? c.latitude);
