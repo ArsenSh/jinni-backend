@@ -49,7 +49,10 @@ router.patch('/', authenticateToken, async (req, res) => {
         const updateData = {};
         if (language && ['en', 'ru', 'zh', 'hy', 'fr', 'ar'].includes(language)) { updateData['settings.language'] = language }
         if (theme && ['auto', 'light', 'dark'].includes(theme)) { updateData['settings.theme'] = theme }
-        if (fontStyle && ['standard', 'classic', 'elegant', 'modern'].includes(fontStyle))   // Rounded removed 2026-09-19; old stored values stay valid in the schema { updateData['settings.fontStyle'] = fontStyle }
+        // Rounded removed 2026-09-19; old stored values stay valid in the schema.
+        // (The comment used to sit on the if-line and swallowed the block — the
+        // font choice was never saved server-side; fixed 2026-09-22.)
+        if (fontStyle && ['standard', 'classic', 'elegant', 'modern'].includes(fontStyle)) { updateData['settings.fontStyle'] = fontStyle }
         if (textSize && ['small', 'normal', 'big'].includes(textSize)) { updateData['settings.textSize'] = textSize }
         if (location) {
             if (location.country) { updateData['settings.location.country'] = location.country }
