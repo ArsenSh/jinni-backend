@@ -71,16 +71,29 @@ router.post('/hotel-prices', auth, async (req, res) => {
             .map(h => ({ name: String(h?.name || '').slice(0, 120), lat: +h?.latitude, lng: +h?.longitude }))
             .filter(h => h.name && Number.isFinite(h.lat) && Number.isFinite(h.lng));
         if (!list.length) return res.json({ success: true, prices: {} });
+        // The GROUP this deck was asked for (2026-09-23, live run): the deck
+        // itself prices N rooms from the constraint ledger, but this
+        // after-render call knew nothing about it — so a card the deck left
+        // unpriced came back priced for ONE room and sat beside cards priced
+        // for the whole group, under a reply that said no group price existed.
+        // Two different questions must never render as one row of numbers.
+        // The session carries the ledger; ownership is checked before it is read.
+        let party = null;
+        const _sid = typeof req.body?.sessionId === 'string' ? req.body.sessionId : null;
+        if (_sid) {
+            const peek = await require('../models/ChatSession').findById(_sid).select({ userId: 1, constraints: 1 }).lean().catch(() => null);
+            if (peek && String(peek.userId) === String(req.user.id)) party = peek.constraints?.partySize || null;
+        }
         const lat = list.reduce((a, h) => a + h.lat, 0) / list.length, lng = list.reduce((a, h) => a + h.lng, 0) / list.length;
         let reg = null; try { reg = await require('../engine/geo/gazetteer').regionAt({ lat, lng }, { maxKm: 60 }); } catch { reg = null; }
         if (!reg?.countryCode) return res.json({ success: true, prices: {} });
         const out = await hotels.hotelPrices({
             centre: { lat, lng, countryCode: reg.countryCode, name: reg.city || null }, names: list, radiusKm: 15,
             currency: String(req.body?.currency || 'USD').slice(0, 3), locale: String(req.body?.language || 'en').slice(0, 2),
-            guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
+            guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2), party,
         });
         const prices = {};
-        for (const [name, m] of Object.entries(out.matched || {})) if (m) prices[name] = { perNight: m.price_per_night, currency: m.currency, stars: m.stars, url: m.booking_url, partnerName: m.partner_name || m.name };
+        for (const [name, m] of Object.entries(out.matched || {})) if (m) prices[name] = { perNight: m.price_per_night, currency: m.currency, rooms: m.rooms || 1, stars: m.stars, url: m.booking_url, partnerName: m.partner_name || m.name };
         res.json({ success: true, prices, stay: out.ok ? { checkIn: out.check_in, checkOut: out.check_out } : null });
     } catch (err) {
         console.warn(`[hotel-prices] ${err.message}`);
