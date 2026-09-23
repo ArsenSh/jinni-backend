@@ -150,14 +150,19 @@ function emailLang(language) {
 // Every mail used to leave through smtp.gmail.com from a free @gmail.com
 // account. Arsen 2026-09-23: new users' verification codes were landing in
 // spam. A free-mailbox sender with heavy HTML is exactly what filters score
-// down, and no DNS record on jinni.travel can vouch for gmail.com. So:
-//   MAIL_FROM=noreply@jinni.travel + SENDGRID_API_KEY  → SendGrid, from the
-//     domain (SPF/DKIM come from the domain authentication in SendGrid);
+// down, and no DNS record on jinni.travel can vouch for gmail.com. So, in
+// order of preference:
+//   MAIL_FROM=noreply@jinni.travel + RESEND_API_KEY    → Resend (plain HTTPS,
+//     no SDK: resend@6 wants Node ≥ 22.12 and nothing pins the server's Node);
+//   MAIL_FROM + SENDGRID_API_KEY                        → SendGrid (the old key
+//     answered 401 on 2026-09-23 — the contact form had been failing silently);
 //   otherwise                                           → the Gmail SMTP path,
 //     byte-identical to before, so an unconfigured deploy keeps sending.
-// The 17 call sites keep their nodemailer-shaped `sendMail(opts)`; the adapter
-// rewrites only the address part of `from` (display names stay) and adds a
-// reply-to so replies reach a mailbox someone reads.
+// SPF/DKIM for the domain come from the provider's domain verification (DNS on
+// Cloudflare). The 17 call sites keep their nodemailer-shaped `sendMail(opts)`;
+// the adapter rewrites only the address part of `from` (display names stay)
+// and adds a reply-to (opts.replyTo wins, else SUPPORT_EMAIL) so replies reach
+// a mailbox someone reads.
 function _mailAddressOf(from) {
     const m = /<([^>]+)>/.exec(String(from || ''));
     return (m ? m[1] : String(from || '')).trim();
@@ -166,17 +171,51 @@ function _displayNameOf(from) {
     const m = /^\s*"?([^"<]*?)"?\s*</.exec(String(from || ''));
     return m && m[1].trim() ? m[1].trim() : 'Jinni';
 }
-function buildTransport(env = process.env) {
+function buildTransport(env = process.env, deps = {}) {
     const domainFrom = String(env.MAIL_FROM || '').trim();
-    const usesDomainSender = !!(domainFrom && env.SENDGRID_API_KEY && !/@gmail\.com$/i.test(domainFrom));
-    if (usesDomainSender) {
+    const domainOk = !!(domainFrom && !/@gmail\.com$/i.test(domainFrom));
+    const defaultReplyTo = env.SUPPORT_EMAIL || env.EMAIL_USER || null;
+    if (domainOk && env.RESEND_API_KEY) {
+        const doFetch = deps.fetch || (typeof fetch === 'function' ? fetch : null);
+        return {
+            kind: 'resend',
+            from: domainFrom,
+            async sendMail(opts) {
+                if (!doFetch) throw new Error('global fetch unavailable (Node < 18)');
+                const replyTo = opts.replyTo || defaultReplyTo;
+                const body = {
+                    from: `${_displayNameOf(opts.from)} <${domainFrom}>`,
+                    to: Array.isArray(opts.to) ? opts.to : [opts.to],
+                    subject: opts.subject,
+                    ...(opts.text ? { text: opts.text } : {}),
+                    ...(opts.html ? { html: opts.html } : {}),
+                    ...(replyTo ? { reply_to: replyTo } : {}),
+                };
+                const ac = new AbortController();
+                const timer = setTimeout(() => ac.abort(), 15000);
+                let res;
+                try {
+                    res = await doFetch('https://api.resend.com/emails', {
+                        method: 'POST', signal: ac.signal,
+                        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                } finally { clearTimeout(timer); }
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(`resend ${res.status}: ${data?.message || data?.name || 'send failed'}`);
+                return { messageId: data?.id || null, accepted: body.to };
+            },
+            async verify() { return true; },
+        };
+    }
+    if (domainOk && env.SENDGRID_API_KEY) {
         const sgMail = require('@sendgrid/mail');
         sgMail.setApiKey(env.SENDGRID_API_KEY);
-        const replyTo = env.SUPPORT_EMAIL || env.EMAIL_USER || null;
         return {
             kind: 'sendgrid',
             from: domainFrom,
             async sendMail(opts) {
+                const replyTo = opts.replyTo || defaultReplyTo;
                 const msg = {
                     to: opts.to,
                     from: { email: domainFrom, name: _displayNameOf(opts.from) },

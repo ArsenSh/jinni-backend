@@ -196,11 +196,15 @@ engine/
         validator's verdict (suppress set) stays hard; `params.softStyleGate=false`
         restores the old behaviour. 3 tests.
       · `services/emailService.js` transport adapter — `MAIL_FROM` (domain address) +
-        `SENDGRID_API_KEY` → SendGrid from the domain, reply-to `SUPPORT_EMAIL`, click/
-        open tracking off; otherwise the Gmail SMTP path unchanged. Verification codes
-        from jinniopenai@gmail.com were landing in spam. Coolify TODO: set
-        `MAIL_FROM=noreply@jinni.travel`, authenticate jinni.travel in SendGrid (adds
-        the SPF/DKIM CNAMEs; DMARC p=quarantine already exists). 2 tests.
+        `RESEND_API_KEY` → Resend over plain HTTPS (no SDK: resend@6 needs Node ≥ 22.12
+        and the server's Node is unpinned); else `MAIL_FROM` + `SENDGRID_API_KEY` →
+        SendGrid; else the Gmail SMTP path unchanged. Reply-to = opts.replyTo or
+        `SUPPORT_EMAIL`. Verification codes from jinniopenai@gmail.com were landing in
+        spam; the stored SendGrid key answered 401 (contact form had been failing).
+        `routes/contact.js` now rides the same transport (+ HTML escaping of the
+        visitor's fields). Coolify TODO (Arsen, Resend account created 2026-09-23):
+        verify jinni.travel in Resend (DNS on Cloudflare, records DNS-only), then set
+        `RESEND_API_KEY=re_…` and `MAIL_FROM=noreply@jinni.travel`. 4 tests.
       · `routes/businessRoutes.js` — the applicant-URL verifier's own bare `fetch` (SSRF:
         no scheme/private-IP/redirect checks) now goes through
         `engine/utils/safeFetch._fetchListingHtml`; failures are logged.

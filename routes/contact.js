@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const sgMail = require('@sendgrid/mail');
 const authMiddleware = require('../middleware/auth');
-
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// 2026-09-23: this route carried its own SendGrid client. The stored key had
+// been answering 401 for who knows how long — every contact-form submission
+// "sent" and then failed in the catch. It now rides the shared transport in
+// emailService (Resend → SendGrid → Gmail, see buildTransport), so whichever
+// path delivers verification codes delivers these too.
+const emailService = require('../services/emailService');
+const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -16,17 +20,14 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {return res.status(400).json({ error: 'Invalid email format' })}
-    if (!process.env.SENDGRID_API_KEY) {
-      console.error('❌ SENDGRID_API_KEY not found in environment variables');
-      return res.status(500).json({error: 'Email service not configured',message: 'Please contact the administrator'});
-    }
-    if (!process.env.SENDGRID_FROM_EMAIL) {
-      console.error('❌ SENDGRID_FROM_EMAIL not found in environment variables');
+    const supportTo = process.env.SUPPORT_EMAIL || process.env.MAIL_FROM || process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_USER;
+    if (!supportTo) {
+      console.error('❌ No support mailbox configured (SUPPORT_EMAIL)');
       return res.status(500).json({error: 'Email service not configured',message: 'Please contact the administrator'});
     }
     const msg = {
-      to: process.env.SUPPORT_EMAIL || process.env.SENDGRID_FROM_EMAIL,
-      from: { email: process.env.SENDGRID_FROM_EMAIL, name: 'Jinni Support' },
+      to: supportTo,
+      from: `"Jinni Support" <${emailService.transporter.from || supportTo}>`,
       replyTo: email,
       subject: `[Jinni Contact] ${subject}`,
       html: `
@@ -40,25 +41,25 @@ router.post('/', authMiddleware, async (req, res) => {
           <div style="background: #f8f9fa; padding: 25px 20px; border-bottom: 1px solid #e9ecef;">
             <div style="margin-bottom: 12px;">
               <span style="color: #6c757d; font-size: 13px; font-weight: 600; text-transform: uppercase;">From</span>
-              <p style="margin: 5px 0 0 0; color: #212529; font-size: 16px; font-weight: 500;">${userName}</p>
+              <p style="margin: 5px 0 0 0; color: #212529; font-size: 16px; font-weight: 500;">${esc(userName)}</p>
               <p style="margin: 3px 0 0 0; color: #495057; font-size: 14px;">
-                <a href="mailto:${email}" style="color: #8b5cf6; text-decoration: none;">${email}</a>
+                <a href="mailto:${esc(email)}" style="color: #8b5cf6; text-decoration: none;">${esc(email)}</a>
               </p>
             </div>
             <div style="margin-top: 15px;">
               <span style="color: #6c757d; font-size: 13px; font-weight: 600; text-transform: uppercase;">User ID</span>
-              <p style="margin: 5px 0 0 0; color: #495057; font-size: 14px; font-family: monospace;">${userId}</p>
+              <p style="margin: 5px 0 0 0; color: #495057; font-size: 14px; font-family: monospace;">${esc(userId)}</p>
             </div>
             <div style="margin-top: 15px;">
               <span style="color: #6c757d; font-size: 13px; font-weight: 600; text-transform: uppercase;">Category</span>
-              <p style="margin: 5px 0 0 0; color: #495057; font-size: 14px; text-transform: capitalize;">${subject.replace(/-/g, ' ')}</p>
+              <p style="margin: 5px 0 0 0; color: #495057; font-size: 14px; text-transform: capitalize;">${esc(subject.replace(/-/g, ' '))}</p>
             </div>
           </div>
           
           <div style="padding: 30px 20px;">
             <div style="background: #ffffff; border-left: 4px solid #8b5cf6; padding: 20px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
               <h3 style="margin: 0 0 15px 0; color: #212529; font-size: 16px; font-weight: 600;">Message:</h3>
-              <p style="margin: 0; color: #495057; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${message}</p>
+              <p style="margin: 0; color: #495057; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${esc(message)}</p>
             </div>
           </div>
           
@@ -94,13 +95,13 @@ router.post('/', authMiddleware, async (req, res) => {
         ---
         Submitted on: ${new Date().toLocaleString()}`
     };
-    await sgMail.send(msg);
+    await emailService.transporter.sendMail(msg);
     res.status(200).json({ success: true, message: 'Message sent successfully. We\'ll get back to you soon!'  });
   } catch (error) {
     console.error('❌ Contact form error:', error);
-    if (error.response) {
-      console.error('SendGrid Error Response:', error.response.body);
-      if (error.code === 401 || error.code === 403) {return res.status(500).json({ error: 'Email service authentication failed', message: 'Please contact support' })}
+    if (error.response) console.error('Mail provider response:', error.response.body);
+    if (error.code === 401 || error.code === 403 || /\b40[13]\b/.test(error.message || '')) {
+      return res.status(500).json({ error: 'Email service authentication failed', message: 'Please contact support' });
     }
     res.status(500).json({ error: 'Failed to send message', message: 'Please try again later' });
   }
