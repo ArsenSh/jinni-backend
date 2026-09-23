@@ -149,6 +149,12 @@ function factDescription(place, category) {
         category,
         place.distanceKm != null ? `${place.distanceKm.toFixed(1)} km away` : null,
         place.rating ? `rated ${place.rating}` : null,
+        // The booking partner scores out of TEN, Google out of five. Rendering
+        // an 8.6 as "rated 8.6" beside Google's 4.8 would read as a different
+        // universe of quality, so the scale is always shown with the number
+        // (2026-09-23, partner inventory tier).
+        (!place.rating && place._guestRating) ? `${place._guestRating}/10 guest score` : null,
+        place._stars ? `${place._stars}-star` : null,
         place._openNow === true ? 'open now' : (place._openNow === false ? 'closed right now' : null),
     ].filter(Boolean).join(' · ');
 }

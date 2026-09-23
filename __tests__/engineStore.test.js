@@ -451,6 +451,67 @@ describe('style gate softens when the owned pool is thin (2026-09-23, session 6a
     });
 });
 
+describe('partner inventory tier (founder 2026-09-23: "search from booking initially too")', () => {
+    const hotelDoc = (name, over = {}) => cacheDoc({ name, placeId: 'p_' + name.replace(/\s/g, ''), types: ['lodging'], primaryType: 'lodging', actions: ['hotels'], ...over });
+    const PARTNER = (over = {}) => ({
+        ok: true, rooms: 6, hotels: [
+            // the twin of a cache row — same hotel, the partner's price
+            { hotel_id: 'lp1', name: 'Green Stone Boutique Hotel', stars: 4, guest_rating: 8.8, lat: CENTER.lat + 0.01, lng: CENTER.lng + 0.01, address: '2 Gladzor', city: 'Yeghegnadzor', image: 'https://cdn.partner/1.jpg', available: true, price_per_night: 210, currency: 'USD', rooms: 6, nights: 1, check_in: '2026-09-26', check_out: '2026-09-27', booking_url: 'https://wl/hotels/lp1' },
+            // a hotel only the partner sells
+            { hotel_id: 'lp2', name: 'Vayots Dzor Villa', stars: 3, guest_rating: 9.1, review_count: 40, lat: CENTER.lat + 0.02, lng: CENTER.lng + 0.02, address: '5 Shahumyan', city: 'Yeghegnadzor', image: 'https://cdn.partner/2.jpg', available: true, price_per_night: 180, currency: 'USD', rooms: 6, nights: 1, check_in: '2026-09-26', check_out: '2026-09-27', booking_url: 'https://wl/hotels/lp2' },
+        ], diag: { hotels_in_index: 2, hotels_priced: 2 }, ...over,
+    });
+    const deps = (docs, partner) => ({
+        cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => true,
+        coverage: async () => false, styleMismatched: async () => [],
+        gazetteer: { regionAt: async () => ({ countryCode: 'AM', city: 'Yeghegnadzor' }) },
+        hotelsApi: { ...require('../engine/travel/hotels'), hotelsEnabled: () => true, areaHotels: async (a) => { partner.calls.push(a); return partner.out; } },
+    });
+    test('a cache twin KEEPS its identity and inherits the price; a partner-only hotel joins as a new card', async () => {
+        const partner = { calls: [], out: PARTNER() };
+        const out = await loadCandidates({ category: 'hotels', center: CENTER, radiusKm: 10, count: 6, partySize: 12 },
+            deps([hotelDoc('Green Stone Boutique Hotel')], partner));
+        expect(partner.calls[0]).toMatchObject({ party: 12, radiusKm: 10 });
+        const twin = out.find(c => c.name === 'Green Stone Boutique Hotel');
+        expect(twin.placeId).toBe('p_GreenStoneBoutiqueHotel');      // still saveable, still its stored image
+        expect(twin.source).toBe('cache');
+        expect(twin.hotelPrice).toMatchObject({ perNight: 210, rooms: 6, url: 'https://wl/hotels/lp1' });
+        const fresh = out.find(c => c.name === 'Vayots Dzor Villa');
+        expect(fresh).toBeTruthy();
+        expect(fresh.source).toBe('partner');
+        expect(fresh.placeId).toBeNull();                            // never a faked Google id
+        expect(fresh.image).toBe('https://cdn.partner/2.jpg');
+        expect(fresh.address).toBe('5 Shahumyan');
+        expect(fresh.rating).toBeNull();                             // a 0-10 score is not a 0-5 rating
+        expect(fresh._guestRating).toBe(9.1);
+        expect(out.indexOf(fresh)).toBeGreaterThan(out.indexOf(twin));   // tail = lowest prior
+    });
+    test('only hotels, only with a key, and any partner failure leaves the pool untouched', async () => {
+        const partner = { calls: [], out: PARTNER() };
+        const asRestaurant = await loadCandidates({ category: 'restaurants', center: CENTER, count: 6 }, deps([cacheDoc({ name: 'Lavash' })], partner));
+        expect(partner.calls).toHaveLength(0);
+        expect(asRestaurant.map(c => c.name)).toEqual(['Lavash']);
+        const off = { ...deps([hotelDoc('Green Stone Boutique Hotel')], partner), hotelsApi: { hotelsEnabled: () => false } };
+        expect((await loadCandidates({ category: 'hotels', center: CENTER, count: 6 }, off)).map(c => c.name)).toEqual(['Green Stone Boutique Hotel']);
+        const broken = { ...deps([hotelDoc('Green Stone Boutique Hotel')], partner) };
+        broken.hotelsApi = { ...broken.hotelsApi, areaHotels: async () => { throw new Error('partner 503'); } };
+        const out = await loadCandidates({ category: 'hotels', center: CENTER, count: 6 }, broken);
+        expect(out.map(c => c.name)).toEqual(['Green Stone Boutique Hotel']);
+        expect(out[0].hotelPrice).toBeUndefined();
+    });
+    test('an unbookable partner hotel is added only while the deck is short, and is marked', async () => {
+        const unpriced = PARTNER({ hotels: [{ hotel_id: 'lp3', name: 'Full House Inn', lat: CENTER.lat + 0.02, lng: CENTER.lng + 0.02, city: 'Yeghegnadzor', available: false, price_per_night: null, currency: 'USD', rooms: 6, nights: 1 }] });
+        const partner = { calls: [], out: unpriced };
+        const thin = await loadCandidates({ category: 'hotels', center: CENTER, radiusKm: 10, count: 6 }, deps([hotelDoc('Green Stone Boutique Hotel')], partner));
+        const row = thin.find(c => c.name === 'Full House Inn');
+        expect(row._partnerUnpriced).toBe(true);
+        expect(row.hotelPrice).toBeNull();                           // no rate ⇒ no number, ever
+        const full = await loadCandidates({ category: 'hotels', center: CENTER, radiusKm: 10, count: 1 },
+            deps([hotelDoc('Green Stone Boutique Hotel')], { calls: [], out: unpriced }));
+        expect(full.map(c => c.name)).not.toContain('Full House Inn');
+    });
+});
+
 describe("_prefFitScore 'cultural' interest (the culture-regex gap, 2026-08-30)", () => {
     const { _prefFitScore } = require('../engine/places/canonicalStore');
     test("interest 'cultural' alone lifts museums over unrelated types", () => {

@@ -218,3 +218,44 @@ engine/
       canonicalStore ~510/~969); no proof `seedGazetteer`/`embedPlaceCache --apply` ran;
       the agent never calls `hotel_prices` even when prices are asked (session 6ab3a61e
       turn 2 answered "call the hotel" with liteAPI one call away).
+- [x] **BOOKING PARTNER AS A SOURCE + GROUP OCCUPANCY** (2026-09-23, founder:
+      "can it search from booking initially too? … it will give more results than
+      google", after live session 6ab3c2ed):
+      · `engine/travel/hotels.js` — `occupanciesFor(party)` sizes rooms from the
+        constraint ledger's partySize (12 people ⇒ 6 rooms; the odd traveler gets a
+        single; capped at 12 rooms). It reaches the min-rates call AND the whitelabel
+        booking link, so a quoted price covers the whole group and a hotel that cannot
+        take them returns NO rate — the capacity answer the narrator previously had to
+        ask the traveler for. `areaHotels()` is new: the partner's inventory around a
+        centre as a SOURCE (photo, address, stars, 0–10 guest score, live price, Book
+        link), not just a price sticker on Google's results.
+      · `engine/places/canonicalStore.js` — PARTNER INVENTORY TIER, hotels only, runs
+        before the Google fallback so partner coverage can spare a paid Text Search.
+        ADDITIVE by construction: owned/cache rows keep their identity (placeId ⇒
+        saveable, stored images, hours) and only INHERIT the price + Book link, matched
+        by the SAME strict rule as the price matcher (distinctive tokens + 1.5 km);
+        a hotel only the partner sells joins at the TAIL (the prior is positional).
+        An unbookable partner row joins only while the deck is short and is marked
+        `_partnerUnpriced` — never given a number. Fail-open on any partner error.
+      · **A partner-only card has NO placeId and therefore cannot be saved yet** —
+        inventing a Google id would poison PlaceCache and the saves collection. Known
+        and deliberate; the save button is simply disabled (`getRecRef` returns null).
+      · Scales never mix: the partner scores out of TEN, Google out of five, so the
+        guest score is carried as `_guestRating` and always rendered with its scale
+        ("8.6/10"), never as `rating`. Cards, the narrator fact line and the deck
+        agent's summary all carry it, plus stars and the live price.
+      · A group price is rendered as "from X / night for N rooms" (new i18n key
+        `chat.hotel.from_per_night_group`, added to ALL SIX locales; parity 805/805) —
+        "from X / night" would be read as the price of one room.
+      · `routes/aiChatV3.js` — a refill that EXHAUSTED the area widens ONCE (under half
+        the asked count, no explicit radius / walking ask / corridor, non-events), and
+        the narrator is TOLD (`_radiusWidened`) so the reply says it looked further
+        instead of presenting other towns as if they had been in range. Live session
+        6ab3c2ed answered "Other ones? Give lots of results" with ONE card and the line
+        "it's the only stay I can show you" — true at 10 km, false at 30.
+      11 new tests; suite 47 suites / 1234 tests green.
+      ⚠ Partner coverage in small towns is the remaining limit, not a bug: around
+      Yeghegnadzor the partner priced ONE hotel. `[canonicalStore] partner tier:
+      index=N priced=M` now logs the real numbers per turn — read them before
+      concluding anything about coverage.
+

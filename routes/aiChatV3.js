@@ -589,9 +589,15 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
         //    a Yerevan sofa (live 2026-08-29, Group B battery). Settings
         //    commands and transport/how-to questions never move the centre. ──
         const sessionCards = shownPlaces(sessionPeek?.messages);
+        // The group size this turn, once the constraint ledger has merged it
+        // (set below, at the ledger). Rooms are sized from it, so "we are 12
+        // people" is priced as six rooms and a hotel that cannot take the
+        // group returns no rate at all — the capacity answer the narrator had
+        // to ask the traveler for (live session 6ab3c2ed, 2026-09-23).
+        let turnParty = null;
         // Shared hotel_prices executor (agent loop + answer loops) — only when the partner key exists.
         const hotelPricesExec = (o = {}, deps = {}) => hotels.makeExecutor({
-            center, sessionCards, fallbackName: meta.searchCity || null,
+            center, sessionCards, fallbackName: meta.searchCity || null, party: turnParty,
             currency: intent._preferences?.budget?.currency || 'USD', locale: intent.language || userLanguage || 'en',
             guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2), ...o,
         }, deps);
@@ -1794,6 +1800,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             if (intent.outOfTown === true) _delta.outOfTown = true;
             if (intent.exclude?.length) _delta.excluded = intent.exclude;
             const { ledger, changed, reset: ledgerReset } = mergeConstraints(prevLedger, _delta, { category });
+            turnParty = ledger?.partySize || null;
             if (ledgerReset) console.log('[ledger] mission changed -> previous constraints cleared');
             // An inherited constraint acts exactly as if said THIS turn.
             if (!intent.priceDirection && ledger.price) {
@@ -1914,6 +1921,12 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 center,
                 mode,
                 radiusKm,
+                // Booking-partner tier (hotels): who is travelling, in which
+                // money, from which country — the rate call needs all three.
+                partySize: turnParty,
+                currency: intent._preferences?.budget?.currency || 'USD',
+                locale: intent.language || userLanguage || 'en',
+                guestNationality: String(req.headers['cf-ipcountry'] || 'US').toUpperCase().slice(0, 2),
                 // The in-city ring: out-of-town asks drop everything within
                 // ~15km of the centre (fail-open in retrieval when too few
                 // survive — never an empty lie).
@@ -2041,7 +2054,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                             // Exact name only — the agent asked for prices by these very names; a
                             // substring fallback here put one hotel's price on another's card.
                             const m = p?.name && agentPrices.get(p.name.toLowerCase());
-                            if (m) p.hotelPrice = { perNight: m.price_per_night, currency: m.currency, nights: 1, checkIn: null, checkOut: null, stars: m.stars, url: m.booking_url };
+                            if (m) p.hotelPrice = { perNight: m.price_per_night, currency: m.currency, nights: m.nights || 1, rooms: m.rooms || 1, checkIn: m.check_in || null, checkOut: m.check_out || null, stars: m.stars, url: m.booking_url };
                         }
                     }
                     console.log(`[v3][agent] ${agentOut.kind}${agentOut.reason ? ` (${agentOut.reason})` : ''} steps=${agentOut.steps} searches=${agentOut.searches} calls=${(agentOut.toolCalls || []).map(c => c.name).join(',')}`);
@@ -2054,6 +2067,34 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 ? { places: agentOut.places, degraded: false, reason: null, provenance: { candidateCount: agentOut.places.length, lexical: 0, vector: false, cacheHit: false, agent: true } }
                 : (agentAsk ? { places: [], degraded: false, reason: 'agent_ask', provenance: { candidateCount: 0, lexical: 0, vector: false, cacheHit: false, agent: true } }
                             : await findPlaces(findArgs, { loadCandidates }));
+            // ── A refill that EXHAUSTED the town widens once (2026-09-23) ──
+            // "Other ones? Give lots of results" around Yeghegnadzor returned
+            // ONE card and the reply said "it's the only stay I can show you"
+            // — true at 10 km, false at 30, where Jermuk's hotels sit. A
+            // follow-up asking for more deserves a wider look before that
+            // sentence is written. Once per turn, and only on a REAL
+            // exhaustion (under half the asked count), so an ordinary
+            // shortfall never doubles the turn's cost. An explicit radius, a
+            // walking ask and a corridor all still win — they are limits the
+            // traveler set, not a shortage.
+            if (refillActive && !agentOut && !agentAsk && category !== 'events'
+                && !meta.radiusAsked && !meta.walkingAsk && !corridorCentresList
+                && radiusKm < 45 && (result?.places?.length || 0) < Math.ceil(deckCount / 2)) {
+                const widerKm = Math.min(50, Math.max(radiusKm * 3, 30));
+                console.log(`[v3] refill exhausted at ${radiusKm}km (${result?.places?.length || 0}/${deckCount}) → widening to ${widerKm}km`);
+                try {
+                    const wider = await findPlaces({ ...findArgs, radiusKm: widerKm }, { loadCandidates });
+                    if ((wider?.places?.length || 0) > (result?.places?.length || 0)) {
+                        result = wider;
+                        radiusKm = widerKm;
+                        meta.radiusWidened = widerKm;
+                        // The narrator is TOLD, so the reply says the search
+                        // was widened instead of presenting other towns as if
+                        // they had been in range all along.
+                        if (intent._preferences) intent._preferences._radiusWidened = widerKm;
+                    }
+                } catch (err) { console.warn(`[v3] widen failed: ${err.message}`); }
+            }
             // Out-of-town decks: stamp each place's nearest TOWN (local
             // gazetteer, $0) so the narrator can frame areas honestly and
             // cards show where a bare street address actually is (live

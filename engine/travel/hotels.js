@@ -129,11 +129,23 @@ function rollForward({ checkIn, checkOut }, now = new Date()) {
 function _nights(a, b) { return Math.max(1, Math.round((Date.parse(b) - Date.parse(a)) / 864e5)); }
 const _validDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 
+/** Rooms for a party (2026-09-23, session 6ab3c2ed: "we are 12 people" was
+ *  priced as one room for two). Two adults per room, the odd one alone; no
+ *  party ⇒ one double. Capped at 12 rooms — beyond that it is a block booking
+ *  no rate API answers. The partner returns NO rate for a hotel that cannot
+ *  fit every room, which is the capacity signal the narrator lacked. */
+function occupanciesFor(party = null) {
+    const n = Number.isFinite(+party) && +party > 0 ? Math.min(24, Math.round(+party)) : 0;
+    if (!n) return [{ adults: 2 }];
+    const rooms = Math.min(12, Math.ceil(n / 2));
+    return Array.from({ length: rooms }, (_, i) => ({ adults: (i === rooms - 1 && n % 2 === 1) ? 1 : 2 }));
+}
+
 /** Where a traveler lands from "Check rates" — our whitelabel, so the booking is ours. Null without a domain. */
-function bookingUrl({ hotelId, checkIn, checkOut, adults = 2, currency = 'USD', locale = 'en' } = {}, env = process.env) {
+function bookingUrl({ hotelId, checkIn, checkOut, adults = 2, occupancies = null, currency = 'USD', locale = 'en' } = {}, env = process.env) {
     const domain = String(env.HOTEL_PRICES_WL_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (!domain || !hotelId) return null;
-    const occ = Buffer.from(JSON.stringify([{ adults }])).toString('base64');
+    const occ = Buffer.from(JSON.stringify(Array.isArray(occupancies) && occupancies.length ? occupancies : [{ adults }])).toString('base64');
     return `https://${domain}/hotels/${encodeURIComponent(hotelId)}?${_q({ checkin: checkIn, checkout: checkOut, occupancies: occ, currency: String(currency || 'USD').toUpperCase(), language: String(locale || 'en').slice(0, 2) })}`;
 }
 
@@ -142,7 +154,7 @@ function bookingUrl({ hotelId, checkIn, checkOut, adults = 2, currency = 'USD', 
  * @param {{ centre:{lat,lng,countryCode,name}, names?:Array<string|{name,lat,lng}>, radiusKm?, checkIn?, checkOut?, currency?, guestNationality?, locale? }} a
  * @returns {Promise<{ ok:boolean, reason?:string, area?, check_in, check_out, nights, currency, hotels:Array, matched:Object }>}
  */
-async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn = null, checkOut = null, currency = 'USD', guestNationality = 'US', locale = 'en' } = {}, deps = {}) {
+async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn = null, checkOut = null, currency = 'USD', guestNationality = 'US', locale = 'en', party = null } = {}, deps = {}) {
     const env = deps.env || process.env;
     if (!hotelsEnabled(env)) return { ok: false, reason: 'hotel_prices_disabled' };
     const now = deps.now ? new Date(deps.now) : new Date();
@@ -169,9 +181,10 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
     const seen = new Set(pool.map(h => h.id));
     for (const list of byName) for (const h of list) if (!seen.has(h.id)) { seen.add(h.id); pool.push(h); }
     if (!pool.length) return { ok: false, reason: found === null ? `hotels_call_failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'no_hotels_in_index_here', area: centre.name || null, ...base };
+    const occupancies = occupanciesFor(party);
     const rates = await _call('/hotels/min-rates', { method: 'POST', body: {
         hotelIds: pool.slice(0, 100).map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
-        occupancies: [{ adults: 2 }], currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
+        occupancies, currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
     } }, deps);
     const partnerError = rates && rates.error && typeof rates.error === 'object' ? rates.error : null;   // e.g. {code:2001, message:'no availability found'}
     const priceById = new Map((Array.isArray(rates?.data) ? rates.data : []).filter(r => r && r.hotelId && Number.isFinite(+r.price) && +r.price > 0).map(r => [r.hotelId, +r.price]));
@@ -182,9 +195,10 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
             hotel_id: h.id, name: h.name || null, stars: Number.isFinite(+h.stars) && +h.stars > 0 ? +h.stars : null,
             guest_rating: Number.isFinite(+h.rating) && +h.rating > 0 ? +h.rating : null,
             price_from_total: total, price_per_night: Math.round(total / nights), currency: cur,
+            rooms: occupancies.length, nights, check_in: stay.checkIn, check_out: stay.checkOut,
             lat: Number.isFinite(lat) ? lat : null, lng: Number.isFinite(lng) ? lng : null,
             distance_from_centre_km: Number.isFinite(lat) ? Math.round(haversineKm(centre.lat, centre.lng, lat, lng) * 10) / 10 : null,
-            booking_url: bookingUrl({ hotelId: h.id, checkIn: stay.checkIn, checkOut: stay.checkOut, currency: cur, locale }, env),
+            booking_url: bookingUrl({ hotelId: h.id, checkIn: stay.checkIn, checkOut: stay.checkOut, occupancies, currency: cur, locale }, env),
         };
     }).sort((a, b) => a.price_per_night - b.price_per_night);
     // Match the agent's candidates to partner hotels — STRICTLY. Live 2026-09-19
@@ -216,7 +230,70 @@ async function hotelPrices({ centre = null, names = [], radiusKm = 15, checkIn =
         const first = Array.isArray(rates.data) ? rates.data[0] : null;
         diag.rates_shape = { keys: Object.keys(rates).slice(0, 8), data_length: Array.isArray(rates.data) ? rates.data.length : null, first_keys: first && typeof first === 'object' ? Object.keys(first).slice(0, 10) : null, sample: JSON.stringify(first || rates).slice(0, 300) };
     }
-    return { ok: true, area: centre.name || null, ...base, hotels, matched, diag };
+    return { ok: true, area: centre.name || null, ...base, rooms: occupancies.length, hotels, matched, diag };
+}
+
+/** One partner hotel → the row the canonical store turns into a candidate.
+ *  Field names are read defensively: the partner's list endpoint has spelled
+ *  them a few ways across versions (main_photo/thumbnail, hotelDescription,
+ *  reviewCount). Anything missing is null — never invented. */
+function _hotelRow(h, centre, { priced = null, cur = 'USD', nights = 1, occupancies = [{ adults: 2 }], stay = {}, locale = 'en', env = process.env } = {}) {
+    const lat = +h.latitude, lng = +h.longitude;
+    const total = priced != null ? Math.round(priced) : null;
+    const img = h.main_photo || h.mainPhoto || h.thumbnail || (Array.isArray(h.hotelImages) && h.hotelImages[0]?.url) || null;
+    return {
+        hotel_id: h.id, name: h.name || null,
+        stars: Number.isFinite(+h.stars) && +h.stars > 0 ? +h.stars : null,
+        guest_rating: Number.isFinite(+h.rating) && +h.rating > 0 ? Math.round(+h.rating * 10) / 10 : null,
+        review_count: Number.isFinite(+h.reviewCount) ? +h.reviewCount : null,
+        address: h.address || null, city: h.city || null, country: h.country || null, zip: h.zip || null,
+        image: typeof img === 'string' && /^https?:\/\//.test(img) ? img : null,
+        description: typeof h.hotelDescription === 'string' ? h.hotelDescription.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400) : null,
+        available: total != null,
+        price_from_total: total, price_per_night: total != null ? Math.round(total / nights) : null, currency: cur,
+        rooms: occupancies.length, nights, check_in: stay.checkIn || null, check_out: stay.checkOut || null,
+        lat: Number.isFinite(lat) ? lat : null, lng: Number.isFinite(lng) ? lng : null,
+        distance_from_centre_km: Number.isFinite(lat) && centre ? Math.round(haversineKm(centre.lat, centre.lng, lat, lng) * 10) / 10 : null,
+        booking_url: bookingUrl({ hotelId: h.id, checkIn: stay.checkIn, checkOut: stay.checkOut, occupancies, currency: cur, locale }, env),
+    };
+}
+
+/**
+ * The partner's inventory around a centre AS A SOURCE (founder 2026-09-23:
+ * "can it search from booking initially too? … it will give more results
+ * than google"). Until now the partner only priced hotels Google had found;
+ * two of three Yeghegnadzor cards had no price because the partner does not
+ * sell them, and "give lots of results" stopped at Google's page. This lists
+ * every hotel the partner sells within the radius, with photo, address,
+ * stars, guest score and — for the party, for the stay — a live "from" price
+ * and a Book link. Hotels the partner cannot price for that stay come back
+ * with available:false; with a party given they cannot fit the group.
+ * Fails open: any partner error → { ok:false } and the store carries on.
+ */
+async function areaHotels({ centre = null, radiusKm = 15, party = null, checkIn = null, checkOut = null, currency = 'USD', guestNationality = 'US', locale = 'en', limit = HOTEL_POOL } = {}, deps = {}) {
+    const env = deps.env || process.env;
+    if (!hotelsEnabled(env)) return { ok: false, reason: 'hotel_prices_disabled', hotels: [] };
+    if (!centre || !Number.isFinite(centre.lat) || !Number.isFinite(centre.lng) || !centre.countryCode) return { ok: false, reason: 'centre_unresolved', hotels: [] };
+    const now = deps.now ? new Date(deps.now) : new Date();
+    let stay = (_validDate(checkIn) && _validDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn)) ? { checkIn, checkOut } : null;
+    if (stay) stay = rollForward(stay, now);
+    if (!stay) stay = defaultStay(now);
+    const nights = _nights(stay.checkIn, stay.checkOut);
+    const cur = String(currency || 'USD').toUpperCase();
+    const radiusM = Math.round(Math.min(Math.max(Number(radiusKm) || 15, 1), 80) * 1000);
+    const found = await _call('/data/hotels', { query: { countryCode: String(centre.countryCode).toUpperCase(), latitude: centre.lat, longitude: centre.lng, radius: Math.max(radiusM, 1000), limit: Math.min(Math.max(+limit || HOTEL_POOL, 1), 100) } }, deps);
+    const pool = (Array.isArray(found?.data) ? found.data : []).filter(h => h && h.id);
+    if (!pool.length) return { ok: found !== null, reason: found === null ? `hotels_call_failed ${_lastError ? `${_lastError.status} ${_lastError.path}` : ''}`.trim() : 'no_hotels_in_index_here', hotels: [], diag: { hotels_in_index: 0, hotels_priced: 0 } };
+    const occupancies = occupanciesFor(party);
+    const rates = await _call('/hotels/min-rates', { method: 'POST', body: {
+        hotelIds: pool.slice(0, 100).map(h => h.id), checkin: stay.checkIn, checkout: stay.checkOut,
+        occupancies, currency: cur, guestNationality: String(guestNationality || 'US').toUpperCase().slice(0, 2), timeout: 6,
+    } }, deps);
+    const priceById = new Map((Array.isArray(rates?.data) ? rates.data : []).filter(r => r && r.hotelId && Number.isFinite(+r.price) && +r.price > 0).map(r => [r.hotelId, +r.price]));
+    const hotels = pool.map(h => _hotelRow(h, centre, { priced: priceById.has(h.id) ? priceById.get(h.id) : null, cur, nights, occupancies, stay, locale, env }))
+        .sort((a, b) => (a.available === b.available ? (a.price_per_night ?? 0) - (b.price_per_night ?? 0) : (a.available ? -1 : 1)));
+    return { ok: true, area: centre.name || null, check_in: stay.checkIn, check_out: stay.checkOut, nights, currency: cur, rooms: occupancies.length, party: party || null, hotels,
+        diag: { hotels_in_index: pool.length, hotels_priced: hotels.filter(h => h.available).length, rates_call: rates === null ? 'failed' : 'ok' } };
 }
 
 /** The agent tool. Registered only when the token exists, so the model never reaches for a dead tool. */
@@ -224,7 +301,7 @@ const HOTEL_PRICES_TOOL = {
     type: 'function',
     function: {
         name: 'hotel_prices',
-        description: 'Real hotel prices from the booking partner for an area, matched to hotels you have already found. Use it when the traveler cares about cost or style (luxury / budget / "how much"), or to put a "from" price on hotel cards. Returns live "from" prices per night for the stay (default: the coming Saturday night) and the cheapest–median–priciest range of the area, so you can tell what is luxury or budget THERE. A hotel with no price is simply unknown — never guess a number. One call per turn, after search_places.',
+        description: 'Real hotel prices from the booking partner for an area, matched to hotels you have already found. Use it when the traveler cares about cost or style (luxury / budget / "how much"), or to put a "from" price on hotel cards. Returns live "from" prices per night for the stay (default: the coming Saturday night) and the cheapest–median–priciest range of the area, so you can tell what is luxury or budget THERE. When the traveler stated a group size, the price is for enough rooms for the whole group and a hotel with no price could not fit them for that stay. A hotel with no price is otherwise simply unknown — never guess a number. One call per turn, after search_places.',
         parameters: {
             type: 'object',
             properties: {
@@ -246,7 +323,7 @@ const HOTEL_PRICES_TOOL = {
  * hit; "traveler"/unknown → the settlement around the traveler), prices, and
  * reports matches through `onMatch(nameLower, row)` so cards can carry them.
  */
-function makeExecutor({ center = null, sessionCards = [], currency = 'USD', locale = 'en', guestNationality = 'US', fallbackName = null, onMatch = null } = {}, deps = {}) {
+function makeExecutor({ center = null, sessionCards = [], currency = 'USD', locale = 'en', guestNationality = 'US', fallbackName = null, onMatch = null, party = null } = {}, deps = {}) {
     const gaz = deps.gazetteer || require('../geo/gazetteer');
     return async (a = {}, ctx = {}) => {
         // Coordinates for the strict matcher: this turn's search results first
@@ -267,8 +344,8 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             let reg = null; try { reg = await gaz.regionAt(at, { maxKm: 60 }); } catch { reg = null; }
             if (reg?.countryCode) centre = { ...at, countryCode: reg.countryCode, name: centre?.name || reg.city || fallbackName || areaName };
         }
-        const out = await hotelPrices({ centre, names, radiusKm: hit?.waterBody ? 40 : 15, checkIn: a.check_in || null, checkOut: a.check_out || null, currency, locale, guestNationality }, deps);
-        console.log(`[hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'} → ${out.ok ? `${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
+        const out = await hotelPrices({ centre, names, radiusKm: hit?.waterBody ? 40 : 15, checkIn: a.check_in || null, checkOut: a.check_out || null, currency, locale, guestNationality, party }, deps);
+        console.log(`[hotels] area="${areaName}" centre=${centre ? `${centre.lat.toFixed(3)},${centre.lng.toFixed(3)} ${centre.countryCode} "${centre.name}"` : 'none'}${party ? ` party=${party} rooms=${out.rooms || '?'}` : ''} → ${out.ok ? `index=${out.diag?.hotels_in_index ?? '?'} ${out.hotels.length} priced, matched ${Object.values(out.matched || {}).filter(Boolean).length}/${names.length}` : out.reason}`);
         if (!out.ok) return { error: out.reason, centre: centre ? { name: centre.name, country: centre.countryCode } : null };
         if (onMatch) for (const [name, m] of Object.entries(out.matched || {})) if (m) onMatch(name.toLowerCase(), m);
         // A stated budget: the priced hotels nearest to it — and, when the loop
@@ -340,10 +417,10 @@ function makeExecutor({ center = null, sessionCards = [], currency = 'USD', loca
             ...(nearBudget ? { near_budget: nearBudget, near_budget_note: nearBudget.some(h => h.id) ? `priced hotels closest to ${budgetInCur} ${out.currency} per night — the ones with an id are ready to deal` : `priced hotels closest to ${budgetInCur} ${out.currency} per night — to show one, search_places by its exact name` } : {}),
             priciest_in_area: out.hotels.slice(-3).reverse().map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
             cheapest_in_area: out.hotels.slice(0, 3).map(h => ({ name: h.name, price_per_night: h.price_per_night, stars: h.stars })),
-            note: out.hotels.length ? 'live "from" prices per night for 2 adults; quote only these numbers, and only for the matched hotels. A matched hotel\'s live price is what the card shows — quote IT, not an owner\'s listed price for the same place' : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,
+            note: out.hotels.length ? `live "from" prices per night for ${out.rooms > 1 ? `${out.rooms} rooms (the WHOLE group) — a hotel with no price could not take the group for this stay` : '2 adults'}; quote only these numbers, and only for the matched hotels. A matched hotel's live price is what the card shows — quote IT, not an owner's listed price for the same place` : `the booking partner has no availability for this area and stay (${out.diag?.rates_call || 'no rates'}) — say so; do not guess a number`,
             diag: out.diag || null,
         };
     };
 }
 
-module.exports = { hotelsEnabled, hotelPrices, bookingUrl, defaultStay, rollForward, makeExecutor, _tokens, _sameHotel, HOTEL_PRICES_TOOL, _memo, _norm };
+module.exports = { hotelsEnabled, hotelPrices, areaHotels, occupanciesFor, bookingUrl, defaultStay, rollForward, makeExecutor, _tokens, _sameHotel, HOTEL_PRICES_TOOL, _memo, _norm, _hotelRow };

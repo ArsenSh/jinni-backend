@@ -31,6 +31,16 @@ function placeFactLine(p) {
         p._town ? `in ${p._town}` : null,
         p.distanceKm != null ? `${p.distanceKm.toFixed(1)} km away` : null,
         p.rating ? `rated ${p.rating}` : null,
+        // Booking-partner rows (2026-09-23): a 0–10 guest score and a star
+        // class, never mixed with Google's 0–5 rating. Scale always attached.
+        (!p.rating && p._guestRating) ? `guest score ${p._guestRating}/10${p._reviewCount ? ` from ${p._reviewCount} reviews` : ''}` : null,
+        p._stars ? `${p._stars}-star` : null,
+        // A live partner price is a FACT the blurb may quote — including that
+        // it covers the whole group when several rooms were priced.
+        (p.hotelPrice && Number.isFinite(p.hotelPrice.perNight))
+            ? `live price from ${p.hotelPrice.perNight} ${p.hotelPrice.currency} per night${p.hotelPrice.rooms > 1 ? ` for all ${p.hotelPrice.rooms} rooms (the whole group)` : ''}`
+            : null,
+        p._partnerUnpriced ? 'the booking partner has no rate for this stay' : null,
         // Unknown hours are SAID on a right-now deck (live 2026-09-15, 02:00:
         // the model guessed "likeliest bets" for places whose hours nobody
         // holds). null → 'hours unknown' only when the deck was hour-checked.
@@ -222,6 +232,13 @@ function travelerRows(preferences) {
         : '';
     if (r.nearby) rows.push(`nearby radius: ${r.nearby} km (they can change it, 1–20)${dflt(r.nearby === 5)}`);
     if (r.discovery) rows.push(`discovery radius: ${r.discovery} km (they can change it, 10–100)${dflt(r.discovery === 50)}`);
+    // A follow-up asking for more exhausted the town, so the engine looked
+    // further for THIS deck (2026-09-23). Saying so is the honest frame: the
+    // new places are in other towns, not options that were there all along.
+    if (p._radiusWidened) {
+        rows.push(`this search was WIDENED to ${p._radiusWidened} km because the closer area was exhausted — `
+            + 'say plainly that you looked further afield, and where these places actually are');
+    }
     // Budget style with no budget is a gap worth closing, and only the traveler
     // can close it. Arsen 2026-08-24: "if user he wants budget places then
     // should give budget also min and max".

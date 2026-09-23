@@ -225,3 +225,58 @@ test('a budget said in AMD is converted before ranking', async () => {
     expect(out.near_budget[0].name).toBe('Harsnaqar');                                   // 60, the nearest to 65
     expect(out.near_budget_note).toMatch(/closest to 65 USD/);
 });
+
+// ── Group occupancy + the partner as a SOURCE (founder 2026-09-23: "can it
+//    search from booking initially too? … it will give more results than
+//    google"; live session 6ab3c2ed priced "we are 12 people" as one double) ──
+describe('group occupancy', () => {
+    test('rooms are sized from the party; the odd traveler gets a single', () => {
+        expect(hotels.occupanciesFor(null)).toEqual([{ adults: 2 }]);
+        expect(hotels.occupanciesFor(0)).toEqual([{ adults: 2 }]);
+        expect(hotels.occupanciesFor(2)).toEqual([{ adults: 2 }]);
+        expect(hotels.occupanciesFor(12)).toHaveLength(6);
+        expect(hotels.occupanciesFor(12).every(o => o.adults === 2)).toBe(true);
+        expect(hotels.occupanciesFor(5)).toEqual([{ adults: 2 }, { adults: 2 }, { adults: 1 }]);
+        expect(hotels.occupanciesFor(99)).toHaveLength(12);              // a block booking no rate API answers
+    });
+    test('the party reaches the rate call AND the booking link', async () => {
+        const log = [];
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Noy Land'], party: 12, currency: 'USD' },
+            { env: ENV, fetch: fakeFetch(log), noPace: true });
+        const rates = log.find(l => l.url.includes('/hotels/min-rates'));
+        expect(JSON.parse(rates.init.body).occupancies).toHaveLength(6);
+        expect(out.rooms).toBe(6);
+        const row = out.matched['Noy Land'];
+        expect(row.rooms).toBe(6);
+        const occ = JSON.parse(Buffer.from(decodeURIComponent(row.booking_url.split('occupancies=')[1].split('&')[0]), 'base64').toString());
+        expect(occ).toHaveLength(6);
+    });
+});
+
+describe('areaHotels — the partner as a source', () => {
+    test('every hotel it sells comes back with photo, address and a live group price', async () => {
+        const log = [];
+        const out = await hotels.areaHotels({ centre: SEVAN, radiusKm: 30, party: 4, currency: 'USD' },
+            { env: ENV, fetch: fakeFetch(log), noPace: true });
+        expect(out.ok).toBe(true);
+        expect(out.rooms).toBe(2);
+        expect(out.hotels).toHaveLength(4);                              // the whole index, not only the priced ones
+        expect(out.diag).toMatchObject({ hotels_in_index: 4, hotels_priced: 3 });
+        const noy = out.hotels.find(h => h.name === 'Noy Land Resort');
+        expect(noy).toMatchObject({ hotel_id: 'lp1', stars: 4, guest_rating: 8.7, city: 'Sevan', available: true, rooms: 2 });
+        expect(noy.price_per_night).toBeGreaterThan(0);
+        expect(noy.booking_url).toContain('jinni.nuitee.link/hotels/lp1');
+        expect(Number.isFinite(noy.distance_from_centre_km)).toBe(true);
+        // A hotel the partner could not price for this stay says so — it is
+        // never given a number, and with a party it could not take the group.
+        expect(out.hotels.find(h => h.name === 'Unpriced Inn')).toMatchObject({ available: false, price_per_night: null });
+        // Bookable rows sort first.
+        expect(out.hotels[out.hotels.length - 1].available).toBe(false);
+    });
+    test('no key, no centre country, no index → fails open with a reason, never a throw', async () => {
+        expect(await hotels.areaHotels({ centre: SEVAN }, { env: {} })).toMatchObject({ ok: false, reason: 'hotel_prices_disabled', hotels: [] });
+        expect(await hotels.areaHotels({ centre: { lat: 40, lng: 44 } }, { env: ENV })).toMatchObject({ ok: false, reason: 'centre_unresolved' });
+        const empty = await hotels.areaHotels({ centre: SEVAN }, { env: ENV, noPace: true, fetch: async () => ({ ok: true, json: async () => ({ data: [] }) }) });
+        expect(empty).toMatchObject({ reason: 'no_hotels_in_index_here', hotels: [] });
+    });
+});

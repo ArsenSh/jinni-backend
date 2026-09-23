@@ -126,6 +126,13 @@ function summarize(c) {
         // wrote "12 km from you" for a hotel 12 km from Lake Sevan's centre.
         distance_from_search_centre_km: Number.isFinite(c.distanceKm) ? Math.round(c.distanceKm * 10) / 10 : null,
         rating: c.rating ?? null,
+        // Partner rows: a 0–10 guest score, a star class, and the live price
+        // for the stay (the whole group when several rooms were priced).
+        guest_rating_out_of_10: c._guestRating ?? undefined,
+        stars: c._stars ?? undefined,
+        live_price: (c.hotelPrice && Number.isFinite(c.hotelPrice.perNight))
+            ? `${c.hotelPrice.perNight} ${c.hotelPrice.currency} per night${c.hotelPrice.rooms > 1 ? ` for ${c.hotelPrice.rooms} rooms (the whole group)` : ''} — live, bookable`
+            : undefined,
         price_tier: c.priceLevel || c._styleTier || null,
         // The owner's listed price when the place is ours — a real number the
         // model may quote ("from 150 USD"), unlike price_tier which is a band.

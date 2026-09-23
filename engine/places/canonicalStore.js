@@ -353,6 +353,53 @@ function _addrSig(addr) {
     return num && street ? `${num} ${street}` : null;
 }
 
+/** The card's price block, from one partner row. `rooms` travels with it: a
+ *  group price for six rooms must never render as "from $X / night" and be
+ *  read as per room (honesty invariant — a number means what it says). */
+function _partnerPrice(h) {
+    return {
+        perNight: h.price_per_night, currency: h.currency,
+        nights: h.nights || 1, rooms: h.rooms || 1,
+        checkIn: h.check_in || null, checkOut: h.check_out || null,
+        stars: h.stars || null, url: h.booking_url || null,
+    };
+}
+
+/** A partner hotel → a retrieval candidate. No placeId: the row is the
+ *  partner's, not Google's, and inventing a Google id would poison PlaceCache
+ *  and the saves collection (a saved card would 404 forever). The consequence
+ *  is honest and visible: a partner-only card cannot be saved yet.
+ *  The guest score is the partner's 0–10 scale, so it is kept OUT of `rating`
+ *  (Google's 0–5) and carried as `_guestRating` — the card and the narrator
+ *  render it as "8.6/10", never as a star rating. */
+function partnerToCandidate(h, center) {
+    const distanceKm = (center && h.lat != null) ? haversineKm(center.lat, center.lng, h.lat, h.lng) : null;
+    return {
+        placeId: null,
+        name: h.name,
+        source: 'partner',
+        _partnerId: h.hotel_id,
+        interests: [],
+        rating: null,
+        _guestRating: h.guest_rating || null,
+        _reviewCount: h.review_count || null,
+        _stars: h.stars || null,
+        types: ['lodging'], primaryType: 'lodging',
+        priceLevel: null,
+        opening_hours: null,
+        geometry: { lat: h.lat, lng: h.lng },
+        distanceKm,
+        address: h.address || null,
+        city: h.city || null,
+        country: h.country || null,
+        image: h.image || null,
+        likes: 0, dislikes: 0,
+        hotelPrice: h.available ? _partnerPrice(h) : null,
+        _partnerUnpriced: !h.available,
+        text: [h.name, 'hotel lodging', h.city, h.stars ? `${h.stars} star` : null].filter(Boolean).join(' '),
+    };
+}
+
 function mergeAndDedupe(...lists) {
     const seen = new Set();
     const out = [];
@@ -703,6 +750,85 @@ async function loadCandidates(params = {}, deps = {}) {
         }
     }
     let merged = mergeAndDedupe(destinations, businesses, styledCache);
+
+    // ── PARTNER INVENTORY TIER — the booking partner AS A SOURCE (founder
+    //    2026-09-23: "can it search from booking initially too? … it will give
+    //    more results than google"). Until today liteAPI only PRICED hotels
+    //    that Google had already found, so a hotel the partner sells but
+    //    Google's ten-result page missed could never be dealt: live session
+    //    6ab3c2ed answered "Other ones? Give lots of results" around
+    //    Yeghegnadzor with ONE card, and two of the first three cards carried
+    //    no price because the partner does not sell them.
+    //
+    //    Hotels only, and ADDITIVE by construction. Owned and cache rows keep
+    //    their identity — they carry the placeId that makes a card saveable,
+    //    the stored images and the opening hours — and only INHERIT the
+    //    partner's live price and Book link; a hotel nobody else knows joins
+    //    as a new candidate at the TAIL (lowest prior, since the prior is
+    //    positional). Runs BEFORE the Google fallback, so partner coverage can
+    //    spare a paid Text Search. Fail-open: any partner error leaves the
+    //    pool exactly as it was.
+    let partnerDiag = null;
+    if (category === 'hotels' && params.partnerHotels !== false && center) {
+        try {
+            const hotelsApi = deps.hotelsApi || require('../travel/hotels');
+            if (hotelsApi.hotelsEnabled()) {
+                let cc = params.regionCountryCode || center.countryCode || null;
+                if (!cc) {
+                    const gaz = deps.gazetteer || require('../geo/gazetteer');
+                    const reg = await gaz.regionAt({ lat: center.lat, lng: center.lng }, { maxKm: 60 }).catch(() => null);
+                    cc = reg?.countryCode || null;
+                }
+                if (cc) {
+                    const wantWhole = Math.min(Math.max(Number(params.count) || 8, 1), 20);
+                    const out = await hotelsApi.areaHotels({
+                        centre: { lat: center.lat, lng: center.lng, countryCode: cc, name: params.regionCity || center.city || null },
+                        radiusKm, party: params.partySize || null,
+                        checkIn: params.stay?.checkIn || null, checkOut: params.stay?.checkOut || null,
+                        currency: params.currency || 'USD', locale: params.locale || 'en',
+                        guestNationality: params.guestNationality || 'US',
+                    }, deps);
+                    partnerDiag = out.diag || null;
+                    const rows = (out.ok && Array.isArray(out.hotels)) ? out.hotels : [];
+                    if (rows.length) {
+                        // Twin match = the SAME strict rule the price matcher uses
+                        // (distinctive tokens, 1.5 km), so a namesake across town
+                        // can never lend its price to another hotel's card.
+                        const cityTok = new Set(hotelsApi._tokens(params.regionCity || center.city || '', new Set()));
+                        const takenIds = new Set();
+                        let attached = 0;
+                        for (const c of merged) {
+                            const a = hotelsApi._tokens(c.name || '', cityTok);
+                            const hit = rows.find(h => !takenIds.has(h.hotel_id) && h.name
+                                && hotelsApi._sameHotel(a, hotelsApi._tokens(h.name, cityTok))
+                                && (h.lat == null || !c.geometry || haversineKm(h.lat, h.lng, c.geometry.lat, c.geometry.lng) <= 1.5));
+                            if (!hit) continue;
+                            takenIds.add(hit.hotel_id);
+                            if (hit.available) { c.hotelPrice = _partnerPrice(hit); attached++; }
+                            c._partnerId = hit.hotel_id;
+                        }
+                        // What the partner sells and nobody else knows about.
+                        // Bookable rows first; the rest only while the deck is
+                        // still short, marked so the narrator can say the
+                        // partner had no rate rather than invent a reason.
+                        const fresh = rows.filter(h => !takenIds.has(h.hotel_id) && h.name && h.lat != null);
+                        const extras = [];
+                        for (const h of fresh) {
+                            if (h.available) extras.push(partnerToCandidate(h, center));
+                            else if (merged.length + extras.length < wantWhole) extras.push(partnerToCandidate(h, center));
+                            if (extras.length >= 12) break;
+                        }
+                        if (attached || extras.length) {
+                            console.log(`[canonicalStore] partner tier: index=${out.diag?.hotels_in_index ?? '?'} priced=${out.diag?.hotels_priced ?? '?'}${out.rooms > 1 ? ` rooms=${out.rooms}` : ''} → ${attached} price(s) attached, +${extras.length} new`);
+                        }
+                        if (extras.length) merged = mergeAndDedupe(merged, extras);
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn(`[canonicalStore] partner tier failed (fail-open): ${err.message}`);
+        }
+    }
 
     // ── Google fallback tier (bootstrap, not the engine — V3 §8e) ──
     // Only when the owned corpus is THIN, only through the coverage gates, and
@@ -1087,6 +1213,7 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
 }
 
 module.exports = {
+    partnerToCandidate, _partnerPrice,
     loadCandidates,
     huntCity,
     googleFallback,
