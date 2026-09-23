@@ -679,7 +679,30 @@ async function loadCandidates(params = {}, deps = {}) {
     if (gatedCache.length !== keptCache.length) {
         console.log(`[canonicalStore] style gate dropped ${keptCache.length - gatedCache.length} cache row(s) for style=${rawStyleG}: ${keptCache.filter(c => !styleGate(c)).map(c => c.name).join(', ')}`);
     }
-    let merged = mergeAndDedupe(destinations, businesses, gatedCache);
+    // ── SOFT gate when the owned pool is THIN (2026-09-23; the Testbook's
+    //    open item "luxury style hard-gate softening"; live session 6ab3a61e:
+    //    "cottage for 12 people" near Yeghegnadzor with luxury saved in
+    //    Settings and not a word about luxury in the ask — the gate emptied
+    //    the owned pool and the deck was whatever Google guessed). The
+    //    VALIDATOR's verdict stays hard (the suppress set above is staff
+    //    judgment). Only GOOGLE's tier guess softens: when the gated owned
+    //    rows would leave fewer than asked, the dropped rows come back at the
+    //    TAIL of the prior order (the prior is positional — retrieval reads
+    //    candidate order as the prior list) — a real luxury match still
+    //    outranks them, but a thin town no longer answers "nothing owned, buy
+    //    a Text Search" for want of a $$$$ sign. Re-admitted rows are marked
+    //    so the narrator/QA can see it. ──
+    let styledCache = gatedCache;
+    if (gatedCache.length < keptCache.length && params.softStyleGate !== false) {
+        const askedNow = Math.min(Math.max(Number(params.count) || 8, 1), 20);
+        const ownedAfter = destinations.length + businesses.length + gatedCache.length;
+        if (ownedAfter < askedNow) {
+            const back = keptCache.filter(c => !styleGate(c)).map(c => ({ ...c, _styleSoft: rawStyleG }));
+            styledCache = gatedCache.concat(back);   // after every gated row: lowest prior by position
+            console.log(`[canonicalStore] style gate SOFTENED: owned pool ${ownedAfter} < ${askedNow} asked — ${back.length} row(s) re-admitted at the tail of the prior order`);
+        }
+    }
+    let merged = mergeAndDedupe(destinations, businesses, styledCache);
 
     // ── Google fallback tier (bootstrap, not the engine — V3 §8e) ──
     // Only when the owned corpus is THIN, only through the coverage gates, and

@@ -175,4 +175,42 @@ engine/
       onto v2's own branch flags. Fail-open: any controller failure → the v2 classifier,
       no lane. 12 tests. NOTE: the Claude 5 family rejects `temperature` — claudeService
       now omits it when passed null (defaults unchanged for every other caller).
-
+- [x] **V3 IS THE DEFAULT ENGINE (frontend, since 2026-09-19)** — `jinni_chat_engine`
+      defaults to `v3`; stored V1/V2 choices are kept. The line above about v2 staying
+      default is historical. **v2 is a frozen snapshot of 2026-09-18** — every fix since
+      (hotel prices, deck agent, events-deck guard, destination resolution, the 09-23
+      refill guard) landed in v3 only, so v2 is NOT an equivalent rollback: rolling back
+      to it reverts those fixes. The sanctioned rollbacks are the V1 toggle (production
+      v1, untouched) and, for v3's new layers only, `V3_AGENT=false` / the controller's
+      own fail-open to the v2 classifier. Settings labels it "V2 · legacy" (2026-09-23).
+- [x] **AUDIT FIXES (2026-09-23, Arsen: "do all")** — from a full backend/frontend/docs
+      audit plus live session 6ab3a61e (a 12-person cottage near Yeghegnadzor; luxury
+      saved in Settings; Nearby toggled on before "more"):
+      · `routes/aiChatV3.js` refill guard — a refill of a deck built around a
+        session/saved destination no longer re-centres on GPS when the Nearby toggle is
+        on; THIS turn runs as discovery, `meta.modeSwitched='discovery'`,
+        `meta.refillKeptCentre=true`, toggle follows (the 120-km jump to Yerevan).
+      · `engine/places/canonicalStore.js` soft style gate — Google's tier guess stops
+        being a hard drop when the gated owned pool is thinner than the asked count:
+        dropped rows return at the TAIL of the prior order, marked `_styleSoft`; the
+        validator's verdict (suppress set) stays hard; `params.softStyleGate=false`
+        restores the old behaviour. 3 tests.
+      · `services/emailService.js` transport adapter — `MAIL_FROM` (domain address) +
+        `SENDGRID_API_KEY` → SendGrid from the domain, reply-to `SUPPORT_EMAIL`, click/
+        open tracking off; otherwise the Gmail SMTP path unchanged. Verification codes
+        from jinniopenai@gmail.com were landing in spam. Coolify TODO: set
+        `MAIL_FROM=noreply@jinni.travel`, authenticate jinni.travel in SendGrid (adds
+        the SPF/DKIM CNAMEs; DMARC p=quarantine already exists). 2 tests.
+      · `routes/businessRoutes.js` — the applicant-URL verifier's own bare `fetch` (SSRF:
+        no scheme/private-IP/redirect checks) now goes through
+        `engine/utils/safeFetch._fetchListingHtml`; failures are logged.
+      · `package.json` jest `testPathIgnorePatterns` excludes `.claude/` — `npm test` was
+        running 74 stale worktree copies and reporting their timeouts. Suite: 47/1225.
+      · frontend `JinniChat.vue formatTextSegment` escapes `& < "` before building markup
+        (model prose/venue names reached v-html unescaped; JinniShare already sanitised).
+      Still OPEN from the audit: rate limiters keyed on unverified `CF-Connecting-IP`
+      (`server.js:314`, `authRoutes.js:26`); stack traces returned at `aiRoutes.js:7667`
+      and `businessRoutes.js:827`; 175 swallowed catches (two fail-open gates in
+      canonicalStore ~510/~969); no proof `seedGazetteer`/`embedPlaceCache --apply` ran;
+      the agent never calls `hotel_prices` even when prices are asked (session 6ab3a61e
+      turn 2 answered "call the hotel" with liteAPI one call away).

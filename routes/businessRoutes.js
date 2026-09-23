@@ -341,16 +341,23 @@ function distMetersSimple(lat1, lng1, lat2, lng2) {
     const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
 }
-// Fetch a URL with timeout and return text, null on failure
+// Fetch a URL with timeout and return text, null on failure.
+// 2026-09-23: this used to be a bare fetch() on a URL the APPLICANT typed
+// (website / TripAdvisor / Instagram handle) — no scheme, port, private-IP or
+// redirect check, so "http://169.254.169.254/latest/meta-data/" as a website
+// would have been fetched from inside the box and nameInHtml() turned into an
+// oracle. It now goes through the engine's SSRF-guarded fetcher (DNS-resolved
+// private ranges refused, every redirect hop re-validated, byte-capped).
+// Same contract as before: text on success, null on any failure — and the
+// failure is logged now instead of vanishing.
+const { _fetchListingHtml: guardedFetchHtml } = require('../engine/utils/safeFetch')
 async function safeFetch(url, timeoutMs = 6000) {
     try {
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), timeoutMs)
-        const res = await fetch(url, {signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JinniVerify/1.0)' }})
-        clearTimeout(timer)
-        if (!res.ok) return null
-        return await res.text()
-    } catch { return null }
+        return await guardedFetchHtml(String(url || '').trim(), { timeoutMs, maxBytes: 1_500_000 })
+    } catch (err) {
+        console.warn(`[business-verify] fetch refused/failed for ${String(url).slice(0, 120)}: ${err.message}`)
+        return null
+    }
 }
 // Check if business name appears in fetched HTML
 function nameInHtml(html, name) {

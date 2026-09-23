@@ -146,17 +146,72 @@ function emailLang(language) {
     return EMAIL_I18N[code] || EMAIL_I18N.en;
 }
 
+// ── Transport (2026-09-23) ──
+// Every mail used to leave through smtp.gmail.com from a free @gmail.com
+// account. Arsen 2026-09-23: new users' verification codes were landing in
+// spam. A free-mailbox sender with heavy HTML is exactly what filters score
+// down, and no DNS record on jinni.travel can vouch for gmail.com. So:
+//   MAIL_FROM=noreply@jinni.travel + SENDGRID_API_KEY  → SendGrid, from the
+//     domain (SPF/DKIM come from the domain authentication in SendGrid);
+//   otherwise                                           → the Gmail SMTP path,
+//     byte-identical to before, so an unconfigured deploy keeps sending.
+// The 17 call sites keep their nodemailer-shaped `sendMail(opts)`; the adapter
+// rewrites only the address part of `from` (display names stay) and adds a
+// reply-to so replies reach a mailbox someone reads.
+function _mailAddressOf(from) {
+    const m = /<([^>]+)>/.exec(String(from || ''));
+    return (m ? m[1] : String(from || '')).trim();
+}
+function _displayNameOf(from) {
+    const m = /^\s*"?([^"<]*?)"?\s*</.exec(String(from || ''));
+    return m && m[1].trim() ? m[1].trim() : 'Jinni';
+}
+function buildTransport(env = process.env) {
+    const domainFrom = String(env.MAIL_FROM || '').trim();
+    const usesDomainSender = !!(domainFrom && env.SENDGRID_API_KEY && !/@gmail\.com$/i.test(domainFrom));
+    if (usesDomainSender) {
+        const sgMail = require('@sendgrid/mail');
+        sgMail.setApiKey(env.SENDGRID_API_KEY);
+        const replyTo = env.SUPPORT_EMAIL || env.EMAIL_USER || null;
+        return {
+            kind: 'sendgrid',
+            from: domainFrom,
+            async sendMail(opts) {
+                const msg = {
+                    to: opts.to,
+                    from: { email: domainFrom, name: _displayNameOf(opts.from) },
+                    subject: opts.subject,
+                    ...(opts.text ? { text: opts.text } : {}),
+                    ...(opts.html ? { html: opts.html } : {}),
+                    ...(replyTo ? { replyTo } : {}),
+                    // Transactional mail: never let the provider's tracking
+                    // rewrite links or inject an open pixel (both hurt trust
+                    // AND spam scores on verification codes).
+                    trackingSettings: { clickTracking: { enable: false, enableText: false }, openTracking: { enable: false } },
+                };
+                const [res] = await sgMail.send(msg);
+                return { messageId: res?.headers?.['x-message-id'] || null, accepted: [opts.to] };
+            },
+            async verify() { return true; },
+        };
+    }
+    const t = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        auth: {
+            user: env.EMAIL_USER,
+            pass: env.EMAIL_APP_PASSWORD
+        }
+    });
+    return { kind: 'gmail', from: env.EMAIL_USER || null, sendMail: (o) => t.sendMail(o), verify: () => t.verify() };
+}
+
 class EmailService {
     constructor() {
-        this.transporter = nodemailer.createTransport({
-            host: 'smtp.gmail.com',
-            port: 587,
-            secure: false,
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_APP_PASSWORD
-            }
-        });
+        this.transporter = buildTransport();
+        const addr = _mailAddressOf(this.transporter.from);
+        console.log(`[email] transport=${this.transporter.kind} from=${addr ? addr.replace(/^(.).*(@.*)$/, '$1…$2') : 'unset'}`);
     }
     async sendVerificationEmail(email, code, name, language) {
         const L = emailLang(language);
@@ -1205,3 +1260,4 @@ at ${contactEmail}.
     }
 }
 module.exports = new EmailService();
+module.exports.buildTransport = buildTransport;

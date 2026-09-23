@@ -424,6 +424,33 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
     });
 });
 
+describe('style gate softens when the owned pool is thin (2026-09-23, session 6ab3a61e)', () => {
+    const hotel = (name, over = {}) => cacheDoc({ name, placeId: 'p_' + name.replace(/\s/g, ''), types: ['lodging'], primaryType: 'lodging', actions: ['hotels'], ...over });
+    const deps = (docs) => ({ cacheFind: async () => docs, proximity: async () => ({}), placeMatches: () => true, coverage: async () => false, styleMismatched: async () => [] });
+    test('thin town: an unpriced sub-4.2 row comes back last in prior order, marked', async () => {
+        // Luxury demands evidence from unpriced rows (rating >= 4.2); Plain Inn
+        // has none — but it is nearly all the town owns for a 4-card ask.
+        const out = await loadCandidates({ category: 'hotels', center: CENTER, count: 4, preferences: { travelStyle: 'luxury' } },
+            deps([hotel('Fine Palace', { rating: 4.7 }), hotel('Plain Inn', { rating: 3.9 })]));
+        const names = out.map(c => c.name);
+        expect(names).toContain('Fine Palace');
+        expect(names).toContain('Plain Inn');
+        expect(out.find(c => c.name === 'Plain Inn')._styleSoft).toBe('luxury');
+        expect(names.indexOf('Plain Inn')).toBeGreaterThan(names.indexOf('Fine Palace'));   // prior is positional
+    });
+    test('plenty owned: the gate stays hard', async () => {
+        const many = ['A', 'B', 'C', 'D', 'E'].map(n => hotel('Grand ' + n, { rating: 4.6 }));
+        const out = await loadCandidates({ category: 'hotels', center: CENTER, count: 4, preferences: { travelStyle: 'luxury' } },
+            deps([...many, hotel('Plain Inn', { rating: 3.9 })]));
+        expect(out.map(c => c.name)).not.toContain('Plain Inn');
+    });
+    test('softStyleGate:false keeps the old hard behaviour', async () => {
+        const out = await loadCandidates({ category: 'hotels', center: CENTER, count: 4, preferences: { travelStyle: 'luxury' }, softStyleGate: false },
+            deps([hotel('Fine Palace', { rating: 4.7 }), hotel('Plain Inn', { rating: 3.9 })]));
+        expect(out.map(c => c.name)).not.toContain('Plain Inn');
+    });
+});
+
 describe("_prefFitScore 'cultural' interest (the culture-regex gap, 2026-08-30)", () => {
     const { _prefFitScore } = require('../engine/places/canonicalStore');
     test("interest 'cultural' alone lifts museums over unrelated types", () => {

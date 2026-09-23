@@ -993,6 +993,32 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 statedPosition = { lat: gpsCenter.lat, lng: gpsCenter.lng, name: hereRegion?.city || null, source: 'gps' };
                 console.log('[destination] closest-ask -> centred on the traveler');
             }
+            // ── A refill never re-centres (live 2026-09-23, session 6ab3a61e) ──
+            // Three turns built a deck around the SAVED destination
+            // (Yeghegnadzor: "cottage for 12 people"); then the Nearby toggle
+            // went on and "more" arrived. Rule 1 of the resolver (nearby ⇒ GPS)
+            // moved the centre 120 km to the traveler's phone in Yerevan, the
+            // Google query became "…Yeghegnadzor Yerevan", and the reply was
+            // six Yerevan chain hotels — which the narrator then had to
+            // apologise for. "More" continues the deck on screen, and that
+            // deck already has a centre. Same contract as the named-elsewhere
+            // case below: the switch applies to THIS turn only, meta says so
+            // (the toggle follows), and nothing saved changes. A refill that
+            // names a place, states a position or asks for "around me" is not
+            // a plain refill and keeps today's behaviour.
+            const refillOfDeck = (intent.refill === true || parseRefillAsk(message).isRefill)
+                && sessionCards.length > 0 && !namedCard && !statedName
+                && !(intent.placeNames || []).length && !isNearbyAsk(message);
+            const deckHasCentre = !!(sessionPeek?.activeDestination?.latitude
+                || intent._savedLocation || intent._preferences?.destination);
+            let refillKeptCentre = false;
+            if (effectiveNearbyMode && refillOfDeck && deckHasCentre) {
+                effectiveNearbyMode = false;
+                refillKeptCentre = true;
+                meta.modeSwitched = 'discovery';
+                meta.refillKeptCentre = true;
+                console.log('[destination] nearby -> discovery: a refill continues the deck where it was built');
+            }
             if (!questionTurn) {
             const dest = await resolveDestination({
                 placeNames: intent.placeNames || [],
@@ -1028,6 +1054,12 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 effectiveNearbyMode = false;
                 meta.modeSwitched = 'discovery';
                 meta.modeSwitchedTo = dest.city || null;
+            }
+            // The refill guard above decided before the centre was known; now
+            // it is, so the reply can name where the deck stayed.
+            if (refillKeptCentre) {
+                if (dest.source === 'gps' || dest.source === 'nearby') { meta.modeSwitched = null; meta.refillKeptCentre = false; }
+                else meta.modeSwitchedTo = dest.city || null;
             }
             if (dest.center) center = dest.center;
             if (dest.city) meta.searchCity = dest.city;
