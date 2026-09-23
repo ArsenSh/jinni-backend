@@ -360,6 +360,10 @@ function _partnerPrice(h) {
     return {
         perNight: h.price_per_night, currency: h.currency,
         nights: h.nights || 1, rooms: h.rooms || 1,
+        // The group could not be booked as one stay, so this is ONE room and
+        // the card must say so (2026-09-23) — otherwise a party of twelve
+        // reads a single-room rate as the price of their trip.
+        perRoom: !!h.per_room, groupUnavailable: !!h.group_unavailable, groupRooms: h.group_rooms || null,
         checkIn: h.check_in || null, checkOut: h.check_out || null,
         stars: h.stars || null, url: h.booking_url || null,
     };

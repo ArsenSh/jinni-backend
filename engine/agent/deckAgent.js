@@ -131,12 +131,20 @@ function summarize(c) {
         guest_rating_out_of_10: c._guestRating ?? undefined,
         stars: c._stars ?? undefined,
         live_price: (c.hotelPrice && Number.isFinite(c.hotelPrice.perNight))
-            ? `${c.hotelPrice.perNight} ${c.hotelPrice.currency} per night${c.hotelPrice.rooms > 1 ? ` for ${c.hotelPrice.rooms} rooms (the whole group)` : ''} — live, bookable`
+            ? `${c.hotelPrice.perNight} ${c.hotelPrice.currency} per night${c.hotelPrice.rooms > 1 ? ` for ${c.hotelPrice.rooms} rooms (the whole group)` : (c.hotelPrice.groupUnavailable ? ` for ONE room — no single booking here takes all ${c.hotelPrice.groupRooms * 2} travelers, say so` : '')} — live, bookable`
             : undefined,
         price_tier: c.priceLevel || c._styleTier || null,
         // The owner's listed price when the place is ours — a real number the
         // model may quote ("from 150 USD"), unlike price_tier which is a band.
-        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min}${c.ownedPrice.max != null ? ` to ${c.ownedPrice.max}` : ''} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`) + ' (owner\'s listing, per night)' : null,
+        // WHOSE price this is (founder 2026-09-23: "it is listed by hotel owner
+        // or app owner?"). A Business row was typed by the venue in its own
+        // dashboard; a Destination row was typed by Jinni when the place was
+        // curated. Calling both "the owner's listing" told the traveler the
+        // hotel had quoted a number Jinni had actually estimated.
+        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min}${c.ownedPrice.max != null ? ` to ${c.ownedPrice.max}` : ''} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`)
+            + (c.source === 'business'
+                ? ' (the venue\'s own listed price, per night)'
+                : ' (a reference price recorded by Jinni, approximate — NOT a quote from the venue; never attribute it to the hotel)') : null,
         tags: (c.interests || []).slice(0, 5),
         open_now: c._openNow === true ? true : (c._openNow === false ? false : null),
         // Events are not places: a dated event carries its start; a venue or an

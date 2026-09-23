@@ -38,7 +38,7 @@ function placeFactLine(p) {
         // A live partner price is a FACT the blurb may quote — including that
         // it covers the whole group when several rooms were priced.
         (p.hotelPrice && Number.isFinite(p.hotelPrice.perNight))
-            ? `live price from ${p.hotelPrice.perNight} ${p.hotelPrice.currency} per night${p.hotelPrice.rooms > 1 ? ` for all ${p.hotelPrice.rooms} rooms (the whole group)` : ''}`
+            ? `live price from ${p.hotelPrice.perNight} ${p.hotelPrice.currency} per night${p.hotelPrice.rooms > 1 ? ` for all ${p.hotelPrice.rooms} rooms (the whole group)` : (p.hotelPrice.groupUnavailable ? ' for ONE room — no single booking here holds the whole party, and the traveler must be told' : '')}`
             : null,
         p._partnerUnpriced ? 'the booking partner has no rate for this stay' : null,
         // Unknown hours are SAID on a right-now deck (live 2026-09-15, 02:00:

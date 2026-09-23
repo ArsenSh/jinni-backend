@@ -151,8 +151,11 @@ describe("owner's listed price (Destination/Business pricing)", () => {
         expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: false, average: 300, currency: 'usd' } }, 'business', null).ownedPrice).toEqual({ min: null, max: null, average: 300, currency: 'USD' });
     });
     test('agent sees a quotable number; free or empty pricing stays silent', () => {
-        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toBe("from 120 to 260 USD (owner's listing, per night)");
-        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toBe("about 180 AMD (owner's listing, per night)");
+        // Wording updated 2026-09-23: an unsourced row takes the CAUTIOUS
+        // attribution — it may not claim the venue quoted the number.
+        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toContain('from 120 to 260 USD');
+        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toContain('about 180 AMD');
+        expect(summarize({ name: 'x', ownedPrice: { min: 120, currency: 'USD' } }).price).toContain('recorded by Jinni');
         expect(summarize({ name: 'x' }).price).toBeNull();
     });
     test('card carries listedPrice, and never a partner hotelPrice it did not get', () => {
@@ -278,5 +281,79 @@ describe('areaHotels — the partner as a source', () => {
         expect(await hotels.areaHotels({ centre: { lat: 40, lng: 44 } }, { env: ENV })).toMatchObject({ ok: false, reason: 'centre_unresolved' });
         const empty = await hotels.areaHotels({ centre: SEVAN }, { env: ENV, noPace: true, fetch: async () => ({ ok: true, json: async () => ({ data: [] }) }) });
         expect(empty).toMatchObject({ reason: 'no_hotels_in_index_here', hotels: [] });
+    });
+});
+
+describe('per-room fallback when the group cannot be booked as one stay (2026-09-23)', () => {
+    // Twelve travelers in a small town: six rooms, nothing available — the old
+    // behaviour lost every price AND every Book button, so the traveler got
+    // neither the number nor the link.
+    const NO_GROUP_RATES = (occ) => occ.length > 1 ? { data: [] } : { data: [{ hotelId: 'lp1', price: 180 }, { hotelId: 'lp3', price: 60 }] };
+    const fetchGroupAware = (log = []) => async (url, init = {}) => {
+        log.push({ url, init });
+        const ok = (b) => ({ ok: true, json: async () => b });
+        if (url.includes('/data/hotels')) return ok(HOTELS);
+        if (url.includes('/hotels/min-rates')) return ok(NO_GROUP_RATES(JSON.parse(init.body).occupancies));
+        return { ok: false, status: 404, json: async () => ({}) };
+    };
+    test('falls back to ONE room, says the group cannot be held, and the link matches the price', async () => {
+        const log = [];
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Noy Land'], party: 12 }, { env: ENV, fetch: fetchGroupAware(log), noPace: true });
+        const asked = log.filter(l => l.url.includes('min-rates')).map(l => JSON.parse(l.init.body).occupancies.length);
+        expect(asked).toEqual([6, 1]);                                   // group first, then one room
+        expect(out.rooms).toBe(1);
+        const row = out.matched['Noy Land'];
+        expect(row).toMatchObject({ per_room: true, group_unavailable: true, group_rooms: 6, rooms: 1 });
+        expect(row.price_per_night).toBe(180);
+        const occ = JSON.parse(Buffer.from(decodeURIComponent(row.booking_url.split('occupancies=')[1].split('&')[0]), 'base64').toString());
+        expect(occ).toEqual([{ adults: 2 }]);                            // the link books what the price quoted
+    });
+    test('a group that CAN be housed is never downgraded', async () => {
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: ['Noy Land'], party: 4 }, { env: ENV, fetch: fakeFetch(), noPace: true });
+        expect(out.matched['Noy Land']).toMatchObject({ rooms: 2, per_room: false, group_unavailable: false });
+    });
+    test('areaHotels falls back the same way', async () => {
+        const out = await hotels.areaHotels({ centre: SEVAN, party: 12 }, { env: ENV, fetch: fetchGroupAware(), noPace: true });
+        expect(out).toMatchObject({ rooms: 1, per_room: true, group_unavailable: true });
+        expect(out.hotels.find(h => h.hotel_id === 'lp1')).toMatchObject({ available: true, per_room: true, group_rooms: 6 });
+    });
+});
+
+describe('name variants: the partner sells it under another branding (2026-09-23)', () => {
+    // "Tufenkian Heritage Hotels" (ours, from Google) vs the partner's
+    // "Tufenkian Historic Yerevan Hotel" — the token rule refuses it, so a
+    // hotel the partner really sells showed no price and no Book button.
+    const TWIN = { id: 'lpT', name: 'Tufenkian Historic Yerevan Hotel', stars: 4, latitude: 40.5503, longitude: 44.9503 };
+    const f = async (url) => {
+        const ok = (b) => ({ ok: true, json: async () => b });
+        if (url.includes('hotelName=')) return ok({ data: [TWIN] });
+        if (url.includes('/data/hotels')) return ok({ data: [] });
+        if (url.includes('/hotels/min-rates')) return ok({ data: [{ hotelId: 'lpT', price: 140 }] });
+        return { ok: false, status: 404, json: async () => ({}) };
+    };
+    test('accepted when the partner resolved THAT name, within 500 m, sharing a real word', async () => {
+        const out = await hotels.hotelPrices({ centre: SEVAN, names: [{ name: 'Tufenkian Heritage Hotels', lat: 40.5500, lng: 44.9500 }] },
+            { env: ENV, fetch: f, noPace: true });
+        expect(out.matched['Tufenkian Heritage Hotels']).toMatchObject({ hotel_id: 'lpT', price_per_night: 140 });
+        expect(out.matched['Tufenkian Heritage Hotels'].booking_url).toContain('/hotels/lpT');
+    });
+    test('refused when it is far away, or when nothing distinctive is shared', async () => {
+        const far = await hotels.hotelPrices({ centre: SEVAN, names: [{ name: 'Tufenkian Heritage Hotels', lat: 40.60, lng: 45.00 }] },
+            { env: ENV, fetch: f, noPace: true });
+        expect(far.matched['Tufenkian Heritage Hotels']).toBeNull();     // 5+ km away is a different property
+        const other = await hotels.hotelPrices({ centre: SEVAN, names: [{ name: 'Sevan Plaza Hotel', lat: 40.5500, lng: 44.9500 }] },
+            { env: ENV, fetch: f, noPace: true });
+        expect(other.matched['Sevan Plaza Hotel']).toBeNull();           // the partner's name search is not a licence
+    });
+});
+
+describe('whose price is it (founder 2026-09-23: "hotel owner or app owner?")', () => {
+    const { summarize } = require('../engine/agent/deckAgent');
+    const priced = { name: 'X', ownedPrice: { min: null, max: null, average: 70000, currency: 'AMD' } };
+    test('a venue-entered price is the venue\'s; a curated one is Jinni\'s own reference', () => {
+        expect(summarize({ ...priced, source: 'business' }).price).toBe("about 70000 AMD (the venue's own listed price, per night)");
+        const curated = summarize({ ...priced, source: 'destination' }).price;
+        expect(curated).toContain('recorded by Jinni');
+        expect(curated).toContain('NOT a quote from the venue');
     });
 });

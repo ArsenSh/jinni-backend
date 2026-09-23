@@ -258,4 +258,38 @@ engine/
       Yeghegnadzor the partner priced ONE hotel. `[canonicalStore] partner tier:
       index=N priced=M` now logs the real numbers per turn — read them before
       concluding anything about coverage.
+- [x] **PER-ROOM FALLBACK · NAME VARIANTS · WHOSE PRICE** (2026-09-23, after the
+      live runs on the test account):
+      · **Per-room fallback** — `_ratesFor()` (shared by hotelPrices + areaHotels):
+        when a party needs several rooms and the partner prices NOTHING, it retries
+        with ONE room. Rows carry `per_room` / `group_unavailable` / `group_rooms`, the
+        booking link books exactly what the price quoted (one room), and the agent,
+        the narrator and the card all say no single booking holds the whole party.
+        Never multiplies a room rate into a group price — that is arithmetic, not a
+        quote. Live 2026-09-23: twelve travelers in Yeghegnadzor lost every price AND
+        every Book button, because no property there takes six rooms.
+      · **Name variants** — ours from Google vs theirs from the catalogue
+        ("Tufenkian Heritage Hotels" vs "Tufenkian Historic Yerevan Hotel") failed the
+        strict token rule, so a hotel the partner really sells showed no price and no
+        Book button. A by-name lookup row now remembers the name it was resolved FOR
+        (`_forName`), and the match loop accepts it on THREE pieces of evidence
+        together: the partner's own name index returned it for that very name, the
+        points are within 500 m, and a shared distinctive word of ≥ 5 letters. Strictly
+        safer than the 600 m shared-word rule that caused the 2026-09-19 mis-link.
+        Refused near-matches are logged (`[hotels] no match for "X" — nearest refused:`)
+        so the rule can be judged on real data. Matches log `via tokens|partner-name`.
+      · **Whose price** (founder: "it is listed by hotel owner or app owner?") — a
+        Business row was typed by the venue in its dashboard; a Destination row was
+        typed by Jinni when curating. Both used to read "owner's listing", which told
+        the traveler the HOTEL had quoted a number Jinni estimated (live Armenian reply
+        about Moselle). The agent fact now says either "the venue's own listed price"
+        or "a reference price recorded by Jinni, approximate — NOT a quote from the
+        venue"; an unsourced row takes the cautious one. On the card a listed price no
+        longer renders identically to a live rate: new keys `chat.price.from_listed` /
+        `approx_listed` ("≈ 70000 AMD · listed") + `chat.hotel.from_per_night_per_room`,
+        all six locales, parity 808/808.
+      · `/hotel-prices` (the after-render call) takes the sessionId and reads partySize
+        off that session's ledger, so it prices the SAME group the deck did — it had
+        been pricing one room and putting that number beside group prices.
+      10 new tests; suite 47 suites / 1240 tests green.
 
