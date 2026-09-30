@@ -287,7 +287,24 @@ async function verifyOffer(offerId, deps = {}) {
     };
 }
 
+/**
+ * Where a traveler goes to BUY a live fare. Nuitee's whitelabel sells flights
+ * once they are enabled on it, but its flights deep-link format is not in
+ * their public docs (2026-09-30), so the link is a template set in Coolify
+ * rather than a guess baked in here:
+ *   LITE_FLIGHTS_BOOK_URL=https://stay.jinni.travel/flights?from={origin}&to={destination}&date={date}&adults={adults}
+ * Placeholders: {origin} {destination} {date} {return} {adults} {currency} {offerId}.
+ * No template → null, and the fare is shown with its price and no Book action,
+ * the same way hotel cards behaved before the whitelabel domain was set.
+ */
+function liteBookUrl({ origin, destination, date, returnDate = null, adults = 1, currency = 'USD', offerId = null } = {}, env = process.env) {
+    const tpl = String(env.LITE_FLIGHTS_BOOK_URL || '').trim();
+    if (!/^https:\/\//i.test(tpl)) return null;
+    const val = { origin, destination, date, return: returnDate || '', adults: String(adults || 1), currency, offerId: offerId || '' };
+    return tpl.replace(/\{(origin|destination|date|return|adults|currency|offerId)\}/g, (_, k) => encodeURIComponent(val[k] ?? ''));
+}
+
 module.exports = {
-    liteFlightsEnabled, searchLiteFlights, searchAirports, verifyOffer,
+    liteFlightsEnabled, searchLiteFlights, searchAirports, verifyOffer, liteBookUrl,
     normalizeJourney, normalizeRates, _memo, _stillFresh, _earliestExpiry, BASE,
 };

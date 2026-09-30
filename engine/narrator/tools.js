@@ -452,6 +452,15 @@ function makeExecutors(ctx = {}, deps = {}) {
             // → "no fares", while the 15th had one). A round trip keeps the
             // plain query: the feed prices the pair, not a departure window.
             const win = returnDate ? null : flights.windowFor({ departDate, departFrom, departTo });
+            // LIVE, bookable fares from Nuitee (liteAPI), asked in parallel with
+            // the feed and only for ONE concrete day — a live search prices a
+            // real departure, not a month. Dark unless LITE_FLIGHTS=true.
+            const lite = deps.liteFlights || require('../travel/flightsLite');
+            const liveDay = /^\d{4}-\d{2}-\d{2}$/.test(departDate || '') ? departDate : (win && win.from === win.to ? win.from : null);
+            const livePromise = (liveDay && lite.liteFlightsEnabled(deps.env || process.env))
+                ? liveFares({ lite, flights, origin, destination, day: liveDay, returnDate, currency, deps }).catch(() => null)
+                : Promise.resolve(null);
+            const shortenUrl = deps.shortenBookUrl || require('../travel/flightLinks').shortenBookUrl;
             let r;
             try {
                 r = win
@@ -462,7 +471,9 @@ function makeExecutors(ctx = {}, deps = {}) {
             }
             // No data is an ANSWER ("I don't have fares for that route"), not a
             // licence to quote a remembered price.
+            const live = await livePromise;
             if (!r || (!r.offers?.length && !r.nearest?.length)) {
+                if (live?.length) return attachLive({ offers: [], asked: win || null, note: 'The fare feed has no fares for this route. ' }, live, shortenUrl);
                 return { offers: [], asked: win || null, note: 'no fares returned — do not state any price' };
             }
             if (!r.offers.length && r.nearest?.length) {
@@ -528,9 +539,51 @@ function makeExecutors(ctx = {}, deps = {}) {
                       + 'where they stop: never name a hub, never infer one from the airline, and when asked, say plainly that the fare '
                       + 'data does not include it and that the airline link on that fare opens the routing.'
                     : '');
-            return r;
+            return live?.length ? attachLive(r, live, shortenUrl) : r;
         },
     };
+}
+
+/* Live fares from Nuitee → the compact rows the narrator reads. Unlike the feed,
+ * a live journey carries its segments, so the connecting airport IS known and
+ * is named. A round-trip price covers both flights and says so. */
+async function liveFares({ lite, flights, origin, destination, day, returnDate, currency, deps }) {
+    const env = deps.env || process.env;
+    const resolve = deps.resolveIata || flights.resolveIata;
+    const [o, d] = await Promise.all([resolve(origin, deps), resolve(destination, deps)]);
+    if (!o || !d) return null;
+    const ret = /^\d{4}-\d{2}-\d{2}$/.test(returnDate || '') ? returnDate : null;
+    const legs = [{ origin: o, destination: d, date: day }, ...(ret ? [{ origin: d, destination: o, date: ret }] : [])];
+    const cur = String(currency || 'usd').toUpperCase();
+    const res = await lite.searchLiteFlights({ legs, adults: 1, currency: cur }, deps);
+    if (!res?.ok || !res.journeys?.length) return null;
+    return res.journeys.slice(0, 3).map(j => {
+        const time = (j.departureAt || '').slice(11, 16);
+        const via = j.transfers > 0 ? (j.segments || []).slice(0, -1).map(s => s.to).filter(Boolean) : [];
+        const stops = j.transfers === 0 ? 'direct' : `${j.transfers} stop${j.transfers === 1 ? '' : 's'}${via.length ? ` via ${via.join(', ')}` : ''}`;
+        return {
+            source: 'nuitee', live: true, roundTrip: !!ret,
+            airline: j.airline, flightNumber: j.flightNumber, departureAt: j.departureAt, arrivalAt: j.arrivalAt,
+            price: j.price, currency: j.currency, transfers: j.transfers, connectingAirports: via,
+            durationMin: j.durationMin, seatsRemaining: j.seatsRemaining, refundable: j.refundable,
+            label: [`${day}${time ? ' ' + time : ''}`, j.airline, j.price != null ? `${j.price} ${j.currency}${ret ? ' round trip' : ''}` : '', stops].filter(Boolean).join(' · '),
+            bookUrl: lite.liteBookUrl({ origin: o, destination: d, date: day, returnDate: ret, adults: 1, currency: j.currency || cur, offerId: j.offerId }, env),
+        };
+    });
+}
+
+/* Live fares ride BESIDE the feed's, never blended into them: a live fare is a
+ * price Jinni can sell at, a feed fare is one other travelers were shown. */
+async function attachLive(r, live, shorten) {
+    for (const f of live) if (f.bookUrl) f.bookUrl = await shorten(f.bookUrl);
+    r.live = live;
+    r.note = (r.note || '')
+        + ' LIVE FARES (the `live` list) come from a real-time airline search and can be BOOKED NOW. Present them as their own group, '
+        + 'introduced as live bookable fares, each with its label (date/time, airline, price, stops). '
+        + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS bookUrl exactly as given. ' : 'They have no booking link yet: give the fare, never a URL. ')
+        + 'Never merge a live price with a feed price, never call one the cheapest of the other, and never say a feed fare can be booked in Jinni.'
+        + (live.some(f => f.roundTrip) ? ' A live round-trip price covers BOTH flights — say so.' : '');
+    return r;
 }
 
 module.exports = { PLACE_DETAILS_TOOL, FIND_FLIGHTS_TOOL, GET_ROUTE_TOOL, FIND_PLACES_TOOL, makeExecutors, ownedNameMatches };
