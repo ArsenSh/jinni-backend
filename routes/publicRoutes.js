@@ -355,7 +355,61 @@ router.get('/sitemap.xml', async (req, res) => {
     }
 });
 
+// ── ANONYMOUS SIGN-UP FUNNEL (founder 2026-09-30) ────────────────────────────
+// The landing → /auth → sign-up path is client-side, so without this the
+// server only ever saw the page load and (for the ~0 who got that far) the
+// sign-up call. The browser beacons one tiny event per step; see
+// models/FunnelEvent.js. Rules: no auth, answer 204 at once, never throw,
+// unknown events ignored, duplicates (same browser/step/day) swallowed.
+//
+// The frontend posts with navigator.sendBeacon as text/plain — the only
+// body type a cross-origin beacon can send without a CORS preflight (an
+// application/json beacon is refused by some browsers) — so the JSON is
+// parsed here from the raw text. application/json (the fetch fallback or a
+// manual test) arrives already parsed by the app-wide express.json.
+const FunnelEvent = require('../models/FunnelEvent');
+const FUNNEL_SET = new Set(FunnelEvent.FUNNEL_EVENTS);
+const BOT_UA = /bot|crawler|spider|curl|headless|preview|facebookexternalhit|wget|python-requests/i;
+const rateLimit = require('express-rate-limit');
+const funnelLimiter = rateLimit({
+    keyGenerator: (req) => (req.headers['cf-connecting-ip'] || req.ip || 'unknown'),   // same key as server.js clientKey
+    windowMs: 15 * 60 * 1000,
+    max: 120,               // a real visitor fires ≤ 7 steps; this only walls off scripts
+    standardHeaders: false,
+    legacyHeaders: false,
+    handler: (req, res) => res.status(204).end(),   // silent — the page never cares
+});
+
+function sanitizeFunnel(body) {
+    let b = body;
+    if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { return null; } }
+    if (!b || typeof b !== 'object') return null;
+    const event = typeof b.event === 'string' ? b.event.trim() : '';
+    if (!FUNNEL_SET.has(event)) return null;
+    const sid = typeof b.sid === 'string' ? b.sid.trim().slice(0, 64) : '';
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(sid)) return null;
+    let source = typeof b.source === 'string' ? b.source.trim().toLowerCase().replace(/^www\./, '').slice(0, 60) : '';
+    source = source.replace(/[^a-z0-9._\-+ ]/g, '') || 'direct';
+    return { event, sid, source };
+}
+
+router.post('/funnel', funnelLimiter, express.text({ type: 'text/plain', limit: '2kb' }), (req, res) => {
+    res.status(204).end();
+    try {
+        const ua = String(req.headers['user-agent'] || '');
+        if (!ua || BOT_UA.test(ua)) return;
+        const ev = sanitizeFunnel(req.body);
+        if (!ev) return;
+        const day = new Date().toISOString().slice(0, 10);
+        FunnelEvent.create({ day, ...ev }).catch((err) => {
+            if (err && err.code !== 11000) console.warn('[funnel] write failed:', err.message);
+        });
+    } catch (err) {
+        console.warn('[funnel] error:', err.message);
+    }
+});
+
 module.exports = router;
-module.exports._test = { clusterCities, publicVisible, slugify };
+module.exports._test = { clusterCities, publicVisible, slugify, sanitizeFunnel };
 // For scripts/publicCoverage.js (read-only diagnostics on the server).
 module.exports._internals = { buildSnapshot, publicVisible, clusterCities, ownedRow, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };

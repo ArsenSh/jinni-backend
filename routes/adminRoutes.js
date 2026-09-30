@@ -186,6 +186,48 @@ router.get('/retention', async (req, res) => {
     }
 });
 
+// ─── SIGN-UP FUNNEL (anonymous, founder 2026-09-30) ──────────────────────
+// Distinct browsers per step over the window (models/FunnelEvent.js; written
+// by POST /api/public/funnel). A browser counts once per step for the whole
+// window, even across days; per-day rows count it once per day.
+router.get('/funnel', async (req, res) => {
+    try {
+        const FunnelEvent = require('../models/FunnelEvent');
+        const EVENTS = FunnelEvent.FUNNEL_EVENTS;
+        const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 180);
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - (days - 1) * 86400000);
+        const fromDay = start.toISOString().slice(0, 10);
+        const match = { $match: { day: { $gte: fromDay } } };
+        const [overallRaw, bySourceRaw, dailyRaw] = await Promise.all([
+            FunnelEvent.aggregate([match, { $group: { _id: { event: '$event', sid: '$sid' } } }, { $group: { _id: '$_id.event', n: { $sum: 1 } } }]),
+            FunnelEvent.aggregate([match, { $group: { _id: { source: '$source', event: '$event', sid: '$sid' } } }, { $group: { _id: { source: '$_id.source', event: '$_id.event' }, n: { $sum: 1 } } }]),
+            FunnelEvent.aggregate([match, { $group: { _id: { day: '$day', event: '$event' }, n: { $sum: 1 } } }]),
+        ]);
+        const blank = () => Object.fromEntries(EVENTS.map(e => [e, 0]));
+        const overall = blank();
+        for (const r of overallRaw) if (r._id in overall) overall[r._id] = r.n;
+        const src = new Map();
+        for (const r of bySourceRaw) {
+            const s = r._id.source || 'direct';
+            if (!src.has(s)) src.set(s, blank());
+            if (r._id.event in overall) src.get(s)[r._id.event] = r.n;
+        }
+        const sources = [...src.entries()]
+            .map(([source, counts]) => ({ source, counts }))
+            .sort((a, b) => (b.counts.landing_view - a.counts.landing_view) || (b.counts.wish_tap - a.counts.wish_tap))
+            .slice(0, 10);
+        const dayMap = new Map();
+        for (let i = 0; i < days; i++) dayMap.set(new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10), blank());
+        for (const r of dailyRaw) { const d = dayMap.get(r._id.day); if (d && r._id.event in d) d[r._id.event] = r.n; }
+        const daily = [...dayMap.entries()].map(([day, counts]) => ({ day, counts }));
+        res.json({ success: true, data: { days, from: fromDay, events: EVENTS, overall, sources, daily } });
+    } catch (error) {
+        console.error('Funnel report error:', error);
+        res.status(500).json({ success: false, error: 'Failed to build funnel report' });
+    }
+});
+
 // User registrations over time (last 30 days)
 router.get('/users/registrations', async (req, res) => {
     try {
