@@ -92,6 +92,9 @@ const FIND_FLIGHTS_TOOL = {
           + 'Every fare comes with its departure date/time, airline and price — ALWAYS give the traveler all three '
           + 'for each fare you mention (each offer has a ready `label`). '
           + 'Returns an empty list when no fares are known — say so honestly and NEVER state a price the tool did not return. '
+          + 'A question about what a TRIP to a place costs ("how much would a trip to Georgia cost", "is Japan expensive to visit") IS a flight question: '
+          + 'call this tool FIRST, and never answer it with a budget, a range or "typically costs" figure from your own knowledge — '
+          + 'the only numbers you may give are ones a tool returned. '
           + 'For "how much does a trip to <country> cost", "roughly how much are flights to X", or any flight question WITHOUT dates, '
           + 'call it with NO dates: it returns an APPROXIMATE round-trip price (outbound + return) on sample dates. For a country, '
           + 'pass its main city or airport as destination (Japan → Tokyo, Georgia → Tbilisi). Origin = the city the traveler flies from; '
@@ -658,7 +661,7 @@ async function attachLive(r, live, shorten) {
         + ' LIVE FARES (the `live` list) come from a real-time airline search and can be BOOKED NOW. Present them as their own group, '
         + 'introduced as live bookable fares, each with its label (date/time, airline, price, stops). '
         + 'Unlike the feed, a live fare KNOWS where it connects: its label says "via XXX" — always say that airport, and never apply the feed\'s "does not say where it connects" caveat to a live fare. '
-        + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS bookUrl exactly as given. ' : 'They have no booking link yet: give the fare, never a URL. ')
+        + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS OWN bookUrl exactly as given; a live fare with no bookUrl is plain text. ' : 'Live fares have NO booking link yet: write them as plain text — never put a link on a live fare, and never reuse a feed fare\'s link for it, even when it is the same flight. ')
         + 'Never merge a live price with a feed price, never call one the cheapest of the other, and never say a feed fare can be booked in Jinni.'
         + (live.some(f => f.roundTrip) ? ' A live round-trip price covers BOTH flights — say so.' : '');
     return r;

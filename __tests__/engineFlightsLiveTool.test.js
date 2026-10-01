@@ -79,7 +79,7 @@ describe('find_flights with live Nuitee fares', () => {
     test('without a book template the live fare shows its price and no link', async () => {
         const out = await base(stubLite([JOURNEY()], { env: {} })).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
         expect(out.live[0].bookUrl).toBeNull();
-        expect(out.note).toMatch(/no booking link yet/);
+        expect(out.note).toMatch(/NO booking link yet/);
     });
 
     test('switched off, nothing live is searched', async () => {
@@ -178,4 +178,16 @@ test('the feed\'s "unknown connection" caveat is scoped to feed fares; live fare
     expect(out.note).toMatch(/FEED fares \(the `offers` list\) connect/);
     expect(out.note).toMatch(/never apply the feed's "does not say where it connects" caveat to a live fare/);
     expect(out.live[0].label).toContain('via VIE');
+});
+
+test('a trip-cost question is a flight question: the tool tells the model to call it and never give a remembered budget', () => {
+    const { FIND_FLIGHTS_TOOL } = require('../engine/narrator/tools');
+    const d = FIND_FLIGHTS_TOOL.function.description;
+    expect(d).toMatch(/what a TRIP to a place costs/);
+    expect(d).toMatch(/never answer it with a budget/);
+});
+
+test('a live fare without its own link must not borrow the feed link (live QA 2026-10-01, Rome)', async () => {
+    const out = await base(stubLite([JOURNEY()], { env: {} })).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
+    expect(out.note).toMatch(/never reuse a feed fare's link for it/);
 });
