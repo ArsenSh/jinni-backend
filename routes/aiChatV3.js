@@ -2659,6 +2659,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 for (const rec of recommendations) {
                     if (rec.eventPrice) rec.eventPriceApprox = approxIn(rec.eventPrice, displayCurrency);
                 }
+                // "Picked by @guide" (guide pages, 2026-10-02): one query, fail-open.
+                await require('../services/guideService').attachGuidePicks(recommendations);
                 // Remember what this turn showed (fire-and-forget) — feeds the
                 // cross-session novelty signal, and survives session deletion.
                 recordViews(req.user.id, recommendations, category);

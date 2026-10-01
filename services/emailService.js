@@ -624,6 +624,52 @@ ${L.rights}
      * rendered into the email. Anything else falls back to the generic
      * "we'll notify you" line — never an epoch date.
      */
+    /** Guide page approved (2026-10-02) — their page is live at /@handle. */
+    async sendGuideApprovedEmail(email, displayName, handle) {
+        const site = process.env.FRONTEND_URL || 'https://jinni.travel';
+        const page = `${site}/@${handle}`;
+        const mailOptions = {
+            from: `"Jinni Guides" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: `Your Jinni guide page is live — @${handle}`,
+            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f9f5eb;margin:0;padding:20px">
+                <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;box-shadow:0 0 18px -2px rgba(60,42,30,0.18)">
+                <div style="background:linear-gradient(45deg,#D4AF37,#FF8C00);padding:28px;text-align:center;color:#fff"><h1 style="margin:0;font-size:26px">You're a Jinni guide 🎉</h1></div>
+                <div style="padding:32px 28px;color:#3c2a1e">
+                <p>Hi ${displayName},</p>
+                <p>Your guide page is approved. Add your favourite restaurants, hidden gems, photo spots and tours from your dashboard — every pick shows your name to travelers on Jinni.</p>
+                <p>Your page: <a href="${page}">${page.replace(/^https?:\/\//, '')}</a> — put it in your Instagram bio.</p>
+                <p><a href="${site}/guide/dashboard" style="display:inline-block;background:linear-gradient(45deg,#D4AF37,#FF8C00);color:#fff;padding:13px 30px;border-radius:999px;text-decoration:none;font-weight:700">Open my dashboard</a></p>
+                <p style="font-size:13px;color:#8b6b3d">You can now remove the verification code from your Instagram bio.</p>
+                </div></div></body></html>`,
+            text: `Hi ${displayName}, your Jinni guide page is approved: ${page}. Add your picks at ${site}/guide/dashboard. You can now remove the verification code from your Instagram bio.`,
+        };
+        const result = await this.transporter.sendMail(mailOptions);
+        logger.info(`Guide approved email sent to ${email}`);
+        return { success: true, messageId: result.messageId };
+    }
+
+    /** Guide application not approved (2026-10-02). */
+    async sendGuideRejectedEmail(email, displayName, reason) {
+        const site = process.env.FRONTEND_URL || 'https://jinni.travel';
+        const mailOptions = {
+            from: `"Jinni Guides" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: 'About your Jinni guide application',
+            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f9f5eb;margin:0;padding:20px">
+                <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:20px;padding:32px 28px;color:#3c2a1e;box-shadow:0 0 18px -2px rgba(60,42,30,0.18)">
+                <p>Hi ${displayName},</p>
+                <p>Thank you for applying to be a Jinni guide. We couldn't approve your page yet.</p>
+                <p><strong>Reason:</strong> ${String(reason || '').replace(/[<>]/g, '')}</p>
+                <p>You can fix this and apply again from <a href="${site}/guides/apply">${site.replace(/^https?:\/\//, '')}/guides/apply</a>.</p>
+                </div></body></html>`,
+            text: `Hi ${displayName}, we couldn't approve your Jinni guide page yet. Reason: ${reason}. You can apply again at ${site}/guides/apply.`,
+        };
+        const result = await this.transporter.sendMail(mailOptions);
+        logger.info(`Guide rejected email sent to ${email}`);
+        return { success: true, messageId: result.messageId };
+    }
+
     async sendBusinessWaitlistedEmail(email, businessName, tier, opts = {}) {
         try {
             // ── Backwards-compat shim ────────────────────────────────────

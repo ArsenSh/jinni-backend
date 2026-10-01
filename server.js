@@ -443,6 +443,7 @@ app.use('/api/ai', require(path.join(__dirname, 'routes', 'aiChatV3')));   // v3
 app.use('/auth', authRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/business', businessRoutes);
+app.use('/api/guides', require(path.join(__dirname, 'routes', 'guideRoutes')));   // guide pages /@handle (2026-10-02)
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/admin', adminRoutes);

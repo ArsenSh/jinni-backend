@@ -62,6 +62,9 @@ const recommendationSchema = new mongoose.Schema({
   hotelPrice: { type: mongoose.Schema.Types.Mixed, default: undefined },
   bookingUrl: String,
   listedPrice: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  // "Picked by @guide" (guide pages, 2026-10-02): [{handle, displayName, note,
+  // reelUrl, category}]. Declared so strict mode keeps it on save.
+  guidePicks: { type: mongoose.Schema.Types.Mixed, default: undefined },
   // An event is not a place: it keeps its own name and borrows the venue's
   // geography. venueName is where it is held; venuePlaceId is the venue's Google
   // id, deliberately NOT copied into placeId (identity everywhere in this app
