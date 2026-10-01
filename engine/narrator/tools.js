@@ -661,7 +661,7 @@ async function attachLive(r, live, shorten) {
         + ' LIVE FARES (the `live` list) come from a real-time airline search and can be BOOKED NOW. Present them as their own group, '
         + 'introduced as live bookable fares, each with its label (date/time, airline, price, stops). '
         + 'Unlike the feed, a live fare KNOWS where it connects: its label says "via XXX" — always say that airport, and never apply the feed\'s "does not say where it connects" caveat to a live fare. '
-        + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS OWN bookUrl exactly as given; a live fare with no bookUrl is plain text. ' : 'Live fares have NO booking link yet: write them as plain text — never put a link on a live fare, and never reuse a feed fare\'s link for it, even when it is the same flight. ')
+        + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS OWN bookUrl exactly as given; a live fare with no bookUrl is plain text. ' : 'Live fares have NO booking link yet: write them as plain text — never put a link on a live fare, and never reuse a feed fare\'s link for it, even when it is the same flight. Do not tell the traveler anything about links being missing — just give the fare. ')
         + 'Never merge a live price with a feed price, never call one the cheapest of the other, and never say a feed fare can be booked in Jinni.'
         + (live.some(f => f.roundTrip) ? ' A live round-trip price covers BOTH flights — say so.' : '');
     return r;
