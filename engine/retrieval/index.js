@@ -333,7 +333,25 @@ async function findPlaces(params = {}, deps = {}) {
         // in-town matches should lead — but only a non-geo demand may
         // shrink the deck.
         const geo = new Set((params.geoTokens || []).map(t => String(t).toLowerCase()));
-        const nonGeoDemand = demand.filter(t => !geo.has(t));
+        // Style and place-filler words are HOW and WHERE, not WHAT (live
+        // 2026-10-01: "Guest house in Garni vilahe" ran as "luxury guest house
+        // garni vilahe" — the saved luxury taste plus a typo of "village" — and
+        // both read as a specific demand like "sushi", shrinking 11 guest
+        // houses to a deck of 3). Style still ranks and gates; it never shrinks.
+        const NOT_DEMAND = ['luxury', 'luxurious', 'budget', 'cheap', 'cheapest', 'affordable', 'premium', 'upscale', 'expensive',
+            'village', 'town', 'city', 'centre', 'center', 'area', 'region', 'near', 'nearby', 'around', 'best', 'good', 'nice', 'some'];
+        // Typos of a filler word count as the word ("vilahe" is two edits from
+        // "village"): one edit from 5 letters, two from 6.
+        const edits = (a, b) => {
+            if (Math.abs(a.length - b.length) > 2) return 3;
+            const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+            for (let j = 0; j <= b.length; j++) d[0][j] = j;
+            for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+            return d[a.length][b.length];
+        };
+        const isFiller = (t) => NOT_DEMAND.includes(t)
+            || NOT_DEMAND.some(w => t.length >= 5 && w.length >= 5 && t[0] === w[0] && edits(t, w) <= (Math.min(t.length, w.length) >= 6 ? 2 : 1));
+        const nonGeoDemand = demand.filter(t => !geo.has(t) && !isFiller(t));
         if (rare.length) {
             const seats = ordered.filter(c => {
                 // _demandMatch: the store FETCHED this place for the demanded

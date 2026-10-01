@@ -87,7 +87,11 @@ const _tokensSimilar = (x, y) => x === y
 // place the user explicitly asked about got suppressed. Token rule: every
 // DISTINCTIVE word of the place name (generic hotel-words excluded) must
 // appear in the message; the old substring check is kept as a fallback.
-const GENERIC_PLACE_WORDS = new Set(['hotel', 'hotels', 'resort', 'resorts', 'holiday', 'suites', 'apartments', 'apartment', 'inn', 'guesthouse', 'hostel', 'restaurant', 'cafe', 'bar', 'spa', 'beach', 'luxury', 'collection', 'grand', 'royal', 'the', 'by', 'and', 'of', 'a', 'an']);
+// Lodging-type words joined 2026-10-01 (live: "Guest house in Garni" served
+// ONE card — "Garni Guest House" reduced to {guest, house} once the town was
+// excluded, both were in the message, and the category ask became a name-ask).
+// A name made only of a town and lodging words names nothing.
+const GENERIC_PLACE_WORDS = new Set(['hotel', 'hotels', 'resort', 'resorts', 'holiday', 'suites', 'apartments', 'apartment', 'inn', 'guesthouse', 'guesthouses', 'guest', 'house', 'houses', 'home', 'homes', 'homestay', 'rooms', 'room', 'lodge', 'lodges', 'villa', 'villas', 'cottage', 'cottages', 'motel', 'camping', 'camp', 'glamping', 'cabins', 'cabin', 'b&b', 'bnb', 'hostel', 'hostels', 'restaurant', 'cafe', 'bar', 'spa', 'beach', 'luxury', 'collection', 'grand', 'royal', 'the', 'by', 'and', 'of', 'a', 'an']);
 // `excludeTokens` (optional Set of lowercase words): tokens that must NOT
 // count as evidence the message names this place — the caller passes the
 // GEOGRAPHIC names the intent extracted. Without it, a card like "Cafe #2

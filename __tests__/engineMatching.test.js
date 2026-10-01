@@ -61,6 +61,13 @@ describe('messageNamesPlace (dislike direct-ask exception)', () => {
     });
     test('unrelated message does not name the place', () => {
         expect(messageNamesPlace('best hotels in yerevan', 'Hilton Yerevan')).toBe(false);
+        // Live 2026-10-01: a town + lodging words names nothing — the Garni ask was
+        // served as a name-ask for "Garni Guest House" and showed one card.
+        expect(messageNamesPlace('guest house in garni vilahe', 'Garni Guest House', new Set(['garni']))).toBe(false);
+        expect(messageNamesPlace('rooms in dilijan', 'Dilijan Rooms', new Set(['dilijan']))).toBe(false);
+        // …while a real name still counts.
+        expect(messageNamesPlace('do you know edem guest house in garni?', 'Edem Guest House', new Set(['garni']))).toBe(true);
+        expect(messageNamesPlace('is temple inn garni good', 'Temple Inn', new Set(['garni']))).toBe(true);
     });
     test('empty inputs → false', () => {
         expect(messageNamesPlace('', 'X')).toBe(false);

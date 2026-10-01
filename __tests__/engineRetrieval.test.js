@@ -565,6 +565,24 @@ describe('adaptive deck size (battery fix #2 — the padding lesson)', () => {
         expect(r.places).toHaveLength(3);                 // match + 2 honest alternatives
         expect(r.provenance.adaptive).toBe('specific');
     });
+    // Live 2026-10-01: "Guest house in Garni vilahe" → the query read "luxury guest
+    // house garni vilahe" (saved taste + a typo of "village"), both counted as a
+    // specific demand, and 11 guest houses shrank to a deck of 3.
+    test('style words and place fillers (incl. typos) never shrink the deck', async () => {
+        const houses = Array.from({ length: 10 }, (_, i) => ({ placeId: `g${i}`, name: `Garni Guest House ${i}`, text: `Garni Guest House ${i} guest house garni`, source: 'cache' }));
+        const r = await findPlaces(
+            { count: 6, category: 'hotels', coreQuery: 'luxury guest house garni vilahe', query: 'luxury guest house garni vilahe', adaptiveDeck: true, geoTokens: ['garni'] },
+            { loadCandidates: async () => houses, embedder: null });
+        expect(r.places).toHaveLength(6);
+        expect(r.provenance.adaptive).toBeUndefined();
+    });
+    test('a real demand next to a style word still shrinks (sushi stays specific)', async () => {
+        const r = await findPlaces(
+            { count: 6, coreQuery: 'luxury sushi restaurant', query: 'luxury sushi restaurant', adaptiveDeck: true },
+            { loadCandidates: async () => pool(), embedder: null });
+        expect(r.places[0].placeId).toBe('sushi1');
+        expect(r.places).toHaveLength(3);
+    });
     // Zero-match shrink (live 2026-08-29: "Ethiopian restaurant" shipped SIX
     // padded cards — the demanded term had no match anywhere, yet the deck
     // stayed full because the shrink only fired when seats existed).
