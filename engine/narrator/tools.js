@@ -554,7 +554,7 @@ function makeExecutors(ctx = {}, deps = {}) {
                       + 'Copy the URL character for character and never build, shorten or invent one — a fare with no bookUrl is written as plain text.'
                     : '')
                 + (anyConnection
-                    ? ' Some of these connect. This feed gives the NUMBER of stops and never the connecting airport, so you do not know '
+                    ? ' Some of the FEED fares (the `offers` list) connect. The feed gives the NUMBER of stops and never the connecting airport, so for THOSE fares you do not know '
                       + 'where they stop: never name a hub, never infer one from the airline, and when asked, say plainly that the fare '
                       + 'data does not include it and that the airline link on that fare opens the routing.'
                     : '');
@@ -657,6 +657,7 @@ async function attachLive(r, live, shorten) {
     r.note = (r.note || '')
         + ' LIVE FARES (the `live` list) come from a real-time airline search and can be BOOKED NOW. Present them as their own group, '
         + 'introduced as live bookable fares, each with its label (date/time, airline, price, stops). '
+        + 'Unlike the feed, a live fare KNOWS where it connects: its label says "via XXX" — always say that airport, and never apply the feed\'s "does not say where it connects" caveat to a live fare. '
         + (live.some(f => f.bookUrl) ? 'Write each live fare\'s airline as a markdown link to ITS bookUrl exactly as given. ' : 'They have no booking link yet: give the fare, never a URL. ')
         + 'Never merge a live price with a feed price, never call one the cheapest of the other, and never say a feed fare can be booked in Jinni.'
         + (live.some(f => f.roundTrip) ? ' A live round-trip price covers BOTH flights — say so.' : '');

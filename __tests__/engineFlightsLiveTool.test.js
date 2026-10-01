@@ -170,3 +170,12 @@ describe('find_flights — which days are searched live', () => {
         expect(out.live[0].price).toBe(99);
     });
 });
+
+test('the feed\'s "unknown connection" caveat is scoped to feed fares; live fares name their stop', async () => {
+    const feed = async () => ({ origin: 'EVN', destination: 'SHJ', currency: 'USD', offers: [{ price: 147, airlineName: 'Azimuth', departureAt: '2026-10-15T18:25:00+04:00', transfers: 1 }], nearest: [] });
+    const lite = stubLite([JOURNEY({ transfers: 1, segments: [{ from: 'EVN', to: 'VIE' }, { from: 'VIE', to: 'SHJ' }] })]);
+    const out = await base(lite, { searchFlightsWindow: feed, searchFlights: feed }).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
+    expect(out.note).toMatch(/FEED fares \(the `offers` list\) connect/);
+    expect(out.note).toMatch(/never apply the feed's "does not say where it connects" caveat to a live fare/);
+    expect(out.live[0].label).toContain('via VIE');
+});
