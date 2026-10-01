@@ -105,7 +105,7 @@ function _bookUrl(link, env = process.env) {
  * @param {object} args { origin, destination, departDate?, returnDate?, currency?, limit? }
  * @returns {Promise<{origin,destination,currency,offers:[]}|null>}
  */
-async function searchFlights({ origin, destination, departDate = null, returnDate = null, currency = 'usd', limit = 4 } = {}, deps = {}) {
+async function searchFlights({ origin, destination, departDate = null, returnDate = null, roundTrip = false, currency = 'usd', limit = 4 } = {}, deps = {}) {
     const env = deps.env || process.env;
     if (!flightsEnabled(env)) return null;
     const [from, to] = await Promise.all([resolveIata(origin, deps), resolveIata(destination, deps)]);
@@ -114,7 +114,9 @@ async function searchFlights({ origin, destination, departDate = null, returnDat
     const q = new URLSearchParams({
         origin: from, destination: to, currency: String(currency).toLowerCase(),
         sorting: 'price', limit: String(Math.min(10, Math.max(1, limit))),
-        one_way: returnDate ? 'false' : 'true', token: env.TRAVELPAYOUTS_TOKEN,
+        // roundTrip without dates = the cheapest round trips the feed knows on any
+        // dates — the basis of a "roughly how much to fly there and back" answer.
+        one_way: (returnDate || roundTrip) ? 'false' : 'true', token: env.TRAVELPAYOUTS_TOKEN,
     });
     // Travelpayouts accepts YYYY-MM-DD (one day) or YYYY-MM (a whole month —
     // so "cheapest in September" answers itself).

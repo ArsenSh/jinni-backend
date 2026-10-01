@@ -23,8 +23,8 @@ const FEED = async () => ({
     nearest: [],
 });
 const base = (lite, over = {}) => makeExecutors({}, {
-    liteFlights: lite, resolveIata: async (t) => ({ yerevan: 'EVN', sharjah: 'SHJ' }[String(t).toLowerCase()] || null),
-    searchFlightsWindow: FEED, searchFlights: FEED, shortenBookUrl: async (u) => u, ...over,
+    liteFlights: lite, resolveIata: async (t) => ({ yerevan: 'EVN', sharjah: 'SHJ', dubai: 'DXB' }[String(t).toLowerCase()] || null),
+    searchFlightsWindow: FEED, searchFlights: FEED, shortenBookUrl: async (u) => u, today: () => '2026-10-01', ...over,
 });
 
 describe('liteBookUrl', () => {
@@ -82,14 +82,11 @@ describe('find_flights with live Nuitee fares', () => {
         expect(out.note).toMatch(/no booking link yet/);
     });
 
-    test('switched off, or asked for a whole month, nothing live is searched', async () => {
+    test('switched off, nothing live is searched', async () => {
         const off = stubLite([JOURNEY()], { enabled: false });
         const a = await base(off).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
         expect(a.live).toBeUndefined();
-        const on = stubLite([JOURNEY()]);
-        const b = await base(on).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10' });
-        expect(b.live).toBeUndefined();
-        expect(on.calls).toHaveLength(0);
+        expect(off.calls).toHaveLength(0);
     });
 
     test('a failing live search never breaks the feed answer', async () => {
@@ -97,5 +94,79 @@ describe('find_flights with live Nuitee fares', () => {
         const out = await base(broken).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
         expect(out.offers).toHaveLength(1);
         expect(out.live).toBeUndefined();
+    });
+});
+
+// Every way a traveler asks (founder 2026-10-01: "today, a specific day, next
+// week, … even how much it costs to visit some country — then the return flight
+// price too, approximately").
+describe('find_flights — which days are searched live', () => {
+    const days = (lite) => lite.calls.map(c => c.legs.map(l => l.date).join('+'));
+
+    test('today is searched as today', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-01' });
+        expect(days(lite)).toEqual(['2026-10-01']);
+    });
+
+    test('a past day is never searched live', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-09-20' });
+        expect(lite.calls).toHaveLength(0);
+    });
+
+    test('a short range (this weekend) searches every day in it', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_from: '2026-10-03', depart_to: '2026-10-04' });
+        expect(days(lite).sort()).toEqual(['2026-10-03', '2026-10-04']);
+    });
+
+    test('next week searches its first, middle and last day', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_from: '2026-10-05', depart_to: '2026-10-11' });
+        expect(days(lite).sort()).toEqual(['2026-10-05', '2026-10-08', '2026-10-11']);
+    });
+
+    test('this month starts from today, never from a day already gone', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite, { today: () => '2026-10-20' }).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10' });
+        expect(days(lite).sort()).toEqual(['2026-10-20', '2026-10-26', '2026-10-31']);
+    });
+
+    test('a range of live fares is shown at most two per day, in date order', async () => {
+        const lite = stubLite([JOURNEY({ price: 300 }), JOURNEY({ price: 200 }), JOURNEY({ price: 250 })]);
+        const out = await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_from: '2026-10-05', depart_to: '2026-10-11' });
+        expect(out.live.length).toBeLessThanOrEqual(6);
+    });
+
+    test('no dates at all = an approximate ROUND TRIP: live sample 3 weeks out for 7 nights + the feed round trips', async () => {
+        const lite = stubLite([JOURNEY()]);
+        const rounds = [];
+        const searchFlights = async (a) => { if (a.roundTrip) { rounds.push(a); return { currency: 'USD', offers: [{ price: 380, airlineName: 'flydubai', departureAt: '2026-10-20T15:15:00+04:00', returnAt: '2026-10-27T07:30:00+04:00', transfers: 0, bookUrl: 'https://www.aviasales.com/r' }] }; } return FEED(); };
+        const out = await base(lite, { searchFlights }).find_flights({ origin: 'Yerevan', destination: 'Dubai' });
+        expect(lite.calls[0].legs.map(l => l.date)).toEqual(['2026-10-22', '2026-10-29']);
+        expect(rounds).toHaveLength(1);
+        expect(out.roundTrips[0].label).toContain('380 USD round trip');
+        expect(out.roundTrips[0].label).toContain('back 2026-10-27');
+        expect(out.note).toMatch(/APPROXIMATE/);
+        expect(out.note).toMatch(/2026-10-22 for 7 nights/);
+        expect(out.note).toMatch(/never invent hotel/);
+    });
+
+    test('"for a week in Japan" style asks pass nights; one_way keeps it one way', async () => {
+        const lite = stubLite([JOURNEY()]);
+        await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', nights: 10 });
+        expect(lite.calls[0].legs.map(l => l.date)).toEqual(['2026-10-22', '2026-11-01']);
+        const ow = stubLite([JOURNEY()]);
+        const out = await base(ow).find_flights({ origin: 'Yerevan', destination: 'Sharjah', one_way: true });
+        expect(ow.calls[0].legs).toHaveLength(1);
+        expect(out.roundTrips).toBeUndefined();
+    });
+
+    test('a live fare without a price or airline is dropped, never narrated', async () => {
+        const lite = stubLite([JOURNEY({ price: null }), JOURNEY({ airline: null }), JOURNEY({ price: 99 })]);
+        const out = await base(lite).find_flights({ origin: 'Yerevan', destination: 'Sharjah', depart_date: '2026-10-15' });
+        expect(out.live).toHaveLength(1);
+        expect(out.live[0].price).toBe(99);
     });
 });

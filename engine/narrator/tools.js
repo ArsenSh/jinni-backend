@@ -91,7 +91,11 @@ const FIND_FLIGHTS_TOOL = {
           + 'Use whenever the traveler asks about flying between cities, flight prices, or when to fly. '
           + 'Every fare comes with its departure date/time, airline and price — ALWAYS give the traveler all three '
           + 'for each fare you mention (each offer has a ready `label`). '
-          + 'Returns an empty list when no fares are known — say so honestly and NEVER state a price the tool did not return.',
+          + 'Returns an empty list when no fares are known — say so honestly and NEVER state a price the tool did not return. '
+          + 'For "how much does a trip to <country> cost", "roughly how much are flights to X", or any flight question WITHOUT dates, '
+          + 'call it with NO dates: it returns an APPROXIMATE round-trip price (outbound + return) on sample dates. For a country, '
+          + 'pass its main city or airport as destination (Japan → Tokyo, Georgia → Tbilisi). Origin = the city the traveler flies from; '
+          + 'if you do not know it, use the city they are in (from your instructions) — never guess a different one.',
         parameters: {
             type: 'object',
             properties: {
@@ -102,6 +106,8 @@ const FIND_FLIGHTS_TOOL = {
                 depart_to: { type: 'string', description: 'YYYY-MM-DD end of the range (inclusive).' },
                 return_date: { type: 'string', description: 'YYYY-MM-DD for a round trip. Omit for one-way.' },
                 currency: { type: 'string', description: 'ISO currency the traveler thinks in, e.g. usd, eur, amd, aed. Default usd.' },
+                nights: { type: 'integer', description: 'Trip length in nights when the traveler said it ("for a week" = 7) and gave no return date. Used for the approximate round trip. Default 7.' },
+                one_way: { type: 'boolean', description: 'true ONLY when the traveler explicitly wants a one-way ticket. Otherwise a no-date ask is priced as a round trip.' },
             },
             required: ['origin', 'destination'],
         },
@@ -441,7 +447,7 @@ function makeExecutors(ctx = {}, deps = {}) {
                      road_km: Math.round(route.km * 10) / 10, drive_minutes: Math.round(route.minutes),
                      straight_line_km: straightKm, source: 'osrm' };
         },
-        find_flights: async ({ origin, destination, depart_date: departDate, depart_from: departFrom, depart_to: departTo, return_date: returnDate, currency } = {}) => {
+        find_flights: async ({ origin, destination, depart_date: departDate, depart_from: departFrom, depart_to: departTo, return_date: returnDate, currency, nights, one_way: oneWay } = {}) => {
             if (!origin || !destination) return { error: 'origin_and_destination_required' };
             const flights = require('../travel/flights');
             const search = deps.searchFlights || flights.searchFlights;
@@ -453,12 +459,20 @@ function makeExecutors(ctx = {}, deps = {}) {
             // plain query: the feed prices the pair, not a departure window.
             const win = returnDate ? null : flights.windowFor({ departDate, departFrom, departTo });
             // LIVE, bookable fares from Nuitee (liteAPI), asked in parallel with
-            // the feed and only for ONE concrete day — a live search prices a
-            // real departure, not a month. Dark unless LITE_FLIGHTS=true.
+            // the feed. A live search prices real departures, so a range or a
+            // month is sampled on a few concrete future days, and a no-date ask
+            // is priced as a sample round trip. Dark unless LITE_FLIGHTS=true.
             const lite = deps.liteFlights || require('../travel/flightsLite');
-            const liveDay = /^\d{4}-\d{2}-\d{2}$/.test(departDate || '') ? departDate : (win && win.from === win.to ? win.from : null);
-            const livePromise = (liveDay && lite.liteFlightsEnabled(deps.env || process.env))
-                ? liveFares({ lite, flights, origin, destination, day: liveDay, returnDate, currency, deps }).catch(() => null)
+            const today = (deps.today || (() => new Date().toISOString().slice(0, 10)))();
+            const plan = livePlan({ departDate, win, returnDate, today, nights, oneWay });
+            const livePromise = (plan.days.length && lite.liteFlightsEnabled(deps.env || process.env))
+                ? Promise.all(plan.days.map(day => liveFares({ lite, flights, origin, destination, day, returnDate: plan.returnFor(day), currency, deps }).catch(() => null)))
+                    .then(sets => mergeLive(sets))
+                : Promise.resolve(null);
+            // No dates at all = an APPROXIMATE trip price: the feed's cheapest
+            // known ROUND TRIPS (any dates) ride beside its one-way fares.
+            const roundPromise = (plan.estimate && !oneWay)
+                ? search({ origin, destination, roundTrip: true, currency: currency || 'usd' }).catch(() => null)
                 : Promise.resolve(null);
             const shortenUrl = deps.shortenBookUrl || require('../travel/flightLinks').shortenBookUrl;
             let r;
@@ -471,9 +485,14 @@ function makeExecutors(ctx = {}, deps = {}) {
             }
             // No data is an ANSWER ("I don't have fares for that route"), not a
             // licence to quote a remembered price.
-            const live = await livePromise;
+            const [live, rounds] = await Promise.all([livePromise, roundPromise]);
             if (!r || (!r.offers?.length && !r.nearest?.length)) {
-                if (live?.length) return attachLive({ offers: [], asked: win || null, note: 'The fare feed has no fares for this route. ' }, live, shortenUrl);
+                if (live?.length || rounds?.offers?.length) {
+                    const base = { offers: [], asked: win || null, note: 'The fare feed has no one-way fares for this route. ' };
+                    if (rounds?.offers?.length) await attachRounds(base, rounds, shortenUrl);
+                    if (plan.estimate) base.note += estimateNote(plan);
+                    return live?.length ? attachLive(base, live, shortenUrl) : base;
+                }
                 return { offers: [], asked: win || null, note: 'no fares returned — do not state any price' };
             }
             if (!r.offers.length && r.nearest?.length) {
@@ -539,9 +558,64 @@ function makeExecutors(ctx = {}, deps = {}) {
                       + 'where they stop: never name a hub, never infer one from the airline, and when asked, say plainly that the fare '
                       + 'data does not include it and that the airline link on that fare opens the routing.'
                     : '');
+            if (rounds?.offers?.length) await attachRounds(r, rounds, shortenUrl);
+            if (plan.estimate) r.note += estimateNote(plan);
             return live?.length ? attachLive(r, live, shortenUrl) : r;
         },
     };
+}
+
+/* Which days to ask the live search for. A live search prices one real
+ * departure, so: a day → that day; a range or a month → up to three concrete
+ * days inside it (every day of a short range, else first / middle / last),
+ * never a day already gone; no date at all → a sample round trip about three
+ * weeks out for `nights` nights, flagged as an estimate. */
+const _addDays = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+function livePlan({ departDate, win, returnDate, today, nights, oneWay }) {
+    const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+    const n = Number.isFinite(+nights) && +nights > 0 ? Math.min(60, Math.round(+nights)) : 7;
+    if (returnDate && isDay(returnDate) && isDay(departDate)) return { days: departDate >= today ? [departDate] : [], returnFor: () => returnDate, estimate: false };
+    if (win) {
+        const from = win.from < today ? today : win.from, to = win.to;
+        if (to < from) return { days: [], returnFor: () => null, estimate: false };
+        const span = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5);
+        const days = span <= 2 ? Array.from({ length: span + 1 }, (_, i) => _addDays(from, i)) : [from, _addDays(from, Math.round(span / 2)), to];
+        return { days, returnFor: () => null, estimate: false };
+    }
+    if (!departDate && !returnDate) {
+        const day = _addDays(today, 21);
+        return { days: [day], returnFor: () => (oneWay ? null : _addDays(day, n)), estimate: true, sampleDay: day, nights: oneWay ? null : n };
+    }
+    return { days: [], returnFor: () => null, estimate: false };
+}
+
+/* Several days of live fares → at most two per day (the cheapest), six in all,
+ * in date order so a range reads as a calendar. */
+function mergeLive(sets) {
+    const out = [];
+    for (const set of sets || []) if (Array.isArray(set)) out.push(...set.slice(0, 2));
+    if (!out.length) return null;
+    return out.sort((a, b) => String(a.departureAt).localeCompare(String(b.departureAt)) || a.price - b.price).slice(0, 6);
+}
+
+/* The feed's cheapest known round trips — real fares on their own dates. */
+async function attachRounds(r, rounds, shorten) {
+    const list = rounds.offers.slice(0, 3);
+    for (const o of list) {
+        const out = (o.departureAt || '').slice(0, 10), back = (o.returnAt || '').slice(0, 10);
+        o.label = [out && back ? `${out} → back ${back}` : out, o.airlineName || o.airline, o.price != null ? `${o.price} ${rounds.currency} round trip` : '', o.transfers === 0 ? 'direct' : (o.transfers > 0 ? `${o.transfers} stop${o.transfers === 1 ? '' : 's'}` : '')].filter(Boolean).join(' · ');
+        if (o.bookUrl) o.bookUrl = await shorten(o.bookUrl);
+    }
+    r.roundTrips = list;
+    r.note = (r.note || '') + ' ROUND TRIPS (the `roundTrips` list) are real fares the feed knows for out-AND-back on the dates in each label; each price covers both flights.';
+    return r;
+}
+
+function estimateNote(plan) {
+    return ' THE TRAVELER GAVE NO DATES: this is an APPROXIMATE answer. Give a rough round-trip price RANGE built only from the round-trip prices returned here'
+        + (plan.sampleDay ? ` (live fares are a SAMPLE trip leaving ${plan.sampleDay}${plan.nights ? ` for ${plan.nights} nights` : ''}; say those dates)` : '')
+        + ', say plainly that it is approximate and changes with dates and season, and offer to check their exact dates. '
+        + 'If they asked what a whole TRIP costs, flights are only one part: never invent hotel, food or other costs — only give numbers a tool returned.';
 }
 
 /* Live fares from Nuitee → the compact rows the narrator reads. Unlike the feed,

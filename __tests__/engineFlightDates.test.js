@@ -148,9 +148,12 @@ describe('searchFlightsWindow + the executor — the live conversation, answered
 
     test('no date at all keeps the plain query too', async () => {
         let plain = 0;
-        const exec = makeExecutors({}, { searchFlights: async () => { plain++; return null; } });
+        // …plus, since 2026-10-01, ONE round-trip query for the approximate there-and-back price.
+        let round = 0;
+        const exec = makeExecutors({}, { searchFlights: async (q) => { if (q.roundTrip) round++; else plain++; return null; } });
         await exec.find_flights({ origin: 'Yerevan', destination: 'Moscow' });
         expect(plain).toBe(1);
+        expect(round).toBe(1);
     });
 
     test('feature off → null, never an empty answer dressed as data', async () => {
