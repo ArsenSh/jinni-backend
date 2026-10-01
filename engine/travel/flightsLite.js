@@ -126,19 +126,46 @@ const _carrierName = (c) => (typeof c === 'string' ? c : (c?.name || c?.code || 
  *  airline, flightNumber, departureAt, transfers, durationMin) so the two
  *  sources can be merged and sorted without a translation layer — plus the
  *  fields only a bookable fare has: offerId, expiration, seatsRemaining. */
+// Live reply shape (verified against production 2026-10-01 — the first live run
+// came back with every price and airline empty because these were read from the
+// wrong place): price at offer.pricing.display.{total,currency}; carrier as flat
+// strings carrier.{marketingName,marketingCode,operatingName,operatingCode};
+// flight.{marketingNumber,operatingNumber}. Older/flat shapes stay as fallbacks.
+const _carrierOf = (s) => {
+    const c = s?.carrier || {};
+    const name = c.marketingName || c.operatingName || _carrierName(c.marketing) || _carrierName(c.operating) || null;
+    const code = c.marketingCode || c.operatingCode || (typeof c.marketing === 'object' ? c.marketing?.code : null) || null;
+    return { name, code };
+};
+const _flightNo = (s, code) => {
+    const n = s?.flight?.marketingNumber || s?.flight?.operatingNumber || s?.flight?.marketing || s?.flight?.operating || null;
+    return n ? (code && !String(n).startsWith(code) ? `${code} ${n}` : String(n)) : null;
+};
+
 function normalizeJourney(j) {
-    const segs = Array.isArray(j?.segments) ? j.segments : [];
+    const all = Array.isArray(j?.segments) ? j.segments : [];
+    // A round trip is ONE journey holding both directions; stops and times are
+    // counted per direction, never across the whole trip.
+    const segs = all.filter(s => s?.direction !== 'INBOUND');
+    const back = all.filter(s => s?.direction === 'INBOUND');
     const first = segs[0] || null;
     const last = segs[segs.length - 1] || null;
     const best = j?.cheapestOffer || (Array.isArray(j?.offers) ? j.offers[0] : null) || null;
-    const price = best?.pricing?.total ?? best?.pricing?.amount ?? best?.price ?? null;
-    const currency = best?.pricing?.currency ?? best?.currency ?? null;
+    const P = best?.pricing || {};
+    const price = P.display?.total ?? P.total ?? P.amount ?? best?.price ?? null;
+    const currency = P.display?.currency ?? P.currency ?? best?.currency ?? null;
     // Connections are changes of aircraft; a technical stop inside a segment
     // keeps the same flight number and is NOT a transfer (their docs are
     // explicit, and a traveler feels the two differently).
     const transfers = Math.max(0, segs.length - 1);
     const technicalStops = segs.reduce((n, s) => n + (Number.isFinite(+s?.stopCount) ? +s.stopCount : 0), 0);
-    const carrier = first?.carrier?.marketing || first?.carrier?.operating || null;
+    const car = _carrierOf(first);
+    const carrier = car.name ? { name: car.name, code: car.code } : null;
+    const inbound = back.length ? {
+        departureAt: _iso(back[0]?.departureTime), arrivalAt: _iso(back[back.length - 1]?.arrivalTime),
+        transfers: Math.max(0, back.length - 1), airline: _carrierOf(back[0]).name,
+        via: back.slice(0, -1).map(s => s?.destinationCode).filter(Boolean),
+    } : null;
     return {
         source: 'liteapi',
         journeyKey: j?.journeyKey || null,
@@ -146,16 +173,17 @@ function normalizeJourney(j) {
         expiration: _iso(best?.expiration),
         price: Number.isFinite(+price) ? +price : null,
         currency: currency || null,
-        airline: _carrierName(carrier),
-        airlineCode: (carrier && typeof carrier === 'object' ? carrier.code : null) || null,
-        flightNumber: first?.flight?.marketing || first?.flight?.operating || null,
+        airline: carrier ? carrier.name : null,
+        airlineCode: carrier ? carrier.code : null,
+        flightNumber: _flightNo(first, car.code),
         originCode: first?.originCode || null,
         destinationCode: last?.destinationCode || null,
         departureAt: _iso(first?.departureTime),
         arrivalAt: _iso(last?.arrivalTime),
         transfers,
         technicalStops,
-        durationMin: _min(j?.totalDuration) ?? _min(first?.duration),
+        inbound,
+        durationMin: (Array.isArray(j?.legDurations) ? _min(j.legDurations.find(l => l?.direction !== 'INBOUND')?.duration) : null) ?? _min(j?.totalDuration) ?? _min(first?.duration),
         seatsRemaining: (Array.isArray(best?.segmentFares) && Number.isFinite(+best.segmentFares[0]?.seatsRemaining))
             ? +best.segmentFares[0].seatsRemaining : null,
         cabin: (Array.isArray(best?.segmentFares) ? best.segmentFares[0]?.cabin : null) || null,
@@ -166,8 +194,8 @@ function normalizeJourney(j) {
         segments: segs.map(s => ({
             from: s?.originCode || null, to: s?.destinationCode || null,
             departureAt: _iso(s?.departureTime), arrivalAt: _iso(s?.arrivalTime),
-            flightNumber: s?.flight?.marketing || null,
-            airline: _carrierName(s?.carrier?.marketing),
+            flightNumber: _flightNo(s, _carrierOf(s).code),
+            airline: _carrierOf(s).name,
             durationMin: _min(s?.duration),
             stopCount: Number.isFinite(+s?.stopCount) ? +s.stopCount : 0,
         })),

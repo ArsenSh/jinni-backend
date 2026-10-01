@@ -557,7 +557,8 @@ async function liveFares({ lite, flights, origin, destination, day, returnDate, 
     const cur = String(currency || 'usd').toUpperCase();
     const res = await lite.searchLiteFlights({ legs, adults: 1, currency: cur }, deps);
     if (!res?.ok || !res.journeys?.length) return null;
-    return res.journeys.slice(0, 3).map(j => {
+    // A live fare with no price is not a fare we can quote: drop it rather than hand the model a priceless row.
+    return res.journeys.filter(j => j.price != null && j.airline).slice(0, 3).map(j => {
         const time = (j.departureAt || '').slice(11, 16);
         const via = j.transfers > 0 ? (j.segments || []).slice(0, -1).map(s => s.to).filter(Boolean) : [];
         const stops = j.transfers === 0 ? 'direct' : `${j.transfers} stop${j.transfers === 1 ? '' : 's'}${via.length ? ` via ${via.join(', ')}` : ''}`;
@@ -566,7 +567,9 @@ async function liveFares({ lite, flights, origin, destination, day, returnDate, 
             airline: j.airline, flightNumber: j.flightNumber, departureAt: j.departureAt, arrivalAt: j.arrivalAt,
             price: j.price, currency: j.currency, transfers: j.transfers, connectingAirports: via,
             durationMin: j.durationMin, seatsRemaining: j.seatsRemaining, refundable: j.refundable,
-            label: [`${day}${time ? ' ' + time : ''}`, j.airline, j.price != null ? `${j.price} ${j.currency}${ret ? ' round trip' : ''}` : '', stops].filter(Boolean).join(' · '),
+            inbound: j.inbound || null,
+            label: [`${day}${time ? ' ' + time : ''}`, j.airline, j.flightNumber, j.price != null ? `${j.price} ${j.currency}${ret ? ' round trip' : ''}` : '', stops,
+                j.inbound ? `back ${(j.inbound.departureAt || '').slice(0, 16).replace('T', ' ')}${j.inbound.transfers === 0 ? ' direct' : ` ${j.inbound.transfers} stop${j.inbound.transfers === 1 ? '' : 's'}${j.inbound.via?.length ? ` via ${j.inbound.via.join(', ')}` : ''}`}` : ''].filter(Boolean).join(' · '),
             bookUrl: lite.liteBookUrl({ origin: o, destination: d, date: day, returnDate: ret, adults: 1, currency: j.currency || cur, offerId: j.offerId }, env),
         };
     });

@@ -167,3 +167,38 @@ describe('verify before any money is discussed', () => {
         expect(await lite.verifyOffer('', { env: ENV })).toEqual({ ok: false, reason: 'no_offer_id' });
     });
 });
+
+// The REAL production reply shape (first live run 2026-10-01 came back with no
+// price and no airline because these paths were wrong).
+describe('normalizeJourney — live reply shape', () => {
+    const seg = (from, to, dep, arr, dir, code, name, num) => ({
+        direction: dir, originCode: from, destinationCode: to, departureTime: dep, arrivalTime: arr,
+        carrier: { marketingCode: code, marketingName: name, operatingCode: code, operatingName: name },
+        flight: { marketingNumber: num, operatingNumber: num }, duration: { minutes: 120 },
+    });
+    test('price from pricing.display, airline from carrier.marketingName, flight number with its code', () => {
+        const j = lite.normalizeJourney({
+            journeyKey: 'k', cheapestOffer: { offerId: 'o1', pricing: { display: { total: 753.87, currency: 'USD', base: 403.63 } } },
+            segments: [seg('DXB', 'SAW', '2026-10-20T03:05:00', '2026-10-20T07:10:00', 'OUTBOUND', 'PC', 'Pegasus Airlines', '511'),
+                       seg('SAW', 'LHR', '2026-10-20T09:00:00', '2026-10-20T11:15:00', 'OUTBOUND', 'PC', 'Pegasus Airlines', '1171')],
+        });
+        expect(j.price).toBe(753.87);
+        expect(j.currency).toBe('USD');
+        expect(j.airline).toBe('Pegasus Airlines');
+        expect(j.flightNumber).toBe('PC 511');
+        expect(j.transfers).toBe(1);
+        expect(j.segments.map(s => s.to)).toEqual(['SAW', 'LHR']);
+        expect(j.inbound).toBeNull();
+    });
+    test('a round trip is one journey: stops are counted per direction and the return is described apart', () => {
+        const j = lite.normalizeJourney({
+            cheapestOffer: { offerId: 'o2', pricing: { display: { total: 357, currency: 'USD' } } },
+            segments: [seg('EVN', 'DXB', '2026-10-15T15:15:00', '2026-10-15T18:15:00', 'OUTBOUND', 'FZ', 'flydubai', '718'),
+                       seg('DXB', 'EVN', '2026-10-22T07:30:00', '2026-10-22T10:40:00', 'INBOUND', 'FZ', 'flydubai', '717')],
+        });
+        expect(j.transfers).toBe(0);
+        expect(j.destinationCode).toBe('DXB');
+        expect(j.arrivalAt).toBe('2026-10-15T18:15:00');
+        expect(j.inbound).toMatchObject({ departureAt: '2026-10-22T07:30:00', transfers: 0, airline: 'flydubai' });
+    });
+});
