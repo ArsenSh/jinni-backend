@@ -47,6 +47,22 @@ const STALE_PENDING_MS = 14 * 864e5;   // an unverified application stops holdin
 
 const ownGuide = (req) => Guide.findOne({ user: req.user._id });
 
+const CAT_WORDS = { restaurant: 'restaurant', hidden_gem: 'hidden gem', photo_spot: 'photo spot', activity: 'activity' };
+/** null when the guide may file this place under `category`, else the reason to show them. */
+function categoryProblem(place, category) {
+    const rules = svc.categoryRules(place._rules);
+    if (rules.allowed.includes(category)) return null;
+    if (rules.outOfScope) return { code: 'out_of_scope', error: 'Hotels and events are booked through Jinni itself, so they can\'t be guide picks.' };
+    if (rules.curated) {
+        const ok = rules.allowed.map(c => CAT_WORDS[c]).join(', ');
+        return { code: 'team_category', allowed: rules.allowed, error: ok
+            ? `Jinni's team has listed this place as: ${ok}. Please choose one of those — or ask us to add another category.`
+            : 'Jinni\'s team has not listed this place under a guide category yet. Ask us to add one.' };
+    }
+    if (category === 'restaurant') return { code: 'not_food', allowed: rules.allowed, error: 'Only places that serve food or drink can be a restaurant pick.' };
+    return { code: 'not_allowed', allowed: rules.allowed, error: 'Please choose another category for this place.' };
+}
+
 // What the guide themselves sees (includes their verification code and status).
 const selfView = (g) => g && ({
     ...svc.publicGuide(g),
@@ -75,23 +91,18 @@ router.get('/public/:handle', lookupLimiter, wrap(async (req, res) => {
         const g = await Guide.findOne({ handle, status: 'active' }).lean();
         if (!g) return res.status(404).json({ success: false, error: 'Guide not found' });
         const picks = await GuidePick.find({ guide: g._id }).sort({ createdAt: -1 }).lean();
-        const PlaceCache = require('../models/PlaceCache');
-        const rows = await PlaceCache.find({ placeId: { $in: picks.map(p => p.placeId) }, 'explore.status': { $ne: 'hidden' } })
-            .select('placeId name rating details.formatted_address city imagesStored details.geometry.location').lean();
-        const byId = new Map(rows.map(r => [r.placeId, r]));
+        // Hidden places and deleted Destinations drop out (the pick stays, unseen).
+        const byId = await svc.loadPickPlaces(picks.map(p => p.placeId));
         res.json({
             success: true,
             guide: svc.publicGuide(g),
             picks: picks.filter(p => byId.has(p.placeId)).map(p => {
                 const r = byId.get(p.placeId);
-                const loc = r.details?.geometry?.location;
                 return {
                     id: String(p._id), placeId: p.placeId, name: r.name, category: p.category, note: p.note || '',
                     reelUrl: p.reelUrl || null, embedUrl: p.reelUrl ? (svc.parseInstagramPost(p.reelUrl)?.embedUrl || null) : null,
                     tour: p.tour || null, rating: r.rating ?? null,
-                    address: r.details?.formatted_address || r.city || null,
-                    image: r.imagesStored ? `/api/ai/place-image/${r.placeId}/0` : null,
-                    lat: loc?.lat ?? null, lng: loc?.lng ?? null,
+                    address: r.address, image: r.image, lat: r.lat, lng: r.lng,
                 };
             }),
         });
@@ -140,7 +151,14 @@ router.get('/me', auth, wrap(async (req, res) => {
     if (!g) return res.json({ success: true, guide: null, picks: [] });
     const picks = g.status === 'active' || g.status === 'pending'
         ? await GuidePick.find({ guide: g._id }).sort({ createdAt: -1 }).lean() : [];
-    res.json({ success: true, guide: selfView(g), picks: picks.map(p => ({ ...p, id: String(p._id), _id: undefined, guide: undefined })) });
+    const places = await svc.loadPickPlaces(picks.map(p => p.placeId));
+    res.json({ success: true, guide: selfView(g), picks: picks.map(p => {
+        const place = places.get(p.placeId);
+        return { ...p, id: String(p._id), _id: undefined, guide: undefined,
+            // The place left Jinni (hidden / deleted) → the guide sees it is no longer shown.
+            placeGone: !place, image: place?.image || null, address: place?.address || null,
+            categories: place ? svc.categoryRules(place._rules) : null };
+    }) });
 }));
 
 router.put('/me', auth, editLimiter, wrap(async (req, res) => {
@@ -170,9 +188,11 @@ router.post('/me/picks', auth, editLimiter, wrap(async (req, res) => {
         const clean = svc.sanitizePick(req.body || {});
         if (clean.error) return res.status(400).json({ success: false, error: clean.error });
         if (await GuidePick.countDocuments({ guide: g._id }) >= MAX_PICKS) return res.status(400).json({ success: false, error: `A page holds up to ${MAX_PICKS} picks.` });
-        const place = await require('../models/PlaceCache').findOne({ placeId: clean.placeId, 'explore.status': { $ne: 'hidden' } }).select('placeId name').lean();
+        const place = (await svc.loadPickPlaces([clean.placeId])).get(clean.placeId);
         if (!place) return res.status(400).json({ success: false, error: 'That place is not in Jinni yet. Choose it from the search results.' });
-        const pick = await GuidePick.create({ ...clean, guide: g._id, placeName: place.name });
+        const problem = categoryProblem(place, clean.category);
+        if (problem) return res.status(400).json({ success: false, ...problem });
+        const pick = await GuidePick.create({ ...clean, guide: g._id, placeName: String(place.name).slice(0, 160) });
         res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id) } });
     } catch (err) {
         if (err && err.code === 11000) return res.status(409).json({ success: false, error: 'You already picked this place in that category.' });
@@ -188,6 +208,12 @@ router.put('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
     if (!pick) return res.status(404).json({ success: false, error: 'Pick not found' });
     const clean = svc.sanitizePick({ ...pick.toObject(), ...req.body, placeId: pick.placeId });
     if (clean.error) return res.status(400).json({ success: false, error: clean.error });
+    if (clean.category !== pick.category) {
+        const place = (await svc.loadPickPlaces([pick.placeId])).get(pick.placeId);
+        if (!place) return res.status(400).json({ success: false, error: 'This place is no longer on Jinni, so its category can\'t change. You can remove the pick.' });
+        const problem = categoryProblem(place, clean.category);
+        if (problem) return res.status(400).json({ success: false, ...problem });
+    }
     Object.assign(pick, { category: clean.category, note: clean.note, reelUrl: clean.reelUrl, tour: clean.tour });
     await pick.save();
     res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id) } });
@@ -259,12 +285,21 @@ router.get('/staff/:id/picks', auth, wrap(async (req, res) => {
     if (!canValidateGuides(req.user)) return res.status(403).json(NO_PERM);
     if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Guide not found' });
     const picks = await GuidePick.find({ guide: req.params.id }).sort({ createdAt: -1 }).lean();
+    const places = await svc.loadPickPlaces(picks.map(p => p.placeId));
     res.json({
         success: true,
-        picks: picks.map(p => ({
-            id: String(p._id), placeId: p.placeId, placeName: p.placeName || '', category: p.category,
-            note: p.note || '', reelUrl: p.reelUrl || null, tour: p.tour || null, createdAt: p.createdAt,
-        })),
+        picks: picks.map(p => {
+            const place = places.get(p.placeId);
+            return {
+                id: String(p._id), placeId: p.placeId, placeName: p.placeName || '', category: p.category,
+                note: p.note || '', reelUrl: p.reelUrl || null, tour: p.tour || null, createdAt: p.createdAt,
+                source: svc.isDestRef(p.placeId) ? 'destination' : 'place',
+                placeGone: !place,
+                // Staff hint: Jinni's own data doesn't back this category.
+                categoryMismatch: place ? svc.categoryMismatch(p.category, place._rules) : false,
+                teamCategories: place?._rules?.actions || [],
+            };
+        }),
     });
 }));
 

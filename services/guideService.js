@@ -146,21 +146,147 @@ const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * quarantined (name-ask pending) and closed places are left out. Returns a
  * compact row the dashboard can show with its photo.
  */
+// ── Pickable places + their category rules (founder 2026-10-02) ─────────────
+// A pick points at one of two stores:
+//   • PlaceCache — placeId = the Google place id
+//   • Destination (staff-added) — placeId = 'dest:<Destination _id>'
+// Category rules: when Jinni's team has set a place's categories (a validator
+// edited PlaceCache.actions → actionsCurated; every Destination is staff-typed)
+// the guide chooses only among those. Otherwise the guide's view is welcome,
+// with one hard rule: 'restaurant' only for places that serve food or drink.
+// A guide's category lives on their pick only — it never edits Jinni's data.
+const CAT_ACTION = { restaurant: 'restaurants', hidden_gem: 'hidden_gems', photo_spot: 'photo_spots', activity: 'activities' };
+// Landmark-type categories under which a place is also a fair photo spot.
+const SCENIC = new Set(['photo_spots', 'historical', 'history', 'cultural', 'nature', 'art', 'adventure', 'romantic']);
+const FOOD_RE = /restaurant|cafe|coffee|bar\b|bakery|food|meal_|pub|wine|tea_house|diner|pizz|steak|brewery|ice_cream|dessert|bistro|tavern/;
+const DEST_PREFIX = 'dest:';
+// Founder scope: hotels, flights and events are Jinni's own partner bookings — never guide picks.
+const LODGING_RE = /lodging|hotel|hostel|motel|resort|guest_house|bed_and_breakfast|campground|rv_park/;
+const isOutOfScope = (place = {}) => {
+    const actions = Array.isArray(place.actions) ? place.actions : [];
+    const types = Array.isArray(place.types) ? place.types : [];
+    const food = actions.includes('restaurants') || types.some(t => FOOD_RE.test(t));
+    const pickable = actions.some(a => Object.values(CAT_ACTION).includes(a) || SCENIC.has(a));
+    // A place whose only identity is lodging / an event (a hotel's restaurant is still a restaurant).
+    if (!food && !pickable && (actions.includes('hotels') || actions.includes('events'))) return true;
+    if (!food && !pickable && types.some(t => LODGING_RE.test(t))) return true;
+    if (place.isEvent) return true;
+    return false;
+};
+const isDestRef = (id) => typeof id === 'string' && id.startsWith(DEST_PREFIX) && /^[a-f0-9]{24}$/i.test(id.slice(DEST_PREFIX.length));
+
+/**
+ * place: { actions: string[], curated: boolean, types: string[] }
+ * → { curated, allowed: guide categories the guide may choose, suggested, teamCategories }
+ */
+function categoryRules(place = {}) {
+    const actions = Array.isArray(place.actions) ? place.actions.map(String) : [];
+    const types = Array.isArray(place.types) ? place.types.map(String) : [];
+    const direct = CATEGORIES.filter(c => actions.includes(CAT_ACTION[c]));
+    const scenic = actions.some(a => SCENIC.has(a));
+    const servesFood = actions.includes('restaurants') || types.some(t => FOOD_RE.test(t));
+    let allowed;
+    if (isOutOfScope(place)) {
+        allowed = [];
+    } else if (place.curated) {
+        allowed = CATEGORIES.filter(c => direct.includes(c) || (c === 'photo_spot' && scenic));
+    } else {
+        // Unknown types (legacy rows) stay lenient; known non-food types can't be restaurants.
+        allowed = CATEGORIES.filter(c => c !== 'restaurant' || servesFood || (!types.length && !actions.length));
+    }
+    const suggested = direct.find(c => allowed.includes(c))
+        || (servesFood && allowed.includes('restaurant') ? 'restaurant' : null)
+        || (scenic && allowed.includes('photo_spot') ? 'photo_spot' : null);
+    return { curated: !!place.curated, allowed, suggested: suggested || null, teamCategories: actions, outOfScope: isOutOfScope(place) };
+}
+
+/** Staff hint: a category Jinni's own data doesn't back (only for uncurated places with data). */
+function categoryMismatch(category, place = {}) {
+    const actions = Array.isArray(place.actions) ? place.actions : [];
+    if (!actions.length) return false;
+    if (actions.includes(CAT_ACTION[category])) return false;
+    if (category === 'photo_spot' && actions.some(a => SCENIC.has(a))) return false;
+    if (category === 'restaurant' && (place.types || []).some(t => FOOD_RE.test(t))) return false;
+    return true;
+}
+
+const destImage = (d) => {
+    const img = Array.isArray(d.images) ? d.images.find(i => typeof i === 'string' && (/^https:\/\//.test(i) || i.startsWith('/'))) : null;
+    return img || null;
+};
+const fromPlaceCache = (r) => ({
+    placeId: r.placeId, name: r.name, source: 'place',
+    address: r.details?.formatted_address || [r.city, r.country].filter(Boolean).join(', ') || null,
+    image: r.imagesStored ? `/api/ai/place-image/${r.placeId}/0` : null,
+    lat: r.details?.geometry?.location?.lat ?? null, lng: r.details?.geometry?.location?.lng ?? null,
+    rating: r.rating ?? null,
+    _rules: { actions: r.actions || [], curated: !!r.actionsCurated, types: r.types || [] },
+});
+const fromDestination = (d) => ({
+    placeId: DEST_PREFIX + String(d._id), name: d.name, source: 'destination',
+    address: d.location?.address || [d.location?.city, d.location?.country].filter(Boolean).join(', ') || null,
+    image: destImage(d),
+    lat: d.location?.coordinates?.lat ?? null, lng: d.location?.coordinates?.lng ?? null,
+    rating: d.rating ?? null,
+    _rules: {
+        actions: [...new Set([...(Array.isArray(d.type) ? d.type : []), ...(d.isHiddenGem ? ['hidden_gems'] : [])])],
+        curated: true, types: [],
+        // A staff event (dated) is an event, whatever else it is tagged.
+        isEvent: Array.isArray(d.type) && d.type.includes('events') && !!d.eventSchedule?.startDate,
+    },
+});
+const PC_FIELDS = 'placeId name details.formatted_address details.geometry.location city country imagesStored actions actionsCurated types rating business_status';
+const DEST_FIELDS = 'name location type images isHiddenGem eventSchedule.startDate';
+
+/** placeIds (Google ids and 'dest:' refs) → Map(placeId → normalized place). Hidden places are absent. */
+async function loadPickPlaces(ids, deps = {}) {
+    const PlaceCache = deps.PlaceCache || require('../models/PlaceCache');
+    const Destination = deps.Destination || require('../models/Destination');
+    const all = [...new Set((ids || []).filter(Boolean).map(String))];
+    const destIds = all.filter(isDestRef).map(id => id.slice(DEST_PREFIX.length));
+    const placeIds = all.filter(id => !id.startsWith(DEST_PREFIX));
+    const [pcs, dests] = await Promise.all([
+        placeIds.length ? PlaceCache.find({ placeId: { $in: placeIds }, 'explore.status': { $ne: 'hidden' } }).select(PC_FIELDS).lean() : [],
+        // Same visibility as chat: an inactive (deleted) Destination is not shown.
+        destIds.length ? Destination.find({ _id: { $in: destIds }, isActive: { $ne: false } }).select(DEST_FIELDS).lean() : [],
+    ]);
+    const out = new Map();
+    for (const r of pcs) out.set(r.placeId, fromPlaceCache(r));
+    for (const d of dests) out.set(DEST_PREFIX + String(d._id), fromDestination(d));
+    return out;
+}
+
+/** What the guide's search shows: the place plus which categories they may choose. */
+const forGuide = (p) => {
+    const { _rules, ...rest } = p;
+    return { ...rest, categories: categoryRules(_rules) };
+};
+
 async function placeSearch(q, { limit = 12 } = {}, deps = {}) {
     const PlaceCache = deps.PlaceCache || require('../models/PlaceCache');
+    const Destination = deps.Destination || require('../models/Destination');
     const term = clip(q, 60);
     if (term.length < 2) return [];
-    const rows = await PlaceCache.find({
-        name: { $regex: escapeRe(term), $options: 'i' },
-        'explore.status': { $ne: 'hidden' },
-        nameAskPending: { $ne: true },
-        aiBlocked: { $ne: true },
-    }).select('placeId name details.formatted_address city country imagesStored actions').limit(limit).lean();
-    return rows.map(r => ({
-        placeId: r.placeId, name: r.name,
-        address: r.details?.formatted_address || [r.city, r.country].filter(Boolean).join(', ') || null,
-        image: r.imagesStored ? `/api/ai/place-image/${r.placeId}/0` : null,
-    }));
+    const re = { $regex: escapeRe(term), $options: 'i' };
+    const [dests, rows] = await Promise.all([
+        Destination.find({ name: re, isActive: { $ne: false } }).select(DEST_FIELDS).limit(6).lean(),
+        PlaceCache.find({
+            name: re,
+            'explore.status': { $ne: 'hidden' },
+            nameAskPending: { $ne: true },
+            aiBlocked: { $ne: true },
+            business_status: { $ne: 'CLOSED_PERMANENTLY' },
+        }).select(PC_FIELDS).limit(limit).lean(),
+    ]);
+    const destPlaces = dests.map(fromDestination);
+    // A cache row is the SAME place as a staff Destination only when the name
+    // matches AND it is within ~300 m (same-named places in two cities both stay).
+    const near = (a, b) => a.lat != null && b.lat != null && Math.abs(a.lat - b.lat) < 0.003 && Math.abs(a.lng - b.lng) < 0.004;
+    const dup = (p) => destPlaces.some(d => d.name.toLowerCase().trim() === String(p.name).toLowerCase().trim() && near(d, p));
+    return [...destPlaces, ...rows.map(fromPlaceCache).filter(p => !dup(p))]
+        .map(forGuide)
+        .filter(p => !p.categories.outOfScope)          // hotels / events never appear
+        .slice(0, limit);
 }
 
 /**
@@ -170,7 +296,9 @@ async function placeSearch(q, { limit = 12 } = {}, deps = {}) {
  */
 async function attachGuidePicks(recommendations, deps = {}) {
     try {
-        const ids = [...new Set((recommendations || []).map(r => r && r.placeId).filter(Boolean))];
+        // A card's pick key: its Google place id, or 'dest:<id>' for a staff Destination card.
+        const keyOf = (r) => (r && (r.placeId || (r._verifiedModel === 'destination' && r.verifiedId ? DEST_PREFIX + r.verifiedId : null))) || null;
+        const ids = [...new Set((recommendations || []).map(keyOf).filter(Boolean))];
         if (!ids.length) return recommendations;
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
         const Guide = deps.Guide || require('../models/Guide');
@@ -180,8 +308,9 @@ async function attachGuidePicks(recommendations, deps = {}) {
             .select('handle displayName').lean();
         const byId = new Map(guides.map(g => [String(g._id), g]));
         for (const rec of recommendations) {
-            if (!rec || !rec.placeId) continue;
-            const mine = picks.filter(p => p.placeId === rec.placeId && byId.has(String(p.guide))).slice(0, 2);
+            const key = keyOf(rec);
+            if (!key) continue;
+            const mine = picks.filter(p => p.placeId === key && byId.has(String(p.guide))).slice(0, 2);
             if (mine.length) {
                 rec.guidePicks = mine.map(p => ({
                     handle: byId.get(String(p.guide)).handle, displayName: byId.get(String(p.guide)).displayName,
@@ -218,4 +347,5 @@ async function deleteGuideForUser(userId, deps = {}) {
 module.exports = {
     deleteGuideForUser, normalizeHandle, normalizeInstagram, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
     publicGuide, placeSearch, attachGuidePicks, CATEGORIES, RESERVED,
+    categoryRules, categoryMismatch, loadPickPlaces, forGuide, isDestRef, CAT_ACTION,
 };

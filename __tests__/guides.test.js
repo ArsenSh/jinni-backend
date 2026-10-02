@@ -183,3 +183,87 @@ test('a removed-pick history entry is a valid action (later saves must not fail)
     const err = g.validateSync();
     expect(err?.errors?.['verification.history.0.action']).toBeUndefined();
 });
+
+describe('pick categories follow Jinni\'s own data (founder 2026-10-02)', () => {
+    const svc = require('../services/guideService');
+    const rules = svc.categoryRules;
+
+    test('team-set categories limit the guide to those (plus photo spot for landmarks)', () => {
+        expect(rules({ curated: true, actions: ['restaurants'] }).allowed).toEqual(['restaurant']);
+        expect(rules({ curated: true, actions: ['historical'] }).allowed).toEqual(['photo_spot']);
+        expect(rules({ curated: true, actions: ['historical', 'hidden_gems'] }).allowed).toEqual(['hidden_gem', 'photo_spot']);
+        expect(rules({ curated: true, actions: ['souvenirs'] }).allowed).toEqual([]);
+        expect(rules({ curated: true, actions: ['restaurants'] }).suggested).toBe('restaurant');
+    });
+
+    test('uncurated places: the guide chooses, but only food places can be restaurants', () => {
+        expect(rules({ curated: false, actions: ['historical'], types: ['church'] }).allowed).toEqual(['hidden_gem', 'photo_spot', 'activity']);
+        expect(rules({ curated: false, actions: [], types: ['armenian_restaurant', 'food'] }).allowed).toContain('restaurant');
+        expect(rules({ curated: false, actions: [], types: [] }).allowed).toEqual(svc.CATEGORIES);   // legacy rows stay open
+    });
+
+    test('hotels and events are never guide picks; a hotel restaurant still is a restaurant', () => {
+        expect(rules({ curated: false, actions: ['hotels'], types: ['lodging', 'hotel'] }).allowed).toEqual([]);
+        expect(rules({ curated: false, actions: [], types: ['lodging'] }).outOfScope).toBe(true);
+        expect(rules({ curated: true, actions: ['events'], isEvent: true }).outOfScope).toBe(true);
+        expect(rules({ curated: false, actions: ['hotels', 'restaurants'], types: ['lodging', 'restaurant'] }).allowed).toContain('restaurant');
+    });
+
+    test('staff mismatch hint only when Jinni\'s data says otherwise', () => {
+        expect(svc.categoryMismatch('restaurant', { actions: ['historical'], types: ['church'] })).toBe(true);
+        expect(svc.categoryMismatch('photo_spot', { actions: ['historical'] })).toBe(false);
+        expect(svc.categoryMismatch('hidden_gem', { actions: [] })).toBe(false);
+    });
+
+    const q = (rows) => { const c = { select: () => c, limit: () => c, lean: async () => rows }; return c; };
+    const dest = (o) => ({ _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', name: 'Garni Temple', type: ['historical'], location: { city: 'Garni', coordinates: { lat: 40.112, lng: 44.73 } }, images: [], ...o });
+
+    test('search: staff Destinations first, same-named cache row nearby dropped, far one kept, hotels left out', async () => {
+        let destQuery = null;
+        const Destination = { find: (f) => { destQuery = f; return q([dest()]); } };
+        const PlaceCache = { find: () => q([
+            { placeId: 'G1', name: 'Garni Temple', details: { geometry: { location: { lat: 40.1121, lng: 44.7301 } } }, actions: ['historical'] },
+            { placeId: 'G2', name: 'Garni Temple', details: { geometry: { location: { lat: 41.5, lng: 45.9 } } }, actions: [] },
+            { placeId: 'H1', name: 'Garni Hotel', types: ['lodging'], actions: ['hotels'] },
+        ]) };
+        const out = await svc.placeSearch('garni', {}, { Destination, PlaceCache });
+        expect(out.map(p => p.placeId)).toEqual(['dest:aaaaaaaaaaaaaaaaaaaaaaaa', 'G2']);
+        expect(out[0].categories.curated).toBe(true);
+        expect(out[0].categories.allowed).toEqual(['photo_spot']);
+        expect(destQuery.isActive).toEqual({ $ne: false });          // deleted Destinations never searchable
+        expect(out[0]._rules).toBeUndefined();                        // internals not sent to the browser
+    });
+
+    test('a Destination flagged isHiddenGem may be a hidden-gem pick', async () => {
+        const Destination = { find: () => q([dest({ isHiddenGem: true })]) };
+        const PlaceCache = { find: () => q([]) };
+        const [p] = await svc.placeSearch('garni', {}, { Destination, PlaceCache });
+        expect(p.categories.allowed).toEqual(['hidden_gem', 'photo_spot']);
+    });
+
+    test('loader: inactive Destinations and malformed dest refs resolve to nothing', async () => {
+        let f = null;
+        const Destination = { find: (x) => { f = x; return q([]); } };
+        const PlaceCache = { find: () => q([]) };
+        const m = await svc.loadPickPlaces(['dest:aaaaaaaaaaaaaaaaaaaaaaaa', 'dest:nope', 'dest:{"$gt":""}'], { Destination, PlaceCache });
+        expect(m.size).toBe(0);
+        expect(f._id.$in).toEqual(['aaaaaaaaaaaaaaaaaaaaaaaa']);
+        expect(f.isActive).toEqual({ $ne: false });
+    });
+
+    test('chat: a staff Destination card gets "Picked by" through its Destination id', async () => {
+        const recs = [{ name: 'Garni Temple', placeId: null, _verifiedModel: 'destination', verifiedId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }];
+        const GuidePick = { find: () => ({ select: () => ({ lean: async () => [{ guide: 'g1', placeId: 'dest:aaaaaaaaaaaaaaaaaaaaaaaa', category: 'photo_spot' }] }) }) };
+        const Guide = { find: () => ({ select: () => ({ lean: async () => [{ _id: 'g1', handle: 'anna', displayName: 'Anna' }] }) }) };
+        await svc.attachGuidePicks(recs, { GuidePick, Guide });
+        expect(recs[0].guidePicks[0].handle).toBe('anna');
+    });
+});
+
+test('routes: category is checked on add, and on edit only when it changes (older picks stay editable)', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../routes/guideRoutes.js'), 'utf8');
+    const add = src.slice(src.indexOf("router.post('/me/picks'"), src.indexOf("router.put('/me/picks/:id'"));
+    const edit = src.slice(src.indexOf("router.put('/me/picks/:id'"), src.indexOf("router.delete('/me/picks/:id'"));
+    expect(add).toMatch(/categoryProblem\(place, clean\.category\)/);
+    expect(edit).toMatch(/if \(clean\.category !== pick\.category\)[\s\S]*categoryProblem/);
+});
