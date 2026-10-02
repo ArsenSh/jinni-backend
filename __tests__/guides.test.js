@@ -102,3 +102,8 @@ describe('attachGuidePicks — "Picked by @guide" on chat cards', () => {
         await expect(svc.attachGuidePicks(recs, broken)).resolves.toBe(recs);
     });
 });
+
+test('reserved words are exported so the availability check can say "reserved"', () => {
+    for (const w of ['admin', 'chat', 'guides', 'jinni']) expect(svc.RESERVED.has(w)).toBe(true);
+    expect(svc.normalizeHandle('admin')).toBeNull();
+});

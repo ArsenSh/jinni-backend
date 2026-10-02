@@ -40,8 +40,11 @@ const selfView = (g) => g && ({
 // ── PUBLIC: handle availability + the public page ───────────────────────────
 
 router.get('/handle-available/:handle', async (req, res) => {
-    const handle = svc.normalizeHandle(req.params.handle);
-    if (!handle) return res.json({ available: false, reason: 'invalid' });
+    const raw = String(req.params.handle || '').trim().replace(/^@+/, '').toLowerCase();
+    const handle = svc.normalizeHandle(raw);
+    // A well-formed name that is one of the app's own words gets its own reason,
+    // so the form can say "reserved" instead of a format rule it already meets.
+    if (!handle) return res.json({ available: false, reason: /^[a-z0-9._]{3,30}$/.test(raw) && svc.RESERVED.has(raw) ? 'reserved' : 'invalid' });
     const taken = await Guide.exists({ handle });
     res.json({ available: !taken, handle });
 });
