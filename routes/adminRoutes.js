@@ -434,6 +434,7 @@ router.delete('/users/:id', async (req, res) => {
         const user = await User.findById(req.params.id);
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
         await UserAILimit.deleteOne({ userId: req.params.id });
+        await require('../services/guideService').deleteGuideForUser(req.params.id);   // guide page + picks (2026-10-02)
         await User.findByIdAndDelete(req.params.id);
         res.json({ success: true, message: `User "${user.name}" deleted` });
     } catch (error) {

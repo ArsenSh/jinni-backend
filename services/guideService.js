@@ -178,7 +178,27 @@ async function attachGuidePicks(recommendations, deps = {}) {
     return recommendations;
 }
 
+/**
+ * Account deleted → the guide page and every pick go with it (privacy: a
+ * deleted person must not stay public). Best-effort, never blocks deletion.
+ */
+async function deleteGuideForUser(userId, deps = {}) {
+    try {
+        const Guide = deps.Guide || require('../models/Guide');
+        const GuidePick = deps.GuidePick || require('../models/GuidePick');
+        const g = await Guide.findOne({ user: userId }).select('_id handle').lean();
+        if (!g) return 0;
+        await GuidePick.deleteMany({ guide: g._id });
+        await Guide.deleteOne({ _id: g._id });
+        console.log(`[guides] account deleted → removed guide page @${g.handle} and its picks`);
+        return 1;
+    } catch (err) {
+        console.warn('[guides] deleteGuideForUser failed (account deletion continues):', err.message);
+        return 0;
+    }
+}
+
 module.exports = {
-    normalizeHandle, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
+    deleteGuideForUser, normalizeHandle, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
     publicGuide, placeSearch, attachGuidePicks, CATEGORIES, RESERVED,
 };

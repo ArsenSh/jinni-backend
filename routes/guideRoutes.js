@@ -10,6 +10,7 @@
 //     in Phase 2, itineraries). Hotels/flights/events are never guide picks.
 
 const express = require('express');
+const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
 const auth = require('../middleware/auth');
 const Guide = require('../models/Guide');
@@ -21,10 +22,24 @@ const router = express.Router();
 const isStaffOrAdmin = (u) => !!u && (u.role === 'staff' || u.role === 'admin' || u.isAdmin === true);
 const MAX_PICKS = 150;
 
+// Behind Cloudflare + Coolify, req.ip is a proxy — key on the visitor's real
+// address exactly like server.js's apiLimiter, or every user shares one budget.
+const clientKey = (req) => (req.headers['cf-connecting-ip'] || req.ip || 'unknown');
 const applyLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
-    message: { error: 'Too many applications from this connection. Please try again later.' } });
+    keyGenerator: (req) => (req.user?.id ? `u:${req.user.id}` : clientKey(req)),
+    message: { error: 'Too many applications. Please try again later.' } });
 const editLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
-    keyGenerator: (req) => req.user?.id || req.ip });
+    keyGenerator: (req) => (req.user?.id ? `u:${req.user.id}` : clientKey(req)) });
+const lookupLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, keyGenerator: clientKey });
+
+// Express 4 does not catch a rejected async handler: the request would hang
+// until timeout. Every route goes through wrap() — errors answer 500, cleanly.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch((err) => {
+    console.error(`[guides] ${req.method} ${req.originalUrl} failed:`, err && err.message);
+    if (!res.headersSent) res.status(500).json({ success: false, error: 'Something went wrong. Please try again.' });
+});
+const validId = (id) => mongoose.isValidObjectId(id) && String(id).length === 24;
+const STALE_PENDING_MS = 14 * 864e5;   // an unverified application stops holding its name after 14 days
 
 const ownGuide = (req) => Guide.findOne({ user: req.user._id });
 
@@ -39,7 +54,7 @@ const selfView = (g) => g && ({
 
 // ── PUBLIC: handle availability + the public page ───────────────────────────
 
-router.get('/handle-available/:handle', async (req, res) => {
+router.get('/handle-available/:handle', lookupLimiter, wrap(async (req, res) => {
     const raw = String(req.params.handle || '').trim().replace(/^@+/, '').toLowerCase();
     const handle = svc.normalizeHandle(raw);
     // A well-formed name that is one of the app's own words gets its own reason,
@@ -47,9 +62,9 @@ router.get('/handle-available/:handle', async (req, res) => {
     if (!handle) return res.json({ available: false, reason: /^[a-z0-9._]{3,30}$/.test(raw) && svc.RESERVED.has(raw) ? 'reserved' : 'invalid' });
     const taken = await Guide.exists({ handle });
     res.json({ available: !taken, handle });
-});
+}));
 
-router.get('/public/:handle', async (req, res) => {
+router.get('/public/:handle', lookupLimiter, wrap(async (req, res) => {
     try {
         const handle = svc.normalizeHandle(req.params.handle);
         if (!handle) return res.status(404).json({ success: false, error: 'Guide not found' });
@@ -80,19 +95,29 @@ router.get('/public/:handle', async (req, res) => {
         console.error('[guides] public page error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to load guide' });
     }
-});
+}));
 
 // ── GUIDE: apply, own profile, picks ────────────────────────────────────────
 
-router.post('/apply', auth, applyLimiter, async (req, res) => {
+router.post('/apply', auth, applyLimiter, wrap(async (req, res) => {
     try {
         const clean = svc.sanitizeApplication(req.body || {});
         if (clean.error) return res.status(400).json({ success: false, error: clean.error });
         const existing = await ownGuide(req);
         if (existing && existing.status === 'active') return res.status(400).json({ success: false, error: 'You already have an active guide page.' });
         if (existing && existing.status === 'suspended') return res.status(403).json({ success: false, error: 'This guide page is suspended. Please contact support.' });
-        const clash = await Guide.findOne({ handle: clean.handle, user: { $ne: req.user._id } }).select('_id').lean();
-        if (clash) return res.status(409).json({ success: false, error: `jinni.travel/@${clean.handle} is taken. Please choose another page name.` });
+        const clash = await Guide.findOne({ handle: clean.handle, user: { $ne: req.user._id } }).select('_id status updatedAt').lean();
+        if (clash) {
+            // A never-verified application stops squatting a name after 14 days.
+            const stale = clash.status === 'pending' && Date.now() - new Date(clash.updatedAt).getTime() > STALE_PENDING_MS;
+            if (!stale) return res.status(409).json({ success: false, error: `jinni.travel/@${clean.handle} is taken. Please choose another page name.` });
+            await Guide.deleteOne({ _id: clash._id, status: 'pending' });
+            console.log(`[guides] released stale pending name @${clean.handle}`);
+        }
+        // One Instagram account = one live guide page (impersonation guard;
+        // staff still check the bio code on every application).
+        const igTaken = await Guide.exists({ instagram: clean.instagram, status: 'active', user: { $ne: req.user._id } });
+        if (igTaken) return res.status(409).json({ success: false, error: `@${clean.instagram} already has a guide page on Jinni. If it's yours, please contact us.` });
         const g = existing || new Guide({ user: req.user._id, verification: { code: svc.makeVerificationCode() } });
         Object.assign(g, clean, { status: 'pending', termsAcceptedAt: new Date() });
         g.verification.history.push({ action: 'applied', by: req.user._id, notes: existing ? 're-applied' : '' });
@@ -104,23 +129,23 @@ router.post('/apply', auth, applyLimiter, async (req, res) => {
         console.error('[guides] apply error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to submit application' });
     }
-});
+}));
 
-router.get('/me', auth, async (req, res) => {
+router.get('/me', auth, wrap(async (req, res) => {
     const g = await ownGuide(req);
     if (!g) return res.json({ success: true, guide: null, picks: [] });
     const picks = g.status === 'active' || g.status === 'pending'
         ? await GuidePick.find({ guide: g._id }).sort({ createdAt: -1 }).lean() : [];
     res.json({ success: true, guide: selfView(g), picks: picks.map(p => ({ ...p, id: String(p._id), _id: undefined, guide: undefined })) });
-});
+}));
 
-router.put('/me', auth, editLimiter, async (req, res) => {
+router.put('/me', auth, editLimiter, wrap(async (req, res) => {
     const g = await ownGuide(req);
     if (!g) return res.status(404).json({ success: false, error: 'No guide profile' });
     Object.assign(g, svc.sanitizeProfileEdit(req.body || {}));
     await g.save();
     res.json({ success: true, guide: selfView(g) });
-});
+}));
 
 // Picks need an ACTIVE page; a pending guide can see the dashboard but not publish.
 async function activeGuide(req, res) {
@@ -130,12 +155,12 @@ async function activeGuide(req, res) {
     return g;
 }
 
-router.get('/me/place-search', auth, editLimiter, async (req, res) => {
+router.get('/me/place-search', auth, editLimiter, wrap(async (req, res) => {
     const g = await activeGuide(req, res); if (!g) return;
     res.json({ success: true, places: await svc.placeSearch(req.query.q) });
-});
+}));
 
-router.post('/me/picks', auth, editLimiter, async (req, res) => {
+router.post('/me/picks', auth, editLimiter, wrap(async (req, res) => {
     try {
         const g = await activeGuide(req, res); if (!g) return;
         const clean = svc.sanitizePick(req.body || {});
@@ -150,10 +175,11 @@ router.post('/me/picks', auth, editLimiter, async (req, res) => {
         console.error('[guides] add pick error:', err.message);
         res.status(500).json({ success: false, error: 'Failed to save pick' });
     }
-});
+}));
 
-router.put('/me/picks/:id', auth, editLimiter, async (req, res) => {
+router.put('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
     const g = await activeGuide(req, res); if (!g) return;
+    if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Pick not found' });
     const pick = await GuidePick.findOne({ _id: req.params.id, guide: g._id });
     if (!pick) return res.status(404).json({ success: false, error: 'Pick not found' });
     const clean = svc.sanitizePick({ ...pick.toObject(), ...req.body, placeId: pick.placeId });
@@ -161,17 +187,18 @@ router.put('/me/picks/:id', auth, editLimiter, async (req, res) => {
     Object.assign(pick, { category: clean.category, note: clean.note, reelUrl: clean.reelUrl, tour: clean.tour });
     await pick.save();
     res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id) } });
-});
+}));
 
-router.delete('/me/picks/:id', auth, editLimiter, async (req, res) => {
+router.delete('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
     const g = await activeGuide(req, res); if (!g) return;
+    if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Pick not found' });
     const r = await GuidePick.deleteOne({ _id: req.params.id, guide: g._id });
     res.json({ success: r.deletedCount === 1 });
-});
+}));
 
 // ── STAFF: queue, approve, reject, suspend ──────────────────────────────────
 
-router.get('/staff/queue', auth, async (req, res) => {
+router.get('/staff/queue', auth, wrap(async (req, res) => {
     if (!isStaffOrAdmin(req.user)) return res.status(403).json({ success: false, error: 'Staff only' });
     const status = ['pending', 'active', 'rejected', 'suspended'].includes(req.query.status) ? req.query.status : 'pending';
     const rows = await Guide.find({ status }).sort({ updatedAt: -1 }).limit(100).populate('user', 'email name').lean();
@@ -186,10 +213,11 @@ router.get('/staff/queue', auth, async (req, res) => {
             createdAt: g.createdAt, updatedAt: g.updatedAt,
         })),
     });
-});
+}));
 
 async function staffAction(req, res, { from, to, action, needReason }) {
     if (!isStaffOrAdmin(req.user)) return res.status(403).json({ success: false, error: 'Staff only' });
+    if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Guide not found' });
     const g = await Guide.findById(req.params.id).populate('user', 'email');
     if (!g) return res.status(404).json({ success: false, error: 'Guide not found' });
     if (!from.includes(g.status)) return res.status(400).json({ success: false, error: `Cannot ${action} a ${g.status} guide.` });
@@ -213,9 +241,9 @@ async function staffAction(req, res, { from, to, action, needReason }) {
     res.json({ success: true, status: g.status });
 }
 
-router.post('/staff/:id/approve', auth, (req, res) => staffAction(req, res, { from: ['pending', 'rejected'], to: 'active', action: 'approve' }));
-router.post('/staff/:id/reject', auth, (req, res) => staffAction(req, res, { from: ['pending'], to: 'rejected', action: 'reject', needReason: true }));
-router.post('/staff/:id/suspend', auth, (req, res) => staffAction(req, res, { from: ['active'], to: 'suspended', action: 'suspend', needReason: true }));
-router.post('/staff/:id/reinstate', auth, (req, res) => staffAction(req, res, { from: ['suspended'], to: 'active', action: 'reinstate' }));
+router.post('/staff/:id/approve', auth, wrap((req, res) => staffAction(req, res, { from: ['pending', 'rejected'], to: 'active', action: 'approve' })));
+router.post('/staff/:id/reject', auth, wrap((req, res) => staffAction(req, res, { from: ['pending'], to: 'rejected', action: 'reject', needReason: true })));
+router.post('/staff/:id/suspend', auth, wrap((req, res) => staffAction(req, res, { from: ['active'], to: 'suspended', action: 'suspend', needReason: true })));
+router.post('/staff/:id/reinstate', auth, wrap((req, res) => staffAction(req, res, { from: ['suspended'], to: 'active', action: 'reinstate' })));
 
 module.exports = router;

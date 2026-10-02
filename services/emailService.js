@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const escapeHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const logger = require('../utils/logger');
 
 /* Localized strings for the USER-FACING transactional emails (verification,
@@ -625,7 +626,8 @@ ${L.rights}
      * "we'll notify you" line — never an epoch date.
      */
     /** Guide page approved (2026-10-02) — their page is live at /@handle. */
-    async sendGuideApprovedEmail(email, displayName, handle) {
+    async sendGuideApprovedEmail(email, rawName, handle) {
+        const displayName = escapeHtml(rawName);   // guide-typed text never goes into HTML raw
         const site = process.env.FRONTEND_URL || 'https://jinni.travel';
         const page = `${site}/@${handle}`;
         const mailOptions = {
@@ -642,7 +644,7 @@ ${L.rights}
                 <p><a href="${site}/guide/dashboard" style="display:inline-block;background:linear-gradient(45deg,#D4AF37,#FF8C00);color:#fff;padding:13px 30px;border-radius:999px;text-decoration:none;font-weight:700">Open my dashboard</a></p>
                 <p style="font-size:13px;color:#8b6b3d">You can now remove the verification code from your Instagram bio.</p>
                 </div></div></body></html>`,
-            text: `Hi ${displayName}, your Jinni guide page is approved: ${page}. Add your picks at ${site}/guide/dashboard. You can now remove the verification code from your Instagram bio.`,
+            text: `Hi ${rawName}, your Jinni guide page is approved: ${page}. Add your picks at ${site}/guide/dashboard. You can now remove the verification code from your Instagram bio.`,
         };
         const result = await this.transporter.sendMail(mailOptions);
         logger.info(`Guide approved email sent to ${email}`);
@@ -650,7 +652,8 @@ ${L.rights}
     }
 
     /** Guide application not approved (2026-10-02). */
-    async sendGuideRejectedEmail(email, displayName, reason) {
+    async sendGuideRejectedEmail(email, rawName, rawReason) {
+        const displayName = escapeHtml(rawName), reason = escapeHtml(rawReason);
         const site = process.env.FRONTEND_URL || 'https://jinni.travel';
         const mailOptions = {
             from: `"Jinni Guides" <${process.env.EMAIL_USER}>`,
@@ -660,10 +663,10 @@ ${L.rights}
                 <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:20px;padding:32px 28px;color:#3c2a1e;box-shadow:0 0 18px -2px rgba(60,42,30,0.18)">
                 <p>Hi ${displayName},</p>
                 <p>Thank you for applying to be a Jinni guide. We couldn't approve your page yet.</p>
-                <p><strong>Reason:</strong> ${String(reason || '').replace(/[<>]/g, '')}</p>
+                <p><strong>Reason:</strong> ${reason}</p>
                 <p>You can fix this and apply again from <a href="${site}/guides/apply">${site.replace(/^https?:\/\//, '')}/guides/apply</a>.</p>
                 </div></body></html>`,
-            text: `Hi ${displayName}, we couldn't approve your Jinni guide page yet. Reason: ${reason}. You can apply again at ${site}/guides/apply.`,
+            text: `Hi ${rawName}, we couldn't approve your Jinni guide page yet. Reason: ${rawReason}. You can apply again at ${site}/guides/apply.`,
         };
         const result = await this.transporter.sendMail(mailOptions);
         logger.info(`Guide rejected email sent to ${email}`);

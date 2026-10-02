@@ -107,3 +107,34 @@ test('reserved words are exported so the availability check can say "reserved"',
     for (const w of ['admin', 'chat', 'guides', 'jinni']) expect(svc.RESERVED.has(w)).toBe(true);
     expect(svc.normalizeHandle('admin')).toBeNull();
 });
+
+describe('security', () => {
+    test('account deletion removes the guide page and its picks', async () => {
+        const calls = [];
+        const deps = {
+            Guide: { findOne: () => ({ select: () => ({ lean: async () => ({ _id: 'g1', handle: 'ani' }) }) }), deleteOne: async (q) => calls.push(['guide', q]) },
+            GuidePick: { deleteMany: async (q) => calls.push(['picks', q]) },
+        };
+        expect(await svc.deleteGuideForUser('u1', deps)).toBe(1);
+        expect(calls).toEqual([['picks', { guide: 'g1' }], ['guide', { _id: 'g1' }]]);
+    });
+    test('a user with no guide page: nothing to delete, and a db error never blocks account deletion', async () => {
+        const none = { Guide: { findOne: () => ({ select: () => ({ lean: async () => null }) }) }, GuidePick: {} };
+        expect(await svc.deleteGuideForUser('u1', none)).toBe(0);
+        const broken = { Guide: { findOne: () => { throw new Error('db down'); } }, GuidePick: {} };
+        expect(await svc.deleteGuideForUser('u1', broken)).toBe(0);
+    });
+    test('object/operator payloads cannot pass the input cleaners (NoSQL-injection shapes)', () => {
+        expect(svc.normalizeHandle({ $gt: '' })).toBeNull();
+        expect(svc.sanitizeApplication({ handle: { $ne: null }, instagram: ['a'], displayName: 'Ani', region: 'Yerevan', acceptTerms: true }).error).toBeTruthy();
+        expect(svc.sanitizeApplication({ handle: 'ani', instagram: 'ani', displayName: 'Ani', region: 'Yerevan', acceptTerms: 'true' }).error).toMatch(/terms/);
+        const p = svc.sanitizePick({ category: 'restaurant', placeId: { $gt: '' } });
+        expect(typeof p.placeId).toBe('string');
+        expect(svc.sanitizePick({ category: { $in: ['restaurant'] }, placeId: 'x' }).error).toBeTruthy();
+    });
+    test('a javascript: or data: link can never become a reel', () => {
+        for (const bad of ['javascript:alert(1)', 'data:text/html,<script>', 'https://instagram.com.evil.com/reel/ABCDE12345/', 'https://evil.com/?u=https://www.instagram.com/reel/ABCDE12345/']) {
+            expect(svc.parseInstagramPost(bad)).toBeNull();
+        }
+    });
+});

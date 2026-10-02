@@ -9130,6 +9130,7 @@ router.delete('/user/account', auth, async (req, res) => {
                 TravelQuery.deleteMany({ userId }),
                 require('../models/UserGoogleUsage').deleteMany({ userId }),
                 require('../models/ChatTurn').deleteMany({ userId }),
+                require('../services/guideService').deleteGuideForUser(userId),   // guide page + picks (2026-10-02)
                 ...(user?.email ? [
                     require('../models/EmailVerification').deleteMany({ email: user.email }),
                     require('../models/PasswordReset').deleteMany({ email: user.email }),
