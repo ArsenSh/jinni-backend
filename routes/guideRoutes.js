@@ -19,7 +19,11 @@ const svc = require('../services/guideService');
 
 const router = express.Router();
 
-const isStaffOrAdmin = (u) => !!u && (u.role === 'staff' || u.role === 'admin' || u.isAdmin === true);
+// Guide moderation = admin, or staff the admin gave the "Validate guides"
+// permission (2026-10-02 founder: a separate option when adding staff).
+const canValidateGuides = (u) => !!u && (u.role === 'admin' || u.isAdmin === true
+    || (u.role === 'staff' && u.staffAssignment?.permissions?.validateGuides === true));
+const NO_PERM = { success: false, error: 'You do not have permission to validate guides' };
 const MAX_PICKS = 150;
 
 // Behind Cloudflare + Coolify, req.ip is a proxy — key on the visitor's real
@@ -199,9 +203,11 @@ router.delete('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
 // ── STAFF: queue, approve, reject, suspend ──────────────────────────────────
 
 router.get('/staff/queue', auth, wrap(async (req, res) => {
-    if (!isStaffOrAdmin(req.user)) return res.status(403).json({ success: false, error: 'Staff only' });
+    if (!canValidateGuides(req.user)) return res.status(403).json(NO_PERM);
     const status = ['pending', 'active', 'rejected', 'suspended'].includes(req.query.status) ? req.query.status : 'pending';
     const rows = await Guide.find({ status }).sort({ updatedAt: -1 }).limit(100).populate('user', 'email name').lean();
+    const pickCounts = new Map((await GuidePick.aggregate([{ $match: { guide: { $in: rows.map(g => g._id) } } }, { $group: { _id: '$guide', n: { $sum: 1 } } }]))
+        .map(r => [String(r._id), r.n]));
     const counts = Object.fromEntries(await Promise.all(['pending', 'active', 'rejected', 'suspended']
         .map(async s => [s, await Guide.countDocuments({ status: s })])));
     res.json({
@@ -210,13 +216,14 @@ router.get('/staff/queue', auth, wrap(async (req, res) => {
             id: String(g._id), ...svc.publicGuide(g), status: g.status,
             verificationCode: g.verification?.code, staffNotes: g.verification?.staffNotes || '',
             email: g.user?.email || null, accountName: g.user?.name || null,
+            pickCount: pickCounts.get(String(g._id)) || 0,
             createdAt: g.createdAt, updatedAt: g.updatedAt,
         })),
     });
 }));
 
 async function staffAction(req, res, { from, to, action, needReason }) {
-    if (!isStaffOrAdmin(req.user)) return res.status(403).json({ success: false, error: 'Staff only' });
+    if (!canValidateGuides(req.user)) return res.status(403).json(NO_PERM);
     if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Guide not found' });
     const g = await Guide.findById(req.params.id).populate('user', 'email');
     if (!g) return res.status(404).json({ success: false, error: 'Guide not found' });
@@ -245,5 +252,35 @@ router.post('/staff/:id/approve', auth, wrap((req, res) => staffAction(req, res,
 router.post('/staff/:id/reject', auth, wrap((req, res) => staffAction(req, res, { from: ['pending'], to: 'rejected', action: 'reject', needReason: true })));
 router.post('/staff/:id/suspend', auth, wrap((req, res) => staffAction(req, res, { from: ['active'], to: 'suspended', action: 'suspend', needReason: true })));
 router.post('/staff/:id/reinstate', auth, wrap((req, res) => staffAction(req, res, { from: ['suspended'], to: 'active', action: 'reinstate' })));
+
+// ── STAFF: review a guide's picks (they go live at once — staff check after) ──
+
+router.get('/staff/:id/picks', auth, wrap(async (req, res) => {
+    if (!canValidateGuides(req.user)) return res.status(403).json(NO_PERM);
+    if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Guide not found' });
+    const picks = await GuidePick.find({ guide: req.params.id }).sort({ createdAt: -1 }).lean();
+    res.json({
+        success: true,
+        picks: picks.map(p => ({
+            id: String(p._id), placeId: p.placeId, placeName: p.placeName || '', category: p.category,
+            note: p.note || '', reelUrl: p.reelUrl || null, tour: p.tour || null, createdAt: p.createdAt,
+        })),
+    });
+}));
+
+router.delete('/staff/picks/:pickId', auth, wrap(async (req, res) => {
+    if (!canValidateGuides(req.user)) return res.status(403).json(NO_PERM);
+    if (!validId(req.params.pickId)) return res.status(404).json({ success: false, error: 'Pick not found' });
+    const pick = await GuidePick.findById(req.params.pickId);
+    if (!pick) return res.status(404).json({ success: false, error: 'Pick not found' });
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    await pick.deleteOne();
+    // Record it on the guide, so the history shows who removed what and why.
+    await Guide.updateOne({ _id: pick.guide }, { $push: { 'verification.history': {
+        action: 'pick_removed', by: req.user._id || req.user.id, notes: `${pick.placeName || pick.placeId} (${pick.category})${reason ? ': ' + reason : ''}`,
+    } } });
+    console.log(`[guides] pick ${pick._id} (${pick.placeName}) removed by ${req.user.email || req.user.id}`);
+    res.json({ success: true });
+}));
 
 module.exports = router;

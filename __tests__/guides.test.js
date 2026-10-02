@@ -162,3 +162,24 @@ describe('Instagram username field (live bug 2026-10-02)', () => {
         expect(ok).toMatchObject({ instagram: 'jinni.travel', handle: 'arsen.guide' });
     });
 });
+
+test('only admins and staff with the validateGuides permission can moderate guides', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../routes/guideRoutes.js'), 'utf8');
+    const m = src.match(/const canValidateGuides = \(u\) => ([\s\S]*?\));\n/);
+    expect(m).toBeTruthy();
+    const can = eval(`(u) => ${m[1]}`);
+    expect(can({ role: 'admin' })).toBe(true);
+    expect(can({ role: 'user', isAdmin: true })).toBe(true);
+    expect(can({ role: 'staff', staffAssignment: { permissions: { validateGuides: true } } })).toBe(true);
+    expect(can({ role: 'staff', staffAssignment: { permissions: { validateBusinesses: true } } })).toBe(false);
+    expect(can({ role: 'user', staffAssignment: { permissions: { validateGuides: true } } })).toBe(false);
+    expect(can(null)).toBe(false);
+});
+
+test('a removed-pick history entry is a valid action (later saves must not fail)', () => {
+    const Guide = require('../models/Guide');
+    const g = new Guide({ user: '0123456789abcdef01234567', handle: 'abc', displayName: 'A', instagram: 'abc', region: 'Yerevan',
+        guideType: 'local', verification: { code: 'jinni-ABCD', history: [{ action: 'pick_removed', notes: 'x' }] } });
+    const err = g.validateSync();
+    expect(err?.errors?.['verification.history.0.action']).toBeUndefined();
+});

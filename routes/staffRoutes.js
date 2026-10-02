@@ -104,11 +104,11 @@ router.get('/me', (req, res) => {
             // Convenience: flatten permissions so the frontend doesn't have to
             // know about the nested location. Admin always gets both true.
             permissions: u.isAdmin
-                ? { validateBusinesses: true, manageDestinations: true, moderateExplore: true }
+                ? { validateBusinesses: true, manageDestinations: true, moderateExplore: true, validateGuides: true }
                 : {
                     // Spread over defaults so legacy permission docs (created
                     // before moderateExplore existed) still yield all three keys.
-                    validateBusinesses: true, manageDestinations: false, moderateExplore: false,
+                    validateBusinesses: true, manageDestinations: false, moderateExplore: false, validateGuides: false,
                     ...(u.staffAssignment?.permissions ? JSON.parse(JSON.stringify(u.staffAssignment.permissions)) : {})
                   }
         }

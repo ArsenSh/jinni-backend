@@ -16,7 +16,7 @@
 const mongoose = require('mongoose');
 
 const historySchema = new mongoose.Schema({
-    action: { type: String, enum: ['applied', 'approved', 'rejected', 'suspended', 'reinstated'], required: true },
+    action: { type: String, enum: ['applied', 'approved', 'rejected', 'suspended', 'reinstated', 'pick_removed'], required: true },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     notes: { type: String, default: '' },
     at: { type: Date, default: Date.now },

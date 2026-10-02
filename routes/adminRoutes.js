@@ -2172,12 +2172,13 @@ router.post('/staff', async (req, res) => {
             validateBusinesses: pIn.validateBusinesses !== false,   // default true
             manageDestinations: pIn.manageDestinations === true,    // default false
             moderateExplore:    pIn.moderateExplore === true,       // default false
-            viewMarketing:      pIn.viewMarketing === true          // default false
+            viewMarketing:      pIn.viewMarketing === true,         // default false
+            validateGuides:     pIn.validateGuides === true         // default false
         };
-        if (!permissions.validateBusinesses && !permissions.manageDestinations && !permissions.moderateExplore && !permissions.viewMarketing) {
+        if (!permissions.validateBusinesses && !permissions.manageDestinations && !permissions.moderateExplore && !permissions.viewMarketing && !permissions.validateGuides) {
             return res.status(400).json({
                 success: false,
-                error: 'Staff must have at least one permission (validate businesses, manage destinations, moderate Explore, or marketing report)'
+                error: 'Staff must have at least one permission (validate businesses, validate guides, manage destinations, moderate Explore, or marketing report)'
             });
         }
 
@@ -2291,9 +2292,12 @@ router.patch('/staff/:id/assignment', async (req, res) => {
                     : !!current.moderateExplore,
                 viewMarketing: req.body.permissions.viewMarketing !== undefined
                     ? !!req.body.permissions.viewMarketing
-                    : !!current.viewMarketing
+                    : !!current.viewMarketing,
+                validateGuides: req.body.permissions.validateGuides !== undefined
+                    ? !!req.body.permissions.validateGuides
+                    : !!current.validateGuides
             };
-            if (!next.validateBusinesses && !next.manageDestinations && !next.moderateExplore && !next.viewMarketing) {
+            if (!next.validateBusinesses && !next.manageDestinations && !next.moderateExplore && !next.viewMarketing && !next.validateGuides) {
                 return res.status(400).json({
                     success: false,
                     error: 'Staff must keep at least one permission enabled'
