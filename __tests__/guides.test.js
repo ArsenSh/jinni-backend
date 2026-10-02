@@ -43,7 +43,7 @@ describe('application form', () => {
         });
     });
     test('each missing piece is named, and terms must be accepted', () => {
-        expect(svc.sanitizeApplication({ ...ok, handle: 'x', instagram: 'x' }).error).toMatch(/page name/);
+        expect(svc.sanitizeApplication({ ...ok, handle: 'x', instagram: 'x' }).error).toMatch(/page address/);
         expect(svc.sanitizeApplication({ ...ok, displayName: 'A' }).error).toMatch(/name/);
         expect(svc.sanitizeApplication({ ...ok, region: '' }).error).toMatch(/where you guide/);
         expect(svc.sanitizeApplication({ ...ok, acceptTerms: false }).error).toMatch(/terms/);
@@ -136,5 +136,29 @@ describe('security', () => {
         for (const bad of ['javascript:alert(1)', 'data:text/html,<script>', 'https://instagram.com.evil.com/reel/ABCDE12345/', 'https://evil.com/?u=https://www.instagram.com/reel/ABCDE12345/']) {
             expect(svc.parseInstagramPost(bad)).toBeNull();
         }
+    });
+});
+
+describe('Instagram username field (live bug 2026-10-02)', () => {
+    test('a real account named like a reserved word is accepted — reserved words guard page addresses only', () => {
+        expect(svc.normalizeInstagram('jinni.travel')).toBe('jinni.travel');
+        expect(svc.normalizeInstagram('admin')).toBe('admin');
+    });
+    test('pasted profile links, @ and capitals are cleaned', () => {
+        expect(svc.normalizeInstagram('https://www.instagram.com/Ani.Travels/?igsh=abc')).toBe('ani.travels');
+        expect(svc.normalizeInstagram('instagram.com/ani_t')).toBe('ani_t');
+        expect(svc.normalizeInstagram('@Ani.Travels ')).toBe('ani.travels');
+        expect(svc.normalizeInstagram('ab')).toBe('ab');
+    });
+    test('impossible usernames are refused', () => {
+        for (const bad of ['', 'has space', '.dot', 'dot.', 'two..dots', 'a'.repeat(31), 'ümlaut']) expect(svc.normalizeInstagram(bad)).toBeNull();
+    });
+    test('applying with Instagram "jinni.travel": the Instagram passes, the reserved page address is named as the problem', () => {
+        const base = { displayName: 'Arsen', region: 'Yerevan', acceptTerms: true };
+        const r = svc.sanitizeApplication({ ...base, instagram: 'jinni.travel', handle: 'jinni.travel' });
+        expect(r.error).toMatch(/page address/);
+        expect(r.error).not.toMatch(/Instagram/);
+        const ok = svc.sanitizeApplication({ ...base, instagram: 'jinni.travel', handle: 'arsen.guide' });
+        expect(ok).toMatchObject({ instagram: 'jinni.travel', handle: 'arsen.guide' });
     });
 });

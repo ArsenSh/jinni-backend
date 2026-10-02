@@ -28,6 +28,23 @@ function normalizeHandle(raw) {
 }
 
 /**
+ * An Instagram USERNAME as people actually type it: "@Ani.Travels",
+ * "ani.travels", or a pasted profile link "https://www.instagram.com/ani.travels/?igsh=…".
+ * Instagram's own rules only (1–30 of a–z 0–9 . _), and NO reserved-word check —
+ * that list protects page addresses, and a real account named "jinni.travel"
+ * must still be enterable (live 2026-10-02: the reserved check made the form say
+ * "Enter your Instagram username" for a filled-in field).
+ */
+function normalizeInstagram(raw) {
+    let v = String(raw || '').trim();
+    const m = v.match(/^(?:https?:\/\/)?(?:www\.)?instagram\.com\/([^/?#\s]+)/i);
+    if (m) v = m[1];
+    v = v.replace(/^@+/, '').toLowerCase();
+    if (!/^[a-z0-9._]{1,30}$/.test(v) || v.startsWith('.') || v.endsWith('.') || v.includes('..')) return null;
+    return v;
+}
+
+/**
  * An Instagram post/reel link → its canonical form, or null. Accepts
  * instagram.com/reel/<code>, /reels/<code>, /p/<code>, /tv/<code>, with or
  * without www, query strings or a trailing slash. Anything else — profiles,
@@ -52,10 +69,10 @@ function makeVerificationCode(rand = crypto.randomBytes) {
 
 /** Application form → clean fields, or { error }. */
 function sanitizeApplication(body = {}) {
-    const handle = normalizeHandle(body.handle || body.instagram);
-    if (!handle) return { error: 'Choose a page name of 3–30 letters, digits, dots or underscores.' };
-    const instagram = normalizeHandle(body.instagram || body.handle);
-    if (!instagram) return { error: 'Enter your Instagram username.' };
+    const instagram = normalizeInstagram(body.instagram || body.handle);
+    if (!instagram) return { error: 'Enter your Instagram username (letters, digits, dots or underscores, as on your profile).' };
+    const handle = normalizeHandle(body.handle || instagram);
+    if (!handle) return { error: 'Choose a page address of 3–30 letters, digits, dots or underscores that is not a reserved word.' };
     const displayName = clip(body.displayName, 60);
     if (displayName.length < 2) return { error: 'Enter your name as travelers should see it.' };
     const region = clip(body.region, 80);
@@ -199,6 +216,6 @@ async function deleteGuideForUser(userId, deps = {}) {
 }
 
 module.exports = {
-    deleteGuideForUser, normalizeHandle, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
+    deleteGuideForUser, normalizeHandle, normalizeInstagram, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
     publicGuide, placeSearch, attachGuidePicks, CATEGORIES, RESERVED,
 };
