@@ -7,8 +7,14 @@ const BlockedIP = require('../models/BlockedIP');
 const PasswordReset = require('../models/PasswordReset');
 
 const generateVerificationCode = () => {return Math.floor(100000 + Math.random() * 900000).toString()};
+// The visitor's real address. Behind Cloudflare + Coolify, req.ip is a proxy
+// shared by many people — keyed on it, one person's 3 wrong codes blocked
+// everyone on that edge and deleted their pending codes (2026-10-02). Same
+// rule as server.js's clientKey.
+const clientIp = (req) => (req.headers['cf-connecting-ip'] || req.ip || 'unknown');
+exports.clientIp = clientIp;
 exports.checkIPBlock = async (req, res, next) => {
-    const blocked = await BlockedIP.findOne({ip: req.ip, expiresAt: { $gt: new Date() }});
+    const blocked = await BlockedIP.findOne({ip: clientIp(req), expiresAt: { $gt: new Date() }});
     if (blocked) {return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((blocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true})}
     next();
 };
@@ -43,7 +49,7 @@ exports.sendVerificationEmail = async (req, res) => {
         const verificationCode = generateVerificationCode();
         const hashedPassword = await bcrypt.hash(password, 10);
         await EmailVerification.deleteMany({ email: email.toLowerCase() });
-        const verification = new EmailVerification({email: email.toLowerCase(), code: verificationCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000), userData: {name: name.trim(), password: hashedPassword, language: normalizeLanguage(language)}});
+        const verification = new EmailVerification({email: email.toLowerCase(), code: verificationCode, ipAddress: clientIp(req), expiresAt: new Date(Date.now() + 15 * 60 * 1000), userData: {name: name.trim(), password: hashedPassword, language: normalizeLanguage(language)}});
         await verification.save();
         await emailService.sendVerificationEmail(email.toLowerCase(), verificationCode, name.trim(), normalizeLanguage(language));
         res.status(200).json({message: 'Verification code sent to your email', email: email.toLowerCase(), expiresIn: '15 minutes'});
@@ -56,7 +62,7 @@ exports.sendVerificationEmail = async (req, res) => {
 exports.verifyEmailAndRegister = async (req, res) => {
     try {
         const { email, code } = req.body;
-        const clientIP = req.ip;
+        const clientIP = clientIp(req);
         const ipBlocked = await BlockedIP.findOne({ip: clientIP, expiresAt: { $gt: new Date() }});
         if (ipBlocked) { return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((ipBlocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true}) }
         if (!email || !code) {return res.status(400).json({ error: 'Email and verification code are required' })}
@@ -123,7 +129,7 @@ exports.verifyEmailAndRegister = async (req, res) => {
 exports.resendVerificationCode = async (req, res) => {
     try {
         const { email } = req.body;
-        const ipBlocked = await BlockedIP.findOne({ip: req.ip, expiresAt: { $gt: new Date() }});
+        const ipBlocked = await BlockedIP.findOne({ip: clientIp(req), expiresAt: { $gt: new Date() }});
         if (ipBlocked) {return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((ipBlocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true})}
         if (!email) {return res.status(400).json({ error: 'Email is required' })}
         const verification = await EmailVerification.findOne({email: email.toLowerCase(), isVerified: false});
@@ -152,7 +158,7 @@ exports.sendPasswordResetCode = async (req, res) => {
         if (recentReset) {return res.status(429).json({error: 'Please wait before requesting another reset code', retryAfter: 60})}
         const resetCode = generateVerificationCode();
         await PasswordReset.deleteMany({ email: email.toLowerCase() });
-        const passwordReset = new PasswordReset({email: email.toLowerCase(), code: resetCode, ipAddress: req.ip, expiresAt: new Date(Date.now() + 15 * 60 * 1000)});
+        const passwordReset = new PasswordReset({email: email.toLowerCase(), code: resetCode, ipAddress: clientIp(req), expiresAt: new Date(Date.now() + 15 * 60 * 1000)});
         await passwordReset.save();
         await emailService.sendPasswordResetEmail(email.toLowerCase(), resetCode, user.name, user.settings?.language);
         res.status(200).json({message: 'Password reset code sent to your email', expiresIn: '15 minutes'});
@@ -164,7 +170,7 @@ exports.sendPasswordResetCode = async (req, res) => {
 exports.verifyResetCode = async (req, res) => {
     try {
         const { email, code, newPassword } = req.body;
-        const clientIP = req.ip;
+        const clientIP = clientIp(req);
         const ipBlocked = await BlockedIP.findOne({ip: clientIP, expiresAt: { $gt: new Date() }});
         if (ipBlocked) {return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((ipBlocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true})}
         if (!email || !code || !newPassword) {return res.status(400).json({ error: 'Email, code, and new password are required' })}
@@ -215,7 +221,7 @@ exports.verifyResetCode = async (req, res) => {
 exports.resendPasswordResetCode = async (req, res) => {
     try {
         const { email } = req.body;
-        const ipBlocked = await BlockedIP.findOne({ip: req.ip, expiresAt: { $gt: new Date() }});
+        const ipBlocked = await BlockedIP.findOne({ip: clientIp(req), expiresAt: { $gt: new Date() }});
         if (ipBlocked) {return res.status(429).json({error: `Too many attempts. Try again after ${Math.round((ipBlocked.expiresAt - Date.now()) / 60000)} minutes`, blocked: true})}
         if (!email) {return res.status(400).json({ error: 'Email is required' })}
         const resetRequest = await PasswordReset.findOne({email: email.toLowerCase(), isUsed: false});

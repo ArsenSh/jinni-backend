@@ -267,3 +267,20 @@ test('routes: category is checked on add, and on edit only when it changes (olde
     expect(add).toMatch(/categoryProblem\(place, clean\.category\)/);
     expect(edit).toMatch(/if \(clean\.category !== pick\.category\)[\s\S]*categoryProblem/);
 });
+
+describe('sign-up fixes found while building the guide sign-up (2026-10-02)', () => {
+    const { schemas } = require('../utils/validation');
+    const ok = (name) => !schemas.sendVerification.validate({ name, email: 'a@b.co', password: 'Abc123' }).error;
+    test('names in every app alphabet pass; HTML characters still never do', () => {
+        for (const n of ['Anna Petrosyan', 'Աննա Պետրոսյան', 'Анна', '安娜', 'آنا', "D'Artagnan", 'Jean-Luc', 'Zoë']) expect(ok(n)).toBe(true);
+        for (const n of ['<b>x</b>', 'a&b', 'x"y', 'ab1']) expect(ok(n)).toBe(false);
+    });
+    test('the wrong-code block is keyed on the visitor, not the shared proxy', () => {
+        const { clientIp } = require('../controllers/authController');
+        expect(clientIp({ headers: { 'cf-connecting-ip': '5.6.7.8' }, ip: '172.70.1.1' })).toBe('5.6.7.8');
+        expect(clientIp({ headers: {}, ip: '9.9.9.9' })).toBe('9.9.9.9');
+        const src = require('fs').readFileSync(require('path').join(__dirname, '../controllers/authController.js'), 'utf8');
+        const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+        expect(code.match(/req\.ip/g)).toHaveLength(1);   // only inside clientIp()
+    });
+});

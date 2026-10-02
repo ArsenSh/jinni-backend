@@ -18,10 +18,14 @@ const schemas = {
         name: Joi.string()
             .min(2)
             .max(50)
-            .pattern(/^[a-zA-Z\s\u00C0-\u017F]+$/)
+            // Letters of ANY alphabet (Armenian, Cyrillic, Chinese, Arabic…), spaces,
+            // hyphens, apostrophes. Was Latin-only: "Աննա" / "Анна" got refused at
+            // signup (2026-10-02). Still no <, >, &, " — the name is written into
+            // the verification email's HTML.
+            .pattern(/^[\p{L}\p{M}\s'\-]+$/u)
             .required()
             .messages({
-                'string.pattern.base': 'Name can only contain letters and spaces',
+                'string.pattern.base': 'Name can only contain letters, spaces, hyphens and apostrophes',
                 'string.min': 'Name must be at least 2 characters long',
                 'string.max': 'Name cannot exceed 50 characters'
             }),
