@@ -439,6 +439,34 @@
           }
         }
       ]
+    },
+    {
+      "id": "after-flights-no-crash",
+      "why": "2026-10-03 22:57 live: a turn after a transport answer threw \"intentService is not defined\" (out-of-scope const since 09-14).",
+      "turns": [
+        {
+          "say": "how much is a ticket from Yerevan to Moscow on 25 October?",
+          "expect": {}
+        },
+        {
+          "say": "Give me hidden gems in armenia to discover",
+          "expect": {
+            "cardsMin": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "country-gems-at-night",
+      "why": "2026-10-03 22:58 live: \"What hidden gems you can find in Armenia\" at night was capped to 5 km of central Yerevan (late-night right-now). A country ask must search the country.",
+      "turns": [
+        {
+          "say": "What hidden gems you can find in Armenia",
+          "expect": {
+            "cardsMin": 3
+          }
+        }
+      ]
     }
   ]
 }

@@ -821,7 +821,10 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             // back?" and became a Yerevan nightlife deck (live 2026-09-13).
             || (sessionPeek?.lastLane === 'transport'
                 && intent.isTravel
-                && intentService.answersAPendingQuestion(recentTurns)
+                // required here: the `intentService` const above lives inside the pre-pass try
+                // block, so this line threw "intentService is not defined" on every turn that
+                // followed a transport answer (live 2026-10-03 22:57, "Discovery Hidden Gems").
+                && require('../services/intentService').answersAPendingQuestion(recentTurns)
                 && !(intent.placeNames || []).length
                 && !(intent.browse === true)
                 && !intent.settingsChange?.length)
@@ -1667,7 +1670,13 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             // Right-now context, decided ONCE: the AI's intent.when is the
             // brain; nearby/late-night/now-words are the degradation path.
             const rightNow = intent.when === 'planned' ? false
-                : (intent.when === 'now' || effectiveNearbyMode || timeContext.isLateNight || isRightNowAsk(message));
+                : (intent.when === 'now' || effectiveNearbyMode
+                    // the late-night default is for the traveler's own surroundings — a
+                    // COUNTRY-wide ask at 23:00 ("hidden gems in Armenia") is planning, not
+                    // "open this minute within 5 km" (live 2026-10-03 22:58: it served two
+                    // bars and a square in central Yerevan). Words like "now"/"tonight" still win.
+                    || (timeContext.isLateNight && meta.destScale !== 'country')
+                    || isRightNowAsk(message));
             const category = intent.actionType && intent.actionType !== 'general' ? intent.actionType : null;
             const mode = effectiveNearbyMode ? 'nearby' : 'discovery';
             // Tuning round: enrich the lossy intent query with the message's
