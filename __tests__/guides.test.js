@@ -291,8 +291,8 @@ describe('guide questions', () => {
     const { isGuideAsk, guidesForAsk, guideAskContext } = require('../services/guideService');
     test('isGuideAsk: every app language yes; travel-guide / guide-me / guidebook no', () => {
         for (const m of ['Are there any guide with you?', 'can you recommend a local guide in Dilijan?', 'I need a tour guide for Garni',
-            'есть ли гид в Дилижане?', 'je cherche un guide à Erevan', '有导游吗', 'هل يوجد مرشد سياحي', 'Կա՞ գիդ']) expect(isGuideAsk(m)).toBe(true);
-        for (const m of ['travel guide to Paris', 'guide me to Cascade', 'any guidebook for Armenia?', 'hidden gems in Garni', '']) expect(isGuideAsk(m)).toBe(false);
+            'есть ли гид в Дилижане?', 'je cherche un guide à Erevan', '有导游吗', 'هل يوجد مرشد سياحي', 'Կա՞ գիդ', 'Do you have guide?', 'No matter give me guide', 'is there a local guide']) expect(isGuideAsk(m)).toBe(true);
+        for (const m of ['travel guide to Paris', 'guide me to Cascade', 'any guidebook for Armenia?', 'hidden gems in Garni', '', 'give me a guide to Yerevan']) expect(isGuideAsk(m)).toBe(false);
     });
     const fakeGuides = (rows) => ({
         Guide: { find: () => ({ select: () => ({ lean: async () => rows }) }) },

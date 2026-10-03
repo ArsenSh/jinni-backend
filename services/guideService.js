@@ -358,6 +358,9 @@ const GUIDE_ASK = [
     /\b(local|tour|private|personal|mountain|hiking|city|licensed|english[- ]speaking|russian[- ]speaking)\s+guides?\b/i,
     /\bguides?\b[^.?!]{0,40}\b(with you|on jinni|in jinni|do you have|you have|available|recommend|book|hire|contact)\b/i,
     /\b(any|find|recommend|hire|book|need|want|know)\s+(?:me\s+)?(?:a\s+|some\s+)?(?:good\s+)?(?:local\s+)?guides?\b(?!\s*book)/i,
+    // live 2026-10-04: "Do you have guide?" and "No matter give me guide" slipped through
+    /\b(do you have|have you got|you got|is there|are there|got)\s+(?:a\s+|any\s+)?(?:local\s+|tour\s+|human\s+)?guides?\b(?!\s*(book|to|for)\b)/i,
+    /\bgive me (?:a\s+)?(?:local\s+|tour\s+|real\s+|human\s+)?guides?\s*[.!?]*\s*$/i,
     /\bguides?\s+(in|for|near|around|who)\b/i,
     /(^|[^а-яё])(гид|экскурсовод)/i,
     /\b(un|des|les)\s+guides?\b(?!\s+de\s+voyage)/i,
