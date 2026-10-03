@@ -284,3 +284,45 @@ describe('sign-up fixes found while building the guide sign-up (2026-10-02)', ()
         expect(code.match(/req\.ip/g)).toHaveLength(1);   // only inside clientIp()
     });
 });
+
+// ── Questions ABOUT guides (founder 2026-10-04; live 2026-10-03 22:59 "Are there
+//    any guide with you?" was answered "No, I'm not a guide") ──
+describe('guide questions', () => {
+    const { isGuideAsk, guidesForAsk, guideAskContext } = require('../services/guideService');
+    test('isGuideAsk: every app language yes; travel-guide / guide-me / guidebook no', () => {
+        for (const m of ['Are there any guide with you?', 'can you recommend a local guide in Dilijan?', 'I need a tour guide for Garni',
+            'есть ли гид в Дилижане?', 'je cherche un guide à Erevan', '有导游吗', 'هل يوجد مرشد سياحي', 'Կա՞ գիդ']) expect(isGuideAsk(m)).toBe(true);
+        for (const m of ['travel guide to Paris', 'guide me to Cascade', 'any guidebook for Armenia?', 'hidden gems in Garni', '']) expect(isGuideAsk(m)).toBe(false);
+    });
+    const fakeGuides = (rows) => ({
+        Guide: { find: () => ({ select: () => ({ lean: async () => rows }) }) },
+        GuidePick: { aggregate: async () => [{ _id: 'g2', n: 5 }, { _id: 'g1', n: 1 }] },
+    });
+    const ROWS = [
+        { _id: 'g1', handle: 'ani.travels', displayName: 'Ani Petrosyan', region: 'Dilijan, Tavush', languages: ['en', 'hy'], guideType: 'local', bio: '' },
+        { _id: 'g2', handle: 'haykshahinyan_', displayName: 'Hayk Shahinyan', region: 'Garni, Kotayk', languages: ['hy'], guideType: 'local', bio: 'Nature' },
+    ];
+    test('guidesForAsk: region match comes first; the rest fill up to 3 by picks', async () => {
+        const r = await guidesForAsk({ area: 'dilijan' }, fakeGuides(ROWS));
+        expect(r.covering.map(g => g.handle)).toEqual(['ani.travels']);
+        expect(r.others.map(g => g.handle)).toEqual(['haykshahinyan_']);
+        expect(r.covering[0].url).toBe('https://jinni.travel/@ani.travels');
+    });
+    test('guidesForAsk: no area → everyone, most picks first; failure → empty, never throws', async () => {
+        const r = await guidesForAsk({}, fakeGuides(ROWS));
+        expect(r.covering).toEqual([]);
+        expect(r.others.map(g => g.handle)).toEqual(['haykshahinyan_', 'ani.travels']);
+        const broken = await guidesForAsk({ area: 'x' }, { Guide: { find: () => { throw new Error('db down'); } } });
+        expect(broken).toEqual({ area: 'x', covering: [], others: [] });
+    });
+    test('guideAskContext: names only the given guides and tells the truth when none cover the area', () => {
+        const none = guideAskContext({ area: 'Sisian', covering: [], others: [] });
+        expect(none).toMatch(/ONLY guides you may name/);
+        expect(none).toMatch(/no local guides have joined/);
+        expect(none).toMatch(/jinni\.travel\/guides/);
+        const elsewhere = guideAskContext({ area: 'Sisian', covering: [], others: [{ name: 'Hayk Shahinyan', handle: 'haykshahinyan_', region: 'Garni', languages: [], picks: 2, url: 'https://jinni.travel/@haykshahinyan_', bio: '' }] });
+        expect(elsewhere).toMatch(/none yet/);
+        expect(elsewhere).toMatch(/no local guide for that area has joined/);
+        expect(elsewhere).toMatch(/@haykshahinyan_/);
+    });
+});

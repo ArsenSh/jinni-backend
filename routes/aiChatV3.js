@@ -1204,7 +1204,31 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
         // newest deck) with its map. No model, no retrieval, no Google.
         const mapAsk = /\b(map|carte|карт\w*|քարտեզ\w*|خريطة|地图)\b/iu.test(msgLower)
             && message.trim().split(/\s+/).length <= 6 && !deckAsk;
-        if (v3Decision?.lane === 'clarify' && v3Decision.clarifyQuestion) {
+        const guideSvc = require('../services/guideService');
+        if (guideSvc.isGuideAsk(message)) {
+            // ── A question ABOUT guides (founder 2026-10-04): answered from the
+            //    approved guides only — names, regions, page links. A country
+            //    ("guides in Armenia") is no area filter at all. ──
+            const area = meta.destScale === 'country' ? null : ((intent.placeNames || [])[0] || null);
+            const found = await guideSvc.guidesForAsk({ area });
+            meta.guidesOffered = [...found.covering, ...found.others].map(g => g.handle);
+            const gate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
+            const out = await narrator.stream({
+                messages: buildChitchatMessages({
+                    message: message + '\n\n' + guideSvc.guideAskContext(found),
+                    langName, history: recentTurns, localFacts: [], preferences: intent._preferences }),
+                onToken: (c) => gate.feed(c),
+                maxTokens: 260,
+                realStream: true,
+                model: providerName,
+                modelName,
+            });
+            gate.finalize();
+            reply = greetGateOn ? stripLeadingGreeting(out.text) : out.text;
+            stats.path = 'guides';
+            addUsage(out);
+            console.log(`[v3] guide question answered in ${Date.now() - t0}ms (${meta.guidesOffered.length} guide(s))`);
+        } else if (v3Decision?.lane === 'clarify' && v3Decision.clarifyQuestion) {
             // The controller found ONE missing detail nothing holds; ask for
             // it in one sentence, no model call, no deck.
             reply = v3Decision.clarifyQuestion;

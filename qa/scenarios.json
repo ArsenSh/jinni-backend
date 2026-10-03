@@ -467,6 +467,42 @@
           }
         }
       ]
+    },
+    {
+      "id": "guide-ask-any",
+      "why": "2026-10-03 22:59 live: \"Are there any guide with you?\" → \"No, I'm not a guide\". Must name approved guides with page links.",
+      "turns": [
+        {
+          "say": "Are there any guide with you?",
+          "expect": {
+            "replyIncludes": "jinni.travel/@"
+          }
+        }
+      ]
+    },
+    {
+      "id": "guide-ask-garni",
+      "why": "2026-10-04: a guide question for an area a guide covers names that guide.",
+      "turns": [
+        {
+          "say": "can you recommend a local guide in Garni?",
+          "expect": {
+            "replyIncludes": "haykshahinyan_"
+          }
+        }
+      ]
+    },
+    {
+      "id": "guide-ask-uncovered",
+      "why": "2026-10-04: an area no guide covers is said plainly, never invented.",
+      "turns": [
+        {
+          "say": "is there a tour guide in Sisian?",
+          "expect": {
+            "cardsMax": 0
+          }
+        }
+      ]
     }
   ]
 }

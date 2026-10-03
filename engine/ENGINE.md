@@ -312,3 +312,11 @@ engine/
         (old search-cache rows) stay lenient; the search cache now stores the count.
       · Open: whether a late-night hidden-gem ask should keep closed gems marked
         "opens tomorrow" instead of only open ones — not changed, awaiting founder.
+- [x] **GUIDE QUESTIONS** (2026-10-04, founder: "how it will respond with guide
+      questions?" — live 2026-10-03 22:59 "Are there any guide with you?" → "No, I'm not a
+      guide"). `guideService.isGuideAsk` (en/ru/fr/zh/ar/hy; "travel guide to X", "guide me",
+      "guidebook" excluded) routes FIRST in the v3 chain (before clarify) to a narrated
+      answer grounded ONLY in `guidesForAsk` (approved guides; region text match for the
+      asked area first, then most picks; max 3; a country is no filter) via
+      `guideAskContext` — names, regions, page links; "none for that area yet" said plainly;
+      jinni.travel/guides for guides. stats.path='guides'; log `[guides] question → …`.
