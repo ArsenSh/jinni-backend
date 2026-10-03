@@ -38,7 +38,7 @@ describe('application form', () => {
     const ok = { handle: 'ani.travels', instagram: '@Ani.Travels', displayName: 'Ani', region: 'Dilijan', languages: ['en', 'HY', 'xx'], acceptTerms: true, guideType: 'licensed', bio: '  I love   the north ' };
     test('a good form is cleaned', () => {
         expect(svc.sanitizeApplication(ok)).toEqual({
-            handle: 'ani.travels', instagram: 'ani.travels', displayName: 'Ani', region: 'Dilijan',
+            handle: 'ani.travels', instagram: 'ani.travels', displayName: 'Ani', region: 'Dilijan', country: 'AM',
             languages: ['en', 'hy'], bio: 'I love the north', guideType: 'licensed',
         });
     });
@@ -74,7 +74,7 @@ describe('picks', () => {
 test('the public view never leaks the account, code or staff notes', () => {
     const v = svc.publicGuide({ handle: 'ani', displayName: 'Ani', instagram: 'ani', bio: 'b', region: 'Dilijan', languages: ['en'], guideType: 'local',
         user: 'u1', verification: { code: 'jinni-ABCD', staffNotes: 'secret' }, status: 'active' });
-    expect(Object.keys(v).sort()).toEqual(['bio', 'displayName', 'guideType', 'handle', 'instagram', 'languages', 'region']);
+    expect(Object.keys(v).sort()).toEqual(['bio', 'country', 'displayName', 'guideType', 'handle', 'instagram', 'languages', 'region']);
 });
 
 describe('attachGuidePicks — "Picked by @guide" on chat cards', () => {
@@ -285,56 +285,46 @@ describe('sign-up fixes found while building the guide sign-up (2026-10-02)', ()
     });
 });
 
-// ── Questions ABOUT guides (founder 2026-10-04; live 2026-10-03 22:59 "Are there
-//    any guide with you?" was answered "No, I'm not a guide") ──
+// ── Questions ABOUT guides (founder 2026-10-04): the v3 controller decides a message
+//    is one (lane 'guides'); these helpers decide what may be said ──
 describe('guide questions', () => {
-    const { isGuideAsk, guidesForAsk, guideAskContext } = require('../services/guideService');
-    test('isGuideAsk: every app language yes; travel-guide / guide-me / guidebook no', () => {
-        for (const m of ['Are there any guide with you?', 'can you recommend a local guide in Dilijan?', 'I need a tour guide for Garni',
-            'есть ли гид в Дилижане?', 'je cherche un guide à Erevan', '有导游吗', 'هل يوجد مرشد سياحي', 'Կա՞ գիդ', 'Do you have guide?', 'No matter give me guide', 'is there a local guide']) expect(isGuideAsk(m)).toBe(true);
-        for (const m of ['travel guide to Paris', 'guide me to Cascade', 'any guidebook for Armenia?', 'hidden gems in Garni', '', 'give me a guide to Yerevan']) expect(isGuideAsk(m)).toBe(false);
-    });
-    const fakeGuides = (rows) => ({
-        Guide: { find: () => ({ select: () => ({ lean: async () => rows }) }) },
-        GuidePick: { aggregate: async () => [{ _id: 'g2', n: 5 }, { _id: 'g1', n: 1 }] },
-    });
+    const { guidesForAsk, guideAskContext, sanitizeApplication, publicGuide } = require('../services/guideService');
     const ROWS = [
-        { _id: 'g1', handle: 'ani.travels', displayName: 'Ani Petrosyan', region: 'Dilijan, Tavush', languages: ['en', 'hy'], guideType: 'local', bio: '' },
-        { _id: 'g2', handle: 'haykshahinyan_', displayName: 'Hayk Shahinyan', region: 'Garni, Kotayk', languages: ['hy'], guideType: 'local', bio: 'Nature' },
+        { _id: 'g1', handle: 'ani.travels', displayName: 'Ani', region: 'Dilijan, Tavush', country: 'AM', languages: ['en'], guideType: 'local', bio: '' },
+        { _id: 'g2', handle: 'haykshahinyan_', displayName: 'Hayk', region: 'Armenia', languages: ['hy'], guideType: 'local', bio: 'Nature' },   // pre-country row → AM
+        { _id: 'g3', handle: 'tbilisi.nino', displayName: 'Nino', region: 'Tbilisi', country: 'GE', languages: ['ka'], guideType: 'local', bio: '' },
     ];
-    test('guidesForAsk: region match comes first; the rest fill up to 3 by picks', async () => {
-        const r = await guidesForAsk({ area: 'dilijan' }, fakeGuides(ROWS));
-        expect(r.covering.map(g => g.handle)).toEqual(['ani.travels']);
-        expect(r.others.map(g => g.handle)).toEqual(['haykshahinyan_']);
-        expect(r.covering[0].url).toBe('https://jinni.travel/@ani.travels');
+    const deps = (picks = []) => ({ Guide: { find: () => ({ select: () => ({ lean: async () => ROWS }) }) }, GuidePick: { aggregate: async () => picks } });
+    test('a pick in the area makes a guide cover it; same-country guides follow; other countries never', async () => {
+        const r = await guidesForAsk({ area: 'Garni', countryCode: 'AM', countryName: 'Armenia' }, deps([{ _id: 'g2', n: 2, places: ['Garni temple'] }]));
+        expect(r.covering.map(g => g.handle)).toEqual(['haykshahinyan_']);
+        expect(r.inCountry.map(g => g.handle)).toEqual(['ani.travels']);
+        expect(r.covering[0].url).toBe('https://jinni.travel/@haykshahinyan_');
     });
-    test('guidesForAsk: no area → everyone, most picks first; failure → empty, never throws', async () => {
-        const r = await guidesForAsk({}, fakeGuides(ROWS));
-        expect(r.covering).toEqual([]);
-        expect(r.others.map(g => g.handle)).toEqual(['haykshahinyan_', 'ani.travels']);
+    test('a country with no guides gets none — never a guide from elsewhere', async () => {
+        const r = await guidesForAsk({ area: 'Baku', countryCode: 'AZ', countryName: 'Azerbaijan' }, deps());
+        expect(r.covering).toEqual([]); expect(r.inCountry).toEqual([]);
+        const ge = await guidesForAsk({ area: 'Tbilisi', countryCode: 'GE' }, deps());
+        expect(ge.covering.map(g => g.handle)).toEqual(['tbilisi.nino']);
+    });
+    test('no country known → everyone, most picks first; failure → empty, never throws', async () => {
+        const r = await guidesForAsk({}, deps([{ _id: 'g3', n: 4, places: [] }, { _id: 'g1', n: 1, places: [] }]));
+        expect(r.inCountry.map(g => g.handle)).toEqual(['tbilisi.nino', 'ani.travels', 'haykshahinyan_']);
         const broken = await guidesForAsk({ area: 'x' }, { Guide: { find: () => { throw new Error('db down'); } } });
-        expect(broken).toEqual({ area: 'x', covering: [], others: [] });
+        expect(broken.covering).toEqual([]); expect(broken.inCountry).toEqual([]);
     });
-    test('guideAskContext: names only the given guides and tells the truth when none cover the area', () => {
-        const none = guideAskContext({ area: 'Sisian', covering: [], others: [] });
+    test('context names only the given guides and says "none" without borrowing another country', async () => {
+        const none = guideAskContext({ area: 'Baku', country: 'Azerbaijan', covering: [], inCountry: [] });
         expect(none).toMatch(/ONLY guides you may name/);
-        expect(none).toMatch(/no local guides have joined/);
+        expect(none).toMatch(/no local guide for Baku, Azerbaijan has joined/);
+        expect(none).toMatch(/never suggest a guide from another country/);
         expect(none).toMatch(/jinni\.travel\/guides/);
-        const elsewhere = guideAskContext({ area: 'Sisian', covering: [], others: [{ name: 'Hayk Shahinyan', handle: 'haykshahinyan_', region: 'Garni', languages: [], picks: 2, url: 'https://jinni.travel/@haykshahinyan_', bio: '' }] });
-        expect(elsewhere).toMatch(/none yet/);
-        expect(elsewhere).toMatch(/no local guide for that area has joined/);
-        expect(elsewhere).toMatch(/@haykshahinyan_/);
     });
-    test('guidesForAsk: a pick in the area or a country-wide region counts as covering', async () => {
-        const rows = [
-            { _id: 'g1', handle: 'ani.travels', displayName: 'Ani', region: 'Dilijan', languages: [], guideType: 'local', bio: '' },
-            { _id: 'g2', handle: 'haykshahinyan_', displayName: 'Hayk', region: 'Armenia', languages: [], guideType: 'local', bio: '' },
-            { _id: 'g3', handle: 'garni.walks', displayName: 'Gor', region: 'Yerevan', languages: [], guideType: 'local', bio: '' },
-        ];
-        const deps = { Guide: { find: () => ({ select: () => ({ lean: async () => rows }) }) },
-            GuidePick: { aggregate: async () => [{ _id: 'g3', n: 1, places: ['Garni temple'] }, { _id: 'g2', n: 2, places: ['Tatev'] }] } };
-        const r = await guidesForAsk({ area: 'Garni' }, deps);
-        expect(r.covering.map(g => g.handle)).toEqual(['garni.walks', 'haykshahinyan_']);   // pick match first, then country-wide
-        expect(r.others.map(g => g.handle)).toEqual(['ani.travels']);
+    test('applications carry a country (default AM); the public page shows it', () => {
+        const base = { instagram: 'nino.trips', displayName: 'Nino', region: 'Tbilisi', acceptTerms: true };
+        expect(sanitizeApplication({ ...base, country: 'ge' }).country).toBe('GE');
+        expect(sanitizeApplication(base).country).toBe('AM');
+        expect(sanitizeApplication({ ...base, country: 'Georgia' }).country).toBe('AM');
+        expect(publicGuide({ handle: 'x', displayName: 'X', region: 'r' }).country).toBe('AM');
     });
 });

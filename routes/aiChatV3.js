@@ -1070,6 +1070,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             meta.destPopulation = dest.population || 0;
             meta.destWaterBody = !!dest.waterBody;
             meta.destCountryName = dest.countryName || null;
+            meta.destCountryCode = dest.countryCode || null;
             // They named somewhere they are not, while the toggle said nearby.
             // The switch applies to THIS turn only — an inferred change never
             // rewrites a saved setting — and the reply says what it did.
@@ -1205,12 +1206,13 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
         const mapAsk = /\b(map|carte|карт\w*|քարտեզ\w*|خريطة|地图)\b/iu.test(msgLower)
             && message.trim().split(/\s+/).length <= 6 && !deckAsk;
         const guideSvc = require('../services/guideService');
-        if (guideSvc.isGuideAsk(message)) {
-            // ── A question ABOUT guides (founder 2026-10-04): answered from the
-            //    approved guides only — names, regions, page links. A country
-            //    ("guides in Armenia") is no area filter at all. ──
+        if (v3Decision?.lane === 'guides') {
+            // ── A question ABOUT guides (founder 2026-10-04). The CONTROLLER decides
+            //    it is one ("do it the v3 way" — no word list, §12); the code decides
+            //    what may be said: the approved guides only — names, regions, page
+            //    links. A country ("guides in Armenia") is no area filter at all. ──
             const area = meta.destScale === 'country' ? null : ((intent.placeNames || [])[0] || null);
-            const found = await guideSvc.guidesForAsk({ area });
+            const found = await guideSvc.guidesForAsk({ area, countryCode: meta.destCountryCode, countryName: meta.destCountryName });
             meta.guidesOffered = [...found.covering, ...found.others].map(g => g.handle);
             const gate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
             const out = await narrator.stream({

@@ -30,6 +30,10 @@ const guideSchema = new mongoose.Schema({
     displayName: { type: String, required: true, trim: true, maxlength: 60 },
     instagram: { type: String, required: true, lowercase: true, trim: true, maxlength: 30 },
     bio: { type: String, default: '', maxlength: 400 },
+    // The COUNTRY they guide in, ISO 3166-1 alpha-2 (founder 2026-10-04: "guides may be in
+    // cloud like — each guide each country"). Guide questions match on it first; guides
+    // created before it existed read as Armenia (see guidesForAsk).
+    country: { type: String, uppercase: true, trim: true, match: /^[A-Z]{2}$/, default: 'AM', index: true },
     region: { type: String, required: true, trim: true, maxlength: 80 },     // where they guide, e.g. "Yerevan", "Dilijan"
     languages: { type: [String], default: [] },
     guideType: { type: String, enum: ['licensed', 'creator', 'local'], default: 'local' },

@@ -312,11 +312,15 @@ engine/
         (old search-cache rows) stay lenient; the search cache now stores the count.
       · Open: whether a late-night hidden-gem ask should keep closed gems marked
         "opens tomorrow" instead of only open ones — not changed, awaiting founder.
-- [x] **GUIDE QUESTIONS** (2026-10-04, founder: "how it will respond with guide
-      questions?" — live 2026-10-03 22:59 "Are there any guide with you?" → "No, I'm not a
-      guide"). `guideService.isGuideAsk` (en/ru/fr/zh/ar/hy; "travel guide to X", "guide me",
-      "guidebook" excluded) routes FIRST in the v3 chain (before clarify) to a narrated
-      answer grounded ONLY in `guidesForAsk` (approved guides; region text match for the
-      asked area first, then most picks; max 3; a country is no filter) via
-      `guideAskContext` — names, regions, page links; "none for that area yet" said plainly;
-      jinni.travel/guides for guides. stats.path='guides'; log `[guides] question → …`.
+- [x] **GUIDE QUESTIONS — THE v3 WAY** (2026-10-04, founder: "how will it respond with guide
+      questions?", then "do it the v3 way"; live 2026-10-03 22:59 "Are there any guide with you?"
+      → "No, I'm not a guide"). The CONTROLLER decides (new lane `guides` in
+      conversationController — human local/tour guides on Jinni, any wording; not a written
+      "guide to", a deck or a plan). A first word-list router (isGuideAsk) was built and
+      DELETED the same night: it missed "Do you have guide?" — exactly the failure class §12
+      exists to end. Code decides what may be said: `guidesForAsk` → approved guides only,
+      COUNTRY FIRST (Guide.country, ISO-2, default AM; guides are a global directory — never a
+      guide from another country), then area matches (region text or a pick there, e.g. Hayk
+      → Garni Temple), max 3; `guideAskContext` grounds the narrator ("none for X yet" said
+      plainly). destination.js now returns countryCode → meta.destCountryCode.
+      stats.path='guides'; log `[guides] question → …`.

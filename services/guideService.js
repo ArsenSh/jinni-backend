@@ -67,6 +67,9 @@ function makeVerificationCode(rand = crypto.randomBytes) {
     return 'jinni-' + Array.from(b).map(x => ALPH[x % ALPH.length]).join('');
 }
 
+/** "am" / "AM" → "AM"; anything that is not two letters → null. */
+const normalizeCountry = (c) => { const v = String(c || '').trim().toUpperCase(); return /^[A-Z]{2}$/.test(v) ? v : null; };
+
 /** Application form → clean fields, or { error }. */
 function sanitizeApplication(body = {}) {
     const instagram = normalizeInstagram(body.instagram || body.handle);
@@ -77,10 +80,11 @@ function sanitizeApplication(body = {}) {
     if (displayName.length < 2) return { error: 'Enter your name as travelers should see it.' };
     const region = clip(body.region, 80);
     if (region.length < 2) return { error: 'Tell us where you guide (city or region).' };
+    const country = normalizeCountry(body.country) || 'AM';   // older clients send none
     if (body.acceptTerms !== true) return { error: 'Please accept the guide terms.' };
     const languages = [...new Set((Array.isArray(body.languages) ? body.languages : []).map(l => String(l).toLowerCase().slice(0, 2)).filter(l => LANGS.has(l)))].slice(0, 8);
     return {
-        handle, instagram, displayName, region, languages,
+        handle, instagram, displayName, region, country, languages,
         bio: clip(body.bio, 400),
         guideType: TYPES.has(body.guideType) ? body.guideType : 'local',
     };
@@ -91,6 +95,7 @@ function sanitizeProfileEdit(body = {}) {
     const out = {};
     if (body.displayName != null) { const v = clip(body.displayName, 60); if (v.length >= 2) out.displayName = v; }
     if (body.region != null) { const v = clip(body.region, 80); if (v.length >= 2) out.region = v; }
+    if (body.country != null) { const c = normalizeCountry(body.country); if (c) out.country = c; }
     if (body.bio != null) out.bio = clip(body.bio, 400);
     if (Array.isArray(body.languages)) out.languages = [...new Set(body.languages.map(l => String(l).toLowerCase().slice(0, 2)).filter(l => LANGS.has(l)))].slice(0, 8);
     if (body.guideType != null && TYPES.has(body.guideType)) out.guideType = body.guideType;
@@ -133,7 +138,7 @@ function publicGuide(g) {
     if (!g) return null;
     return {
         handle: g.handle, displayName: g.displayName, instagram: g.instagram, bio: g.bio || '',
-        region: g.region, languages: g.languages || [], guideType: g.guideType || 'local',
+        region: g.region, country: g.country || 'AM', languages: g.languages || [], guideType: g.guideType || 'local',
     };
 }
 
@@ -350,43 +355,28 @@ async function deleteGuideForUser(userId, deps = {}) {
 }
 
 
-// ── Questions ABOUT guides (founder 2026-10-04: "how will it respond with guide
-// questions?" — live 2026-10-03 22:59 "Are there any guide with you?" got "No,
-// I'm not a guide and I don't come with one"). A guide question is answered
-// from the approved guides only; the model never sees anyone else.
-const GUIDE_ASK = [
-    /\b(local|tour|private|personal|mountain|hiking|city|licensed|english[- ]speaking|russian[- ]speaking)\s+guides?\b/i,
-    /\bguides?\b[^.?!]{0,40}\b(with you|on jinni|in jinni|do you have|you have|available|recommend|book|hire|contact)\b/i,
-    /\b(any|find|recommend|hire|book|need|want|know)\s+(?:me\s+)?(?:a\s+|some\s+)?(?:good\s+)?(?:local\s+)?guides?\b(?!\s*book)/i,
-    // live 2026-10-04: "Do you have guide?" and "No matter give me guide" slipped through
-    /\b(do you have|have you got|you got|is there|are there|got)\s+(?:a\s+|any\s+)?(?:local\s+|tour\s+|human\s+)?guides?\b(?!\s*(book|to|for)\b)/i,
-    /\bgive me (?:a\s+)?(?:local\s+|tour\s+|real\s+|human\s+)?guides?\s*[.!?]*\s*$/i,
-    /\bguides?\s+(in|for|near|around|who)\b/i,
-    /(^|[^а-яё])(гид|экскурсовод)/i,
-    /\b(un|des|les)\s+guides?\b(?!\s+de\s+voyage)/i,
-    /导游|向导/,
-    /مرشد|دليل سياحي/,
-    /գիդ/i,
-];
-const NOT_GUIDE_ASK = /\b(travel|city|pocket|rough|lonely planet)\s+guide\s+(to|for|of)\b|\bguide\s*book|\bguide me\b|\bguided by\b/i;
-function isGuideAsk(message) {
-    const m = String(message || '');
-    if (!m.trim() || NOT_GUIDE_ASK.test(m)) return false;
-    return GUIDE_ASK.some(re => re.test(m));
-}
-
+// ── Questions ABOUT guides (founder 2026-10-04; live 2026-10-03 22:59 "Are there
+// any guide with you?" got "No, I'm not a guide"). WHETHER a message is one is the
+// v3 controller's call (lane 'guides') — no word list here (founder: "do it the
+// v3 way"). This file decides only what may be said: the approved guides.
 /**
- * Approved guides for a guide question, the ones whose region names the asked
- * area first. Returns { area, covering: [...], others: [...] } — at most 3 in
- * total, each with its public page. Fail-open: an error returns empty lists.
+ * Approved guides for a guide question. Guides are a GLOBAL directory — each one
+ * names the country they guide in (founder 2026-10-04). When the asked country is
+ * known, only that country's guides are eligible: never an Armenian guide for
+ * Tbilisi. Inside it, guides whose cities/regions or picks name the asked area
+ * come first ("covering"); the rest of that country follows ("inCountry"). No
+ * country known → every guide, most picks first. At most 3 in total, each with
+ * its public page. Fail-open: an error returns empty lists.
  */
-async function guidesForAsk({ area = null } = {}, deps = {}) {
-    const out = { area: area || null, covering: [], others: [] };
+async function guidesForAsk({ area = null, countryCode = null, countryName = null } = {}, deps = {}) {
+    const out = { area: area || null, country: countryName || countryCode || null, covering: [], inCountry: [] };
     try {
         const Guide = deps.Guide || require('../models/Guide');
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
-        const guides = await Guide.find({ status: 'active' }).select('handle displayName region languages guideType bio').lean();
-        if (!guides.length) return out;
+        const all = await Guide.find({ status: 'active' }).select('handle displayName region country languages guideType bio').lean();
+        const cc = normalizeCountry(countryCode);
+        const guides = cc ? all.filter(g => (g.country || 'AM') === cc) : all;
+        if (!guides.length) { console.log(`[guides] question → none in ${out.country || 'any country'}`); return out; }
         const counts = new Map(); const pickNames = new Map();
         try {
             const rows = await GuidePick.aggregate([{ $match: { guide: { $in: guides.map(g => g._id) } } }, { $group: { _id: '$guide', n: { $sum: 1 }, places: { $push: '$placeName' } } }]);
@@ -394,21 +384,16 @@ async function guidesForAsk({ area = null } = {}, deps = {}) {
         } catch { /* counts are a nicety */ }
         const norm = (x) => String(x || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
         const a = norm(area).trim();
-        const card = (g) => ({ name: g.displayName, handle: g.handle, region: g.region, languages: g.languages || [], type: g.guideType,
+        const card = (g) => ({ name: g.displayName, handle: g.handle, region: g.region, country: g.country || 'AM', languages: g.languages || [], type: g.guideType,
             bio: clip(g.bio, 160), picks: counts.get(String(g._id)) || 0, url: `https://jinni.travel/@${g.handle}` });
         const byPicks = (x, y) => (counts.get(String(y._id)) || 0) - (counts.get(String(x._id)) || 0);
-        // Covering the asked area (live 2026-10-04: Hayk's region is "Armenia" and he
-        // picked Garni Temple, yet "a guide in Garni?" got "none for Garni"): the
-        // region names it, OR one of their picks is there; a country-wide region
-        // covers every area, ranked after the specific matches.
-        const COUNTRY_WIDE = /^(all of |all over |across )?(armenia|հայաստան|армения|arménie|亚美尼亚|أرمينيا)$/i;
-        const specific = (g) => norm(g.region).includes(a) || (pickNames.get(String(g._id)) || []).some(p => norm(p).includes(a));
-        const countryWide = (g) => COUNTRY_WIDE.test(String(g.region || '').trim());
-        const covering = a ? [...guides.filter(specific), ...guides.filter(g => !specific(g) && countryWide(g))] : [];
-        const rest = guides.filter(g => !covering.includes(g)).sort(byPicks);
-        out.covering = covering.slice(0, 3).map(card);   // specific matches first, then country-wide
-        out.others = rest.slice(0, Math.max(0, 3 - out.covering.length)).map(card);
-        console.log(`[guides] question → ${out.covering.length} covering "${area || 'any'}", ${out.others.length} elsewhere (${[...out.covering, ...out.others].map(g => '@' + g.handle).join(', ') || 'none'})`);
+        // live 2026-10-04: Hayk (picked Garni Temple) was "no guide for Garni" — a pick in the area counts
+        const specific = (g) => !!a && (norm(g.region).includes(a) || (pickNames.get(String(g._id)) || []).some(p => norm(p).includes(a)));
+        const covering = guides.filter(specific).sort(byPicks);
+        const rest = guides.filter(g => !specific(g)).sort(byPicks);
+        out.covering = covering.slice(0, 3).map(card);
+        out.inCountry = rest.slice(0, Math.max(0, 3 - out.covering.length)).map(card);
+        console.log(`[guides] question → ${out.covering.length} for "${area || 'any area'}", ${out.inCountry.length} more in ${out.country || 'any country'} (${[...out.covering, ...out.inCountry].map(g => '@' + g.handle).join(', ')})`);
     } catch (err) {
         console.warn('[guides] guidesForAsk failed (answered without guides):', err.message);
     }
@@ -416,22 +401,24 @@ async function guidesForAsk({ area = null } = {}, deps = {}) {
 }
 
 /** The guide list as a grounding block for the narrator — the ONLY guides it may name. */
-function guideAskContext({ area, covering, others }) {
+function guideAskContext({ area, country, covering, inCountry }) {
     const line = (g) => `- ${g.name} (@${g.handle}) — guides in: ${g.region}${g.languages.length ? ' · languages: ' + g.languages.join(', ') : ''} · ${g.picks} pick(s) · page: ${g.url}${g.bio ? ' · about: "' + g.bio + '"' : ''}`;
+    const where = [area, country].filter(Boolean).join(', ');
     const parts = ['[JINNI LOCAL GUIDES — approved guides on Jinni. These are the ONLY guides you may name; never invent a guide, a price or a schedule.'];
-    if (area) parts.push(`Area asked about: ${area}.`);
-    parts.push(covering.length ? 'Guides who cover it:\n' + covering.map(line).join('\n') : (area ? 'Guides who cover it: none yet.' : ''));
-    if (others.length) parts.push((covering.length || !area ? '' : 'Guides elsewhere:\n') + others.map(line).join('\n'));
-    parts.push(covering.length || (!area && others.length)
+    if (where) parts.push(`Asked about: ${where}.`);
+    if (covering.length) parts.push('Guides for that area:\n' + covering.map(line).join('\n'));
+    if (inCountry.length) parts.push((area ? `Other guides in ${country || 'that country'}:\n` : 'Guides:\n') + inCountry.map(line).join('\n'));
+    parts.push(covering.length
         ? 'Answer with these guides: name, where they guide, and their page link (their picks, reels, tours and how to book are on the page). 2–4 sentences.'
-        : (others.length
-            ? 'Say plainly that no local guide for that area has joined Jinni yet, then mention the guides above and where they work, with their page links. 2–4 sentences.'
-            : 'Say plainly that no local guides have joined Jinni for this yet, and offer to recommend places yourself. If the traveler is a guide, they can join at https://jinni.travel/guides. 2–3 sentences.'));
-    return parts.filter(Boolean).join('\n') + ']';
+        : inCountry.length
+            ? (area ? 'Say that no guide has listed that exact area yet, then offer the guides above — where they guide and their page links. 2–4 sentences.'
+                    : 'Answer with these guides: name, where they guide, and their page link. 2–4 sentences.')
+            : `Say plainly that no local guide${where ? ' for ' + where : ''} has joined Jinni yet — never suggest a guide from another country — and offer to recommend places yourself. If the traveler is a guide, they can join at https://jinni.travel/guides. 2–3 sentences.`);
+    return parts.join('\n') + ']';
 }
 
 module.exports = {
     deleteGuideForUser, normalizeHandle, normalizeInstagram, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
-    publicGuide, placeSearch, attachGuidePicks, isGuideAsk, guidesForAsk, guideAskContext, CATEGORIES, RESERVED,
+    publicGuide, placeSearch, attachGuidePicks, guidesForAsk, guideAskContext, CATEGORIES, RESERVED,
     categoryRules, categoryMismatch, loadPickPlaces, forGuide, isDestRef, CAT_ACTION,
 };

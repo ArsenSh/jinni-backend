@@ -19,7 +19,7 @@ const claudeService = require('../../services/claudeService');
 const deepseekProvider = require('../narrator/providers/deepseek');
 const intentService = require('../../services/intentService');
 
-const LANES = new Set(['flights', 'transport', 'place_question', 'deck', 'itinerary', 'settings', 'currency', 'destinations', 'chitchat', 'clarify']);
+const LANES = new Set(['flights', 'transport', 'place_question', 'deck', 'itinerary', 'settings', 'currency', 'destinations', 'guides', 'chitchat', 'clarify']);
 // Founder 2026-09-15: "make all DeepSeek work, no Anthropic one by default".
 // DeepSeek decides unless CONTROLLER_PROVIDER=claude is set in the env; the
 // model name follows the provider (CONTROLLER_MODEL overrides either).
@@ -71,12 +71,13 @@ ENGINE STATE — facts the engine holds. Use them to resolve follow-ups; never c
 {{STATE}}
 
 In ADDITION to the object above, add these keys to the SAME JSON object:
-"lane": one of flights | transport | place_question | deck | itinerary | settings | currency | destinations | chitchat | clarify — the lane whose answer is right for THIS message.
+"lane": one of flights | transport | place_question | deck | itinerary | settings | currency | destinations | guides | chitchat | clarify — the lane whose answer is right for THIS message.
   flights = fares between cities, in ANY wording, and EVERY follow-up to fares (dates, a return, a length of stay, the other direction, a complaint about the fares answer).
   transport = getting around or reaching somewhere (taxi, metro, bus, walking, driving, distance, airport transfer).
   place_question = a question about ONE specific place (hours, price, booking, is it open, what is it).
   deck = the traveler wants to be SHOWN places — a list of options to choose from.
   itinerary = build a multi-day plan. settings = change a saved setting. currency = convert an amount of money. destinations = choosing WHERE IN THE WORLD to go (a country/city choice, not venues).
+  guides = the traveler asks about HUMAN local guides or tour guides on Jinni, in any wording or language — whether Jinni has guides, a guide for an area, a guide who speaks a language, how to hire or book one, and every follow-up to that. Not a written "guide to" a place, a list of places or a plan (those are deck / itinerary). A question about Jinni's guides is guides, never chitchat.
   chitchat = greetings, thanks, meta questions about Jinni, non-travel talk, or a how-to question answered in prose (visa, tipping, SIM card).
   clarify = the message cannot be acted on without ONE detail only the traveler has, AND the conversation and state do not already contain it.
     A VAGUE PLACES ASK is a clarify (founder 2026-09-16: "the AI tries to suggest places, but it could ask what I want specifically"): the traveler wants places but names no KIND of place, no mood and no purpose — "what is open right now", "what can I do", "suggest something", "I'm bored". Dealing six random cards to that is worse than one question. The clarify_question offers THREE concrete choices that fit the hour and the weather ("It's 2 am — are you after food, a drink, or somewhere to walk?"; at 3 pm: food, sights, shopping or something active), in the traveler's language.
