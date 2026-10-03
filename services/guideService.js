@@ -384,19 +384,26 @@ async function guidesForAsk({ area = null } = {}, deps = {}) {
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
         const guides = await Guide.find({ status: 'active' }).select('handle displayName region languages guideType bio').lean();
         if (!guides.length) return out;
-        const counts = new Map();
+        const counts = new Map(); const pickNames = new Map();
         try {
-            const rows = await GuidePick.aggregate([{ $match: { guide: { $in: guides.map(g => g._id) } } }, { $group: { _id: '$guide', n: { $sum: 1 } } }]);
-            for (const r of rows) counts.set(String(r._id), r.n);
+            const rows = await GuidePick.aggregate([{ $match: { guide: { $in: guides.map(g => g._id) } } }, { $group: { _id: '$guide', n: { $sum: 1 }, places: { $push: '$placeName' } } }]);
+            for (const r of rows) { counts.set(String(r._id), r.n); pickNames.set(String(r._id), r.places || []); }
         } catch { /* counts are a nicety */ }
         const norm = (x) => String(x || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
         const a = norm(area).trim();
         const card = (g) => ({ name: g.displayName, handle: g.handle, region: g.region, languages: g.languages || [], type: g.guideType,
             bio: clip(g.bio, 160), picks: counts.get(String(g._id)) || 0, url: `https://jinni.travel/@${g.handle}` });
         const byPicks = (x, y) => (counts.get(String(y._id)) || 0) - (counts.get(String(x._id)) || 0);
-        const covering = a ? guides.filter(g => norm(g.region).includes(a)) : [];
+        // Covering the asked area (live 2026-10-04: Hayk's region is "Armenia" and he
+        // picked Garni Temple, yet "a guide in Garni?" got "none for Garni"): the
+        // region names it, OR one of their picks is there; a country-wide region
+        // covers every area, ranked after the specific matches.
+        const COUNTRY_WIDE = /^(all of |all over |across )?(armenia|հայաստան|армения|arménie|亚美尼亚|أرمينيا)$/i;
+        const specific = (g) => norm(g.region).includes(a) || (pickNames.get(String(g._id)) || []).some(p => norm(p).includes(a));
+        const countryWide = (g) => COUNTRY_WIDE.test(String(g.region || '').trim());
+        const covering = a ? [...guides.filter(specific), ...guides.filter(g => !specific(g) && countryWide(g))] : [];
         const rest = guides.filter(g => !covering.includes(g)).sort(byPicks);
-        out.covering = covering.sort(byPicks).slice(0, 3).map(card);
+        out.covering = covering.slice(0, 3).map(card);   // specific matches first, then country-wide
         out.others = rest.slice(0, Math.max(0, 3 - out.covering.length)).map(card);
         console.log(`[guides] question → ${out.covering.length} covering "${area || 'any'}", ${out.others.length} elsewhere (${[...out.covering, ...out.others].map(g => '@' + g.handle).join(', ') || 'none'})`);
     } catch (err) {

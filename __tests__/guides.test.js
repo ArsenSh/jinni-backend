@@ -325,4 +325,16 @@ describe('guide questions', () => {
         expect(elsewhere).toMatch(/no local guide for that area has joined/);
         expect(elsewhere).toMatch(/@haykshahinyan_/);
     });
+    test('guidesForAsk: a pick in the area or a country-wide region counts as covering', async () => {
+        const rows = [
+            { _id: 'g1', handle: 'ani.travels', displayName: 'Ani', region: 'Dilijan', languages: [], guideType: 'local', bio: '' },
+            { _id: 'g2', handle: 'haykshahinyan_', displayName: 'Hayk', region: 'Armenia', languages: [], guideType: 'local', bio: '' },
+            { _id: 'g3', handle: 'garni.walks', displayName: 'Gor', region: 'Yerevan', languages: [], guideType: 'local', bio: '' },
+        ];
+        const deps = { Guide: { find: () => ({ select: () => ({ lean: async () => rows }) }) },
+            GuidePick: { aggregate: async () => [{ _id: 'g3', n: 1, places: ['Garni temple'] }, { _id: 'g2', n: 2, places: ['Tatev'] }] } };
+        const r = await guidesForAsk({ area: 'Garni' }, deps);
+        expect(r.covering.map(g => g.handle)).toEqual(['garni.walks', 'haykshahinyan_']);   // pick match first, then country-wide
+        expect(r.others.map(g => g.handle)).toEqual(['ani.travels']);
+    });
 });
