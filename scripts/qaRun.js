@@ -144,7 +144,7 @@ function check(expect, r) {
             if (r.meta?.followUpQuestion) console.log(`    question: ${r.meta.followUpQuestion}`);
             for (const c of r.cards) console.log(`    • ${cardLine(c)}`);
             for (const [name, ok, note] of check(t.expect, r)) { ok ? pass++ : fail++; console.log(`    ${ok ? 'PASS' : 'FAIL'} ${name}${note ? ` (${note})` : ''}`); }
-            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng, hotelPrice: c.hotelPrice || null, listedPrice: c.listedPrice || null, bookingUrl: c.bookingUrl || null, eventSchedule: c.eventSchedule || null, eventPrice: c.eventPrice || null, image: c.image || c.cachedImageUrl || null, sourceUrl: c.sourceUrl || null, venueName: c.venueName || null })) });
+            rec.turns.push({ say: t.say, ms: r.ms, qa, meta: r.meta, text: r.text, cards: r.cards.map(c => ({ name: c.name, category: c.category, distance: c.distance, address: c.address, lat: c.latitude ?? c.lat, lng: c.longitude ?? c.lng, hotelPrice: c.hotelPrice || null, listedPrice: c.listedPrice || null, bookingUrl: c.bookingUrl || null, eventSchedule: c.eventSchedule || null, eventPrice: c.eventPrice || null, image: c.image || c.cachedImageUrl || null, sourceUrl: c.sourceUrl || null, venueName: c.venueName || null, guidePicks: c.guidePicks || null })) });
             // Persist the transcript the way the app does, so the next turn has history.
             const now = new Date().toISOString();
             messages.push({ id: `u-${Date.now()}`, sender: 'user', text: t.say, timestamp: now });

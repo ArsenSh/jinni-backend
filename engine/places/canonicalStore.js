@@ -1019,6 +1019,9 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         return [];
     }
 
+    // More reviews than this and a place is a landmark, not a hidden gem (Cascade, Republic
+    // Square run to five figures; the gems we curate sit in the low hundreds).
+    const HIDDEN_GEM_MAX_REVIEWS = deps.hiddenGemMaxReviews ?? 2000;
     const findPlaces = deps.findPlaces
         || ((q, loc, rid, opts) => require('../../services/googleService').findPlaces(q, loc, rid, opts));
     // ── WHITELIST BY CONSTRUCTION (founder doctrine 2026-08-31: "how to fix
@@ -1090,20 +1093,22 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         if (cached) {
             found = cached.map(c => ({
                 place_id: c.placeId, name: c.name, types: c.types || [],
-                primaryType: c.primaryType || null, rating: c.rating ?? null,
+                primaryType: c.primaryType || null, rating: c.rating ?? null, userRatingCount: c.userRatingCount ?? null,
                 geometry: { location: { lat: c.lat, lng: c.lng } },
             }));
             console.log(`[canonicalStore] search-cache hit "${q}" — ${found.length} candidate(s), 0 paid`);
         }
     } catch (err) { console.warn(`[canonicalStore] search-cache read failed: ${err.message}`); }
     if (!found) {
-        found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20), openNow: !!openNow }) || [];
+        found = await findPlaces(q, center, requestId, { maxResultCount: Math.min(Math.max(needed, 6) + 4, 20), openNow: !!openNow,
+            // hidden gems need Google's review count for the fame gate below
+            withRatingCount: category === 'hidden_gems' }) || [];
         try {
             if (found.length) {
                 await searchCache.set(searchKey, found.map(p => ({
                     placeId: p.place_id, name: p.name,
                     lat: p.geometry?.location?.lat ?? null, lng: p.geometry?.location?.lng ?? null,
-                    types: p.types || [], primaryType: p.primaryType || null, rating: p.rating ?? null,
+                    types: p.types || [], primaryType: p.primaryType || null, rating: p.rating ?? null, userRatingCount: p.userRatingCount ?? null,
                 })).filter(c => c.placeId && c.name));
             }
         } catch (err) { console.warn(`[canonicalStore] search-cache write failed: ${err.message}`); }
@@ -1165,6 +1170,15 @@ async function googleFallback({ query, coreQuery, category, subType, center, rad
         if (lat == null || lng == null) continue;
         const distanceKm = haversineKm(center.lat, center.lng, lat, lng);
         if (distanceKm > radiusKm) continue;
+        // A HIDDEN GEM IS NOT A LANDMARK (founder 2026-10-04, live 2026-10-03 22:18):
+        // "hidden gems Yerevan" (open now) bought Yerevan Cascade, Republic Square
+        // and Katoghike to pad a deck whose real gems were closed — the opposite of
+        // what was asked. Google's review count is the fame signal; checked BEFORE
+        // the paid details call. Unknown counts (old cache rows) stay lenient.
+        if (category === 'hidden_gems' && Number(p.userRatingCount) > HIDDEN_GEM_MAX_REVIEWS) {
+            console.log(`[canonicalStore] fallback skip "${p.name}" — too famous for a hidden gem (${p.userRatingCount} reviews)`);
+            continue;
+        }
         let d = null;
         try { d = await resolveDetails(p.place_id); } catch { /* d stays null → skipped below */ }
         // Details are REQUIRED. A place whose resolve failed has no cache row

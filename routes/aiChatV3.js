@@ -272,6 +272,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
     let reply;
     let v3Decision = null;
     let recommendations = [];
+    let guidePicksChecked = false;   // the deck path attaches "Picked by @guide" itself; every other path is covered before 'complete'
     const meta = { engine: 'v3', build: 'controller-v0', timestamp: new Date() };
     const t0 = Date.now();
     // What the engine did this turn. Reported ONCE, at the bottom of the reply
@@ -2661,6 +2662,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 }
                 // "Picked by @guide" (guide pages, 2026-10-02): one query, fail-open.
                 await require('../services/guideService').attachGuidePicks(recommendations);
+                guidePicksChecked = true;
                 // Remember what this turn showed (fire-and-forget) — feeds the
                 // cross-session novelty signal, and survives session deletion.
                 recordViews(req.user.id, recommendations, category);
@@ -2830,6 +2832,12 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
 
     // What the engine decided, for the QA runner (scripts/qaRun.js) and
     // anyone reading the stream: same facts the ChatTurn record keeps.
+    // "Picked by @guide" on EVERY v3 card path (founder 2026-10-04): a place
+    // question ("show me Garni Temple") or a tool answer carried a picked place
+    // with no badge — only the deck attached it. Same fail-open helper.
+    if (!guidePicksChecked && recommendations.length) {
+        await require('../services/guideService').attachGuidePicks(recommendations);
+    }
     meta.qa = { engine: 'v3', path: stats.path || null, lane: v3Decision?.lane || null, controllerSource: v3Decision?.source || null, radiusKm: stats.radiusKm ?? null, city: meta.searchCity || null };
     send(res, {
         type: 'complete',

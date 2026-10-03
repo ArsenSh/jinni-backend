@@ -137,7 +137,10 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
         const TIMEOUTS = [6000, 9000];
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                const response = await axios.post(PLACES_BASE + '/places:searchText', body, { headers: placesHeaders('places.id,places.displayName,places.location,places.types,places.primaryType,places.businessStatus'), timeout: TIMEOUTS[attempt - 1] });
+                // userRatingCount only when asked (hidden-gem fame gate): it moves the call to
+                // the Enterprise SKU, so the shared default mask stays in Pro.
+                const mask = 'places.id,places.displayName,places.location,places.types,places.primaryType,places.businessStatus' + (options.withRatingCount ? ',places.userRatingCount' : '');
+                const response = await axios.post(PLACES_BASE + '/places:searchText', body, { headers: placesHeaders(mask), timeout: TIMEOUTS[attempt - 1] });
                 console.log('[findPlaces] response status=' + response.status + ' places=' + (response.data.places || []).length + (attempt > 1 ? ' (attempt ' + attempt + ')' : ''));
                 const places = response.data.places || [];
                 // A business Google marks closed is never a candidate.
@@ -149,7 +152,7 @@ async function findPlaces(query, userLocation, requestId, options = {}) {
                     // "Amara" biased to the wrong city once resolved to a shooting
                     // range). Requesting displayName does not change the billing SKU:
                     // location/types already put this call in the Pro tier.
-                    return { place_id: place.id, name: place.displayName?.text || null, geometry: { location: coords }, types: place.types || [], primaryType: place.primaryType || null, business_status: place.businessStatus || null };
+                    return { place_id: place.id, name: place.displayName?.text || null, geometry: { location: coords }, types: place.types || [], primaryType: place.primaryType || null, business_status: place.businessStatus || null, userRatingCount: place.userRatingCount ?? null };
                 });
             } catch (error) {
                 const httpStatus = error.response ? error.response.status : null;

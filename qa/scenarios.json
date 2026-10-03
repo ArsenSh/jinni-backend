@@ -403,6 +403,42 @@
           }
         }
       ]
+    },
+    {
+      "id": "hidden-gems-honest",
+      "why": "2026-10-03 22:18 live: \"what hidden gem you can suggest for me?\" served Yerevan Cascade, Republic Square, Katoghike (Google 'hidden gems' open-now fallback + late-night right-now). A hidden-gem deck must not be padded with famous landmarks — judge the card names.",
+      "turns": [
+        {
+          "say": "what hidden gem you can suggest for me ?",
+          "expect": {
+            "cardsMin": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "garni-guide-pick",
+      "why": "2026-10-04: a guide picked Garni Temple (hidden gem + reel). In daytime, a Garni ask should show the Garni Temple card with 'Picked by @…' (guidePicks).",
+      "turns": [
+        {
+          "say": "hidden gems in Garni",
+          "expect": {
+            "cardsMin": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "garni-temple-direct",
+      "why": "2026-10-04: the guide-pick badge needs the picked place on a card; ask for Garni Temple by name and read guidePicks.",
+      "turns": [
+        {
+          "say": "show me Garni Temple",
+          "expect": {
+            "cardsMin": 1
+          }
+        }
+      ]
     }
   ]
 }

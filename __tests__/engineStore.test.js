@@ -380,6 +380,36 @@ describe('google fallback tier (bootstrap, coverage-gated, bounded)', () => {
         expect(out.map(c => c.name)).toEqual(['Unknown Status']);
     });
 
+    // Live 2026-10-03 22:18: "what hidden gem you can suggest?" — the real gems were
+    // closed, and the open-now fill-in carded Yerevan Cascade and Republic Square.
+    test('googleFallback: a hidden-gem fill-in skips famous places before paying for details', async () => {
+        let opts = null; const resolved = [];
+        const out = await googleFallback({ query: 'hidden gems', category: 'hidden_gems', center: CENTER, radiusKm: 15, needed: 5 }, {
+            coverage: async () => true,
+            typeGate: () => true,
+            findPlaces: async (q, loc, rid, o) => { opts = o; return [
+                { ...googleRow('cas', 'Yerevan Cascade'), userRatingCount: 31000 },
+                { ...googleRow('gem', 'Quiet Courtyard'), userRatingCount: 140 },
+                { ...googleRow('unk', 'Old Cache Row'), userRatingCount: null },
+            ]; },
+            resolveDetails: async (id) => { resolved.push(id); return { name: null, types: ['tourist_attraction'], primaryType: 'tourist_attraction', business_status: 'OPERATIONAL' }; },
+        });
+        expect(opts.withRatingCount).toBe(true);
+        expect(out.map(c => c.name)).toEqual(['Quiet Courtyard', 'Old Cache Row']);
+        expect(resolved).not.toContain('cas');              // no paid details call for the landmark
+    });
+
+    test('googleFallback: other categories keep popular places and do not ask for review counts', async () => {
+        let opts = null;
+        const out = await googleFallback({ query: 'dinner', category: 'restaurants', center: CENTER, radiusKm: 15, needed: 5 }, {
+            coverage: async () => true,
+            findPlaces: async (q, loc, rid, o) => { opts = o; return [{ ...googleRow('pop', 'Busy Bistro'), userRatingCount: 9000 }]; },
+            resolveDetails: async () => ({ name: null, types: ['restaurant'], primaryType: 'restaurant', business_status: 'OPERATIONAL' }),
+        });
+        expect(opts.withRatingCount).toBe(false);
+        expect(out.map(c => c.name)).toEqual(['Busy Bistro']);
+    });
+
     test('dedupe: a google row matching an owned placeId ships once (owned wins)', async () => {
         const out = await loadCandidates({ category: 'restaurants', center: CENTER, count: 4, query: 'x' }, {
             cacheFind: async () => [cacheDoc({ name: 'Lavash' })],   // factory → placeId 'p_Lavash'

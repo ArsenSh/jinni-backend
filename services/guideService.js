@@ -299,11 +299,11 @@ async function attachGuidePicks(recommendations, deps = {}) {
         // A card's pick key: its Google place id, or 'dest:<id>' for a staff Destination card.
         const keyOf = (r) => (r && (r.placeId || (r._verifiedModel === 'destination' && r.verifiedId ? DEST_PREFIX + r.verifiedId : null))) || null;
         const ids = [...new Set((recommendations || []).map(keyOf).filter(Boolean))];
-        if (!ids.length) return recommendations;
+        if (!ids.length) { console.log(`[guides] badges: 0 of ${(recommendations || []).length} card(s) (no place ids to check)`); return recommendations; }
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
         const Guide = deps.Guide || require('../models/Guide');
         const picks = await GuidePick.find({ placeId: { $in: ids } }).select('guide placeId note reelUrl category').lean();
-        if (!picks.length) return recommendations;
+        if (!picks.length) { console.log(`[guides] badges: 0 of ${recommendations.length} card(s) (no guide picked these places)`); return recommendations; }
         const guides = await Guide.find({ _id: { $in: [...new Set(picks.map(p => String(p.guide)))] }, status: 'active' })
             .select('handle displayName').lean();
         const byId = new Map(guides.map(g => [String(g._id), g]));
@@ -318,6 +318,11 @@ async function attachGuidePicks(recommendations, deps = {}) {
                 }));
             }
         }
+        // One line per turn in the session log (founder 2026-10-04: "the result — backend
+        // detected or not?"): what matched, and picks held back because the guide isn't active.
+        const hits = recommendations.filter(r => r.guidePicks?.length).map(r => `${r.name} → @${r.guidePicks[0].handle}`);
+        const inactive = picks.filter(p => !byId.has(String(p.guide))).length;
+        console.log(`[guides] badges: ${hits.length} of ${recommendations.length} card(s)${hits.length ? ' — ' + hits.join(', ') : ''}${inactive ? ` · ${inactive} pick(s) skipped: guide not active` : ''}`);
     } catch (err) {
         console.warn('[guides] attachGuidePicks failed (cards served without badges):', err.message);
     }

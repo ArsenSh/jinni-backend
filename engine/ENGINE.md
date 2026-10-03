@@ -293,3 +293,22 @@ engine/
         been pricing one room and putting that number beside group prices.
       10 new tests; suite 47 suites / 1240 tests green.
 
+- [x] **GUIDE BADGES EVERYWHERE · HIDDEN GEMS ARE NOT LANDMARKS** (2026-10-04, founder:
+      "go ahead, include quick actions too"; live 2026-10-03 22:18 session 6abea395…)
+      · "Picked by @guide" was attached on the v3 DECK path only — a place question
+        ("show me Garni Temple", lane=place_question/tool) served the picked place with
+        no badge. Now every v3 card path is covered before `complete` (deck keeps its own
+        call; `guidePicksChecked` prevents a second query). v1 `/quick-action-stream`
+        gets the same one-line, awaited, fail-open `attachGuidePicks` before its
+        `complete` payload — the founder-approved exception to the v1 freeze.
+      · `attachGuidePicks` logs one line per turn: `[guides] badges: N of M card(s) —
+        Name → @handle`, plus picks skipped because the guide is not active.
+      · Hidden-gem FAME GATE in `googleFallback`: at night the open-now filter emptied
+        the curated gems (25 of 29 closed) and "hidden gems Yerevan" (openNow) filled the
+        deck with Yerevan Cascade / Republic Square / Katoghike. For category
+        hidden_gems the fill-in now asks Google for `userRatingCount` (findPlaces option
+        `withRatingCount` — Enterprise SKU, so ONLY here; the shared mask stays Pro) and
+        skips anything over 2000 reviews BEFORE the paid details call. Unknown counts
+        (old search-cache rows) stay lenient; the search cache now stores the count.
+      · Open: whether a late-night hidden-gem ask should keep closed gems marked
+        "opens tomorrow" instead of only open ones — not changed, awaiting founder.

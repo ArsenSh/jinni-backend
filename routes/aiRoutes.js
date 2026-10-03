@@ -7533,6 +7533,9 @@ router.post('/quick-action-stream', auth, usageTracker, async (req, res) => {
                 // Strip internal-only fields (used by the type sanity filter) so they
                 // don't bloat the payload sent to the client.
                 recommendations.forEach(r => { delete r.placeTypes; delete r.placePrimaryType; delete r.requestedName; delete r._isDateCard; delete r._eventVenue; delete r._eventAddress; });
+                // "Picked by @guide" on quick-action cards too (founder 2026-10-04: "include quick
+                // actions too") — the same one-query, fail-open helper v3 uses; never blocks the reply.
+                await require('../services/guideService').attachGuidePicks(recommendations);
                 recordPlaceViews(userId, recommendations, action);   // remember what this user was shown
                 // console.log('\n📤 Sending completion with recommendations...');
                 const completionPayload = {
