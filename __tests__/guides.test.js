@@ -355,3 +355,43 @@ describe('guide picks as deck candidates', () => {
         expect(out).toEqual([]);
     });
 });
+
+// A pick's uploaded video (founder 2026-10-05): Jinni's own player instead of Instagram's box.
+describe('guide pick video', () => {
+    const video = require('../services/guideVideoService');
+    const ID = '64b000000000000000000001';
+
+    test('ffmpeg duration line → seconds, capped at the limit', () => {
+        expect(video.parseDuration('  Duration: 00:00:31.52, start: 0.0')).toBe(31.5);
+        expect(video.parseDuration('Duration: 00:05:00.00')).toBe(video.MAX_SECONDS);
+        expect(video.parseDuration('no duration here')).toBeNull();
+    });
+
+    test('playable links only once the video is ready; a new file changes the link', () => {
+        const ready = video.videoView({ _id: ID, video: { status: 'ready', fileId: 'aaaaaaaaaaaaaaaaaa111111', posterId: 'aaaaaaaaaaaaaaaaaa222222' } });
+        expect(ready.videoUrl).toBe(`/api/guides/video/${ID}?v=111111`);
+        expect(ready.posterUrl).toBe(`/api/guides/video/${ID}/poster?v=111111`);
+        expect(video.videoView({ _id: ID, video: { status: 'processing', uploadedAt: new Date() } })).toEqual({ status: 'processing', error: null });
+        expect(video.videoView({ _id: ID, video: null })).toBeNull();
+    });
+
+    test('a conversion a restart interrupted reads as failed, so the guide can upload again', () => {
+        const v = video.videoView({ _id: ID, video: { status: 'processing', uploadedAt: new Date(Date.now() - 60 * 60 * 1000) } });
+        expect(v.status).toBe('failed');
+    });
+
+    test('a chat card carries the video link only when the pick has a ready video', async () => {
+        const recs = [{ placeId: 'p1', name: 'Garni' }, { placeId: 'p2', name: 'Geghard' }];
+        const lean = (rows) => ({ select: () => ({ lean: async () => rows }) });
+        await svc.attachGuidePicks(recs, {
+            GuidePick: { find: () => lean([
+                { _id: ID, guide: 'g1', placeId: 'p1', note: '', reelUrl: 'https://www.instagram.com/reel/ABCDE12345/', category: 'hidden_gem', video: { status: 'ready', fileId: 'aaaaaaaaaaaaaaaaaa111111' } },
+                { _id: '64b000000000000000000002', guide: 'g1', placeId: 'p2', note: '', reelUrl: null, category: 'hidden_gem', video: { status: 'processing', uploadedAt: new Date() } },
+            ]) },
+            Guide: { find: () => lean([{ _id: 'g1', handle: 'hayk', displayName: 'Hayk' }]) },
+        });
+        expect(recs[0].guidePicks[0].videoUrl).toBe(`/api/guides/video/${ID}?v=111111`);
+        expect(recs[0].guidePicks[0].reelUrl).toContain('instagram.com');
+        expect(recs[1].guidePicks[0].videoUrl).toBeUndefined();
+    });
+});

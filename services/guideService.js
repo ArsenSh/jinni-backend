@@ -7,6 +7,7 @@
 //   attachGuidePicks() — "Picked by @handle" on chat cards
 
 const crypto = require('crypto');
+const { videoView } = require('./guideVideoService');
 
 const HANDLE_RE = /^[a-z0-9._]{3,30}$/;
 // Words the page address may never be: app paths and staff-ish names.
@@ -307,7 +308,7 @@ async function attachGuidePicks(recommendations, deps = {}) {
         if (!ids.length) { console.log(`[guides] badges: 0 of ${(recommendations || []).length} card(s) (no place ids to check)`); return recommendations; }
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
         const Guide = deps.Guide || require('../models/Guide');
-        const picks = await GuidePick.find({ placeId: { $in: ids } }).select('guide placeId note reelUrl category').lean();
+        const picks = await GuidePick.find({ placeId: { $in: ids } }).select('guide placeId note reelUrl category video').lean();
         if (!picks.length) { console.log(`[guides] badges: 0 of ${recommendations.length} card(s) (no guide picked these places)`); return recommendations; }
         const guides = await Guide.find({ _id: { $in: [...new Set(picks.map(p => String(p.guide)))] }, status: 'active' })
             .select('handle displayName').lean();
@@ -320,6 +321,8 @@ async function attachGuidePicks(recommendations, deps = {}) {
                 rec.guidePicks = mine.map(p => ({
                     handle: byId.get(String(p.guide)).handle, displayName: byId.get(String(p.guide)).displayName,
                     note: p.note || '', reelUrl: p.reelUrl || null, category: p.category,
+                    // the guide's own uploaded clip → Jinni's player (2026-10-05); reelUrl stays as the Instagram link
+                    ...(() => { const v = videoView(p); return v && v.status === 'ready' ? { videoUrl: v.videoUrl, posterUrl: v.posterUrl } : {}; })(),
                 }));
             }
         }
@@ -344,6 +347,8 @@ async function deleteGuideForUser(userId, deps = {}) {
         const GuidePick = deps.GuidePick || require('../models/GuidePick');
         const g = await Guide.findOne({ user: userId }).select('_id handle').lean();
         if (!g) return 0;
+        // uploaded videos go with the picks
+        if (!deps.GuidePick) await require('./guideVideoService').removeVideosOfPicks(await GuidePick.find({ guide: g._id, video: { $ne: null } }).select('video').lean()).catch(() => {});
         await GuidePick.deleteMany({ guide: g._id });
         await Guide.deleteOne({ _id: g._id });
         console.log(`[guides] account deleted → removed guide page @${g.handle} and its picks`);

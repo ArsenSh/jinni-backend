@@ -16,6 +16,9 @@ const auth = require('../middleware/auth');
 const Guide = require('../models/Guide');
 const GuidePick = require('../models/GuidePick');
 const svc = require('../services/guideService');
+const videoSvc = require('../services/guideVideoService');
+const multer = require('multer');
+const os = require('os');
 
 const router = express.Router();
 
@@ -101,6 +104,7 @@ router.get('/public/:handle', lookupLimiter, wrap(async (req, res) => {
                 return {
                     id: String(p._id), placeId: p.placeId, name: r.name, category: p.category, note: p.note || '',
                     reelUrl: p.reelUrl || null, embedUrl: p.reelUrl ? (svc.parseInstagramPost(p.reelUrl)?.embedUrl || null) : null,
+                    ...(() => { const v = videoSvc.videoView(p); return v && v.status === 'ready' ? { videoUrl: v.videoUrl, posterUrl: v.posterUrl } : {}; })(),
                     tour: p.tour || null, rating: r.rating ?? null,
                     address: r.address, image: r.image, lat: r.lat, lng: r.lng,
                 };
@@ -154,7 +158,7 @@ router.get('/me', auth, wrap(async (req, res) => {
     const places = await svc.loadPickPlaces(picks.map(p => p.placeId));
     res.json({ success: true, guide: selfView(g), picks: picks.map(p => {
         const place = places.get(p.placeId);
-        return { ...p, id: String(p._id), _id: undefined, guide: undefined,
+        return { ...p, id: String(p._id), _id: undefined, guide: undefined, video: videoSvc.videoView(p),
             // The place left Jinni (hidden / deleted) → the guide sees it is no longer shown.
             placeGone: !place, image: place?.image || null, address: place?.address || null,
             categories: place ? svc.categoryRules(place._rules) : null };
@@ -193,7 +197,7 @@ router.post('/me/picks', auth, editLimiter, wrap(async (req, res) => {
         const problem = categoryProblem(place, clean.category);
         if (problem) return res.status(400).json({ success: false, ...problem });
         const pick = await GuidePick.create({ ...clean, guide: g._id, placeName: String(place.name).slice(0, 160) });
-        res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id) } });
+        res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id), video: null } });
     } catch (err) {
         if (err && err.code === 11000) return res.status(409).json({ success: false, error: 'You already picked this place in that category.' });
         console.error('[guides] add pick error:', err.message);
@@ -216,14 +220,89 @@ router.put('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
     }
     Object.assign(pick, { category: clean.category, note: clean.note, reelUrl: clean.reelUrl, tour: clean.tour });
     await pick.save();
-    res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id) } });
+    res.json({ success: true, pick: { ...pick.toObject(), id: String(pick._id), video: videoSvc.videoView(pick) } });
 }));
 
 router.delete('/me/picks/:id', auth, editLimiter, wrap(async (req, res) => {
     const g = await activeGuide(req, res); if (!g) return;
     if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Pick not found' });
+    const pick = await GuidePick.findOne({ _id: req.params.id, guide: g._id }).select('video').lean();
     const r = await GuidePick.deleteOne({ _id: req.params.id, guide: g._id });
+    if (r.deletedCount === 1 && pick?.video) await videoSvc.removeVideoFiles(pick.video);
     res.json({ success: r.deletedCount === 1 });
+}));
+
+// ── A pick's VIDEO (founder 2026-10-05): the guide uploads their own clip and
+// Jinni plays it in its own player — no Instagram box. The upload answers as
+// soon as the file has arrived; conversion runs behind it and the dashboard
+// asks /me until the video is ready.
+const videoUpload = multer({
+    storage: multer.diskStorage({ destination: os.tmpdir(), filename: (_req, _file, cb) => cb(null, `jinni-gv-up-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`) }),
+    limits: { fileSize: videoSvc.MAX_UPLOAD_BYTES, files: 1 },
+    fileFilter(_req, file, cb) {
+        if (!videoSvc.ALLOWED_MIMES.includes(file.mimetype)) return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Upload an MP4 or MOV video.'));
+        cb(null, true);
+    },
+});
+const videoLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false,
+    keyGenerator: (req) => (req.user?.id ? `u:${req.user.id}` : clientKey(req)),
+    message: { success: false, error: 'Too many video uploads. Please try again later.' } });
+// The pick is checked BEFORE the file is accepted, so a stranger can never fill the disk.
+const ownPickFirst = wrap(async (req, res, next) => {
+    const g = await activeGuide(req, res); if (!g) return;
+    if (!validId(req.params.id)) return res.status(404).json({ success: false, error: 'Pick not found' });
+    const pick = await GuidePick.findOne({ _id: req.params.id, guide: g._id });
+    if (!pick) return res.status(404).json({ success: false, error: 'Pick not found' });
+    req.guidePick = pick;
+    next();
+});
+
+router.post('/me/picks/:id/video', auth, videoLimiter, ownPickFirst, (req, res, next) => {
+    videoUpload.single('video')(req, res, (err) => {
+        if (!err) return next();
+        const msg = err.code === 'LIMIT_FILE_SIZE' ? `The video is larger than ${Math.round(videoSvc.MAX_UPLOAD_BYTES / 1048576)} MB. Please upload a shorter or smaller one.`
+            : (err instanceof multer.MulterError ? (err.field || 'Upload an MP4 or MOV video.') : 'The upload failed. Please try again.');
+        res.status(400).json({ success: false, error: msg });
+    });
+}, wrap(async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: 'Choose a video file.' });
+    const pick = req.guidePick;
+    const old = pick.video ? pick.video.toObject() : null;
+    pick.video = { status: 'processing', uploadedAt: new Date() };
+    await pick.save();
+    if (old) await videoSvc.removeVideoFiles(old);
+    videoSvc.processUpload(pick._id, req.file.path, req.file.mimetype);   // answers now; converts behind
+    res.json({ success: true, video: { status: 'processing' } });
+}));
+
+router.delete('/me/picks/:id/video', auth, editLimiter, ownPickFirst, wrap(async (req, res) => {
+    const pick = req.guidePick;
+    const old = pick.video ? pick.video.toObject() : null;
+    pick.video = null;
+    await pick.save();
+    if (old) await videoSvc.removeVideoFiles(old);
+    res.json({ success: true });
+}));
+
+// PUBLIC: the clip and its poster. Only a ready video of an ACTIVE guide is served.
+const mediaLimiter = rateLimit({ windowMs: 60 * 1000, max: 240, standardHeaders: true, legacyHeaders: false, keyGenerator: clientKey });
+async function readyVideo(req, res) {
+    if (!validId(req.params.pickId)) { res.status(404).json({ success: false, error: 'Not found' }); return null; }
+    const pick = await GuidePick.findById(req.params.pickId).select('guide video').lean();
+    if (!pick?.video || pick.video.status !== 'ready' || !pick.video.fileId || !(await Guide.exists({ _id: pick.guide, status: 'active' }))) {
+        res.status(404).json({ success: false, error: 'Not found' }); return null;
+    }
+    return pick.video;
+}
+// ?v=<file version> changes whenever the guide replaces the clip, so the bytes can be cached.
+router.get('/video/:pickId', mediaLimiter, wrap(async (req, res) => {
+    const v = await readyVideo(req, res); if (!v) return;
+    await videoSvc.streamFile(req, res, v.fileId, { contentType: 'video/mp4', cacheControl: 'public, max-age=604800' });
+}));
+router.get('/video/:pickId/poster', mediaLimiter, wrap(async (req, res) => {
+    const v = await readyVideo(req, res); if (!v) return;
+    if (!v.posterId) return res.status(404).json({ success: false, error: 'Not found' });
+    await videoSvc.streamFile(req, res, v.posterId, { contentType: 'image/jpeg', cacheControl: 'public, max-age=604800' });
 }));
 
 // ── STAFF: queue, approve, reject, suspend ──────────────────────────────────
@@ -293,6 +372,7 @@ router.get('/staff/:id/picks', auth, wrap(async (req, res) => {
             return {
                 id: String(p._id), placeId: p.placeId, placeName: p.placeName || '', category: p.category,
                 note: p.note || '', reelUrl: p.reelUrl || null, tour: p.tour || null, createdAt: p.createdAt,
+                videoUrl: videoSvc.videoView(p)?.videoUrl || null,
                 source: svc.isDestRef(p.placeId) ? 'destination' : 'place',
                 placeGone: !place,
                 // Staff hint: Jinni's own data doesn't back this category.
@@ -310,6 +390,7 @@ router.delete('/staff/picks/:pickId', auth, wrap(async (req, res) => {
     if (!pick) return res.status(404).json({ success: false, error: 'Pick not found' });
     const reason = String(req.body?.reason || '').trim().slice(0, 500);
     await pick.deleteOne();
+    if (pick.video) await videoSvc.removeVideoFiles(pick.video);
     // Record it on the guide, so the history shows who removed what and why.
     await Guide.updateOne({ _id: pick.guide }, { $push: { 'verification.history': {
         action: 'pick_removed', by: req.user._id || req.user.id, notes: `${pick.placeName || pick.placeId} (${pick.category})${reason ? ': ' + reason : ''}`,
