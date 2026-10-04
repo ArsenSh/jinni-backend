@@ -503,6 +503,28 @@
           }
         }
       ]
+    },
+    {
+      "id": "guide-ask-do-you-have",
+      "why": "2026-10-04 live: \"Do you have guide?\" went to chit-chat under the word-list router; the controller lane must catch it.",
+      "turns": [
+        {
+          "say": "Do you have guide?",
+          "expect": {
+            "replyIncludes": "jinni.travel/@"
+          }
+        }
+      ]
+    },
+    {
+      "id": "guide-ask-georgia",
+      "why": "2026-10-04: guides are matched by country — an Armenian guide is never offered for Tbilisi.",
+      "turns": [
+        {
+          "say": "is there a local guide in Tbilisi?",
+          "expect": {}
+        }
+      ]
     }
   ]
 }

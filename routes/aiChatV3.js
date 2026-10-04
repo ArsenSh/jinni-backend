@@ -1213,7 +1213,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             //    links. A country ("guides in Armenia") is no area filter at all. ──
             const area = meta.destScale === 'country' ? null : ((intent.placeNames || [])[0] || null);
             const found = await guideSvc.guidesForAsk({ area, countryCode: meta.destCountryCode, countryName: meta.destCountryName });
-            meta.guidesOffered = [...found.covering, ...found.others].map(g => g.handle);
+            meta.guidesOffered = [...found.covering, ...found.inCountry].map(g => g.handle);
             const gate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
             const out = await narrator.stream({
                 messages: buildChitchatMessages({
