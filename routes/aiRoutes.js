@@ -8702,6 +8702,9 @@ router.patch('/chat-sessions/:id', auth, async (req, res) => {
                 ...(rec.venueName && { venueName: rec.venueName }),
                 ...(rec.venuePlaceId && { venuePlaceId: rec.venuePlaceId }),
                 ...(rec.provenance && { provenance: rec.provenance }),
+                // "Picked by @guide" + the reel (2026-10-04): the fourth field this list dropped —
+                // every reload lost the guide chip and the reel on the card.
+                ...(Array.isArray(rec.guidePicks) && rec.guidePicks.length && { guidePicks: rec.guidePicks }),
                 feedback: rec.feedback || null
               }));
               // console.log(`💾 Saved ${messageData.recommendations.length} recommendations without re-enrichment`); // ⬅️ FIXED: Changed from backtick to parentheses

@@ -154,6 +154,9 @@ function summarize(c) {
         event_kind: c.eventSchedule ? require('../events/kinds').eventKind(c.name, c.description || c.blurb || '') : undefined,
         event_start: c.eventSchedule?.startDate ? new Date(c.eventSchedule.startDate).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : null,
         source: c.source === 'destination' || c.source === 'business' ? 'owned' : (c.source || null),
+        // A local guide filed this place under the searched category (founder 2026-10-04):
+        // a human verdict, not a ranking signal — the deck keeps it (deal() enforces it).
+        guide_pick: c._guidePick ? `picked by local guide @${c._guidePick} for this category — keep it on the deck and say a local guide recommends it` : undefined,
         area: c._town?.city || c.city || null,
         address: clip(c.address, 80) || null,
     };
@@ -259,6 +262,15 @@ async function runDeckAgent({
                 chosen.push(p); blurbs.push(clip(c.blurb, 240) || null);
             }
             if (!chosen.length) return { error: 'no_valid_cards', hint: 'use ids from search_places results, or ask_traveler' };
+            // A guide's pick the searches returned is never the card that falls off (live
+            // 2026-10-04 01:11: retrieval seated Hayk's Garni Temple at #2, the agent dealt
+            // four other places). Second card; replaces the last when the deck is full.
+            const kept = [...known.values()].find(p => p._guidePick && !chosen.includes(p));
+            if (kept && !chosen.some(p => p._guidePick)) {
+                if (chosen.length >= 6) { chosen.pop(); blurbs.pop(); }
+                chosen.splice(1, 0, kept); blurbs.splice(1, 0, null);
+                console.log(`[v3][agent] guide pick kept: "${kept.name}" (@${kept._guidePick}) — the agent had dropped it`);
+            }
             terminal = { kind: 'deal', places: chosen, blurbs, intro: clip(intro, 900), question: clip(question, 200) || null };
             return { ok: true, dealt: chosen.length };
         },
