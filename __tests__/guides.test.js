@@ -328,3 +328,30 @@ describe('guide questions', () => {
         expect(publicGuide({ handle: 'x', displayName: 'X', region: 'r' }).country).toBe('AM');
     });
 });
+
+// ── A guide's category choice puts the place in that category's decks (2026-10-04) ──
+describe('guide picks as deck candidates', () => {
+    const { guidePickCandidates } = require('../services/guideService');
+    const CENTER = { lat: 40.18, lng: 44.51 };
+    const q = (rows) => ({ select: () => ({ lean: async () => rows }), lean: async () => rows });
+    const deps = (over = {}) => ({
+        GuidePick: { find: () => q([{ guide: 'g2', placeId: 'garni' }, { guide: 'gX', placeId: 'far' }]) },
+        Guide: { find: () => q([{ _id: 'g2', handle: 'haykshahinyan_' }]) },          // gX is not active
+        PlaceCache: { find: () => q([{ placeId: 'garni' }]) },
+        store: { cacheDocToCandidate: (d) => ({ placeId: d.placeId, name: 'Garni temple', distanceKm: 23 }), dbDocToCandidate: () => null },
+        ...over,
+    });
+    test('an active guide\'s pick in the asked category, inside the circle, becomes a flagged candidate', async () => {
+        const out = await guidePickCandidates({ category: 'hidden_gems', center: CENTER, radiusKm: 50 }, deps());
+        expect(out).toEqual([{ placeId: 'garni', name: 'Garni temple', distanceKm: 23, _guidePick: 'haykshahinyan_' }]);
+    });
+    test('outside the circle, another category, or no category → nothing', async () => {
+        expect(await guidePickCandidates({ category: 'hidden_gems', center: CENTER, radiusKm: 5 }, deps())).toEqual([]);
+        expect(await guidePickCandidates({ category: 'nightlife', center: CENTER, radiusKm: 50 }, deps())).toEqual([]);
+        expect(await guidePickCandidates({ category: null, center: CENTER, radiusKm: 50 }, deps())).toEqual([]);
+    });
+    test('a failing lookup never breaks the deck', async () => {
+        const out = await guidePickCandidates({ category: 'hidden_gems', center: CENTER, radiusKm: 50 }, deps({ GuidePick: { find: () => { throw new Error('db down'); } } }));
+        expect(out).toEqual([]);
+    });
+});

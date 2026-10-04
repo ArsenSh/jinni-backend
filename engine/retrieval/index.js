@@ -104,6 +104,16 @@ async function findPlaces(params = {}, deps = {}) {
         let candidates;
         try {
             candidates = (await loadCandidates({ ...params, enforceOpenNow })) || [];
+            // Places a GUIDE picked in this category join the pool (founder 2026-10-04); they
+            // pass every gate below like any row. An existing row is only flagged, never doubled.
+            if (params.category && params.center && !deps.skipGuidePicks) {
+                const gp = await (deps.guidePickCandidates || require('../../services/guideService').guidePickCandidates)(
+                    { category: params.category, center: params.center, radiusKm: params.radiusKm });
+                for (const c of gp) {
+                    const same = candidates.find(x => (c.placeId && x.placeId === c.placeId) || (c.verifiedId && x.verifiedId === c.verifiedId));
+                    if (same) same._guidePick = c._guidePick; else candidates.push(c);
+                }
+            }
         } catch (err) {
             return { places: [], degraded: true, reason: `load_failed: ${err.message}`, provenance };
         }
@@ -482,6 +492,19 @@ async function findPlaces(params = {}, deps = {}) {
             provenance.ownedSeat = owned.name;
             console.log(`[retrieval] curated seat: "${owned.name}" (${owned.source}) hoisted `
                 + `from #${i + 1} to #${SAFE_SEAT} — our own data is not the row that falls off`);
+        }
+    }
+
+    // ── A GUIDE'S PICK GETS A SEAT TOO (founder 2026-10-04): a local guide filed
+    //    this place under the asked category; like our own data it is not the row
+    //    that falls off. Same cut-proof top-three rule, one seat. ──
+    if (ordered.length > SAFE_SEAT && !ordered.slice(0, SAFE_SEAT).some(c => c && c._guidePick)) {
+        const gi = ordered.findIndex(c => c && c._guidePick);
+        if (gi >= SAFE_SEAT) {
+            const gp = ordered[gi];
+            ordered = [...ordered.slice(0, SAFE_SEAT - 2), gp, ...ordered.slice(SAFE_SEAT - 2).filter(c => c !== gp)];
+            provenance.guideSeat = gp.name;
+            console.log(`[retrieval] guide seat: "${gp.name}" (@${gp._guidePick}) hoisted from #${gi + 1} to #${SAFE_SEAT - 1}`);
         }
     }
 

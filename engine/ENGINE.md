@@ -324,3 +324,11 @@ engine/
       → Garni Temple), max 3; `guideAskContext` grounds the narrator ("none for X yet" said
       plainly). destination.js now returns countryCode → meta.destCountryCode.
       stats.path='guides'; log `[guides] question → …`.
+- [x] **A GUIDE'S CATEGORY IS A CURATED VERDICT** (2026-10-04, founder: "if guide picks that
+      category, what is the meaning … that should be shown"). `guideService.guidePickCandidates`
+      adds places active guides picked under the deck's category (hidden_gem→hidden_gems, …)
+      inside the search circle to the candidate pool, flagged `_guidePick` (existing rows are
+      only flagged). They pass every downstream gate (open-now drop, already-shown, style).
+      Retrieval gives the first one a cut-proof seat at #2 ("guide seat"), beside the owned-data
+      seat at #3. Skipped when mongoose is not connected (tests). Log: `[guides] picks as
+      candidates: …`, `[retrieval] guide seat: …`.

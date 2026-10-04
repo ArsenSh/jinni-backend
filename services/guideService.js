@@ -417,8 +417,61 @@ function guideAskContext({ area, country, covering, inCountry }) {
     return parts.join('\n') + ']';
 }
 
+
+/**
+ * A guide's category choice is a curated verdict (founder 2026-10-04: "if guide
+ * picks that category, what is the meaning … I think that should be shown").
+ * For a deck in that category, the places approved guides picked inside the search
+ * circle become CANDIDATES, flagged _guidePick, so retrieval can give one a seat.
+ * They then pass every normal gate downstream (open-now, already-shown, style).
+ * Fail-open: any error returns [] and the deck is built as before.
+ */
+async function guidePickCandidates({ category, center, radiusKm }, deps = {}) {
+    try {
+        const pickCat = Object.keys(CAT_ACTION).find(k => CAT_ACTION[k] === category);
+        if (!pickCat || !center || !(radiusKm > 0)) return [];
+        // no database (unit tests, a cold start) → skip rather than wait on mongoose buffering
+        if (!deps.GuidePick && require('mongoose').connection.readyState !== 1) return [];
+        const GuidePick = deps.GuidePick || require('../models/GuidePick');
+        const Guide = deps.Guide || require('../models/Guide');
+        const picks = await GuidePick.find({ category: pickCat }).select('guide placeId').lean();
+        if (!picks.length) return [];
+        const active = await Guide.find({ _id: { $in: [...new Set(picks.map(p => String(p.guide)))] }, status: 'active' }).select('handle').lean();
+        const handleOf = new Map(active.map(g => [String(g._id), g.handle]));
+        const live = picks.filter(p => handleOf.has(String(p.guide)));
+        if (!live.length) return [];
+        const store = deps.store || require('../engine/places/canonicalStore');
+        const googleIds = [...new Set(live.map(p => p.placeId).filter(id => !isDestRef(id)))];
+        const destIds = [...new Set(live.map(p => p.placeId).filter(isDestRef).map(id => id.slice(DEST_PREFIX.length)))];
+        const out = [];
+        if (googleIds.length) {
+            const PlaceCache = deps.PlaceCache || require('../models/PlaceCache');
+            for (const d of await PlaceCache.find({ placeId: { $in: googleIds }, aiBlocked: { $ne: true }, 'explore.status': { $ne: 'hidden' } }).lean()) {
+                const c = store.cacheDocToCandidate(d, center); if (c) out.push(c);
+            }
+        }
+        if (destIds.length) {
+            const Destination = deps.Destination || require('../models/Destination');
+            for (const d of await Destination.find({ _id: { $in: destIds } }).lean()) {
+                const c = store.dbDocToCandidate(d, 'destination', center); if (c) out.push(c);
+            }
+        }
+        const near = out.filter(c => c.distanceKm != null && c.distanceKm <= radiusKm);
+        for (const c of near) {
+            const key = c.placeId || (c.verifiedId ? DEST_PREFIX + c.verifiedId : null);
+            const p = live.find(x => x.placeId === key || (c.verifiedId && x.placeId === DEST_PREFIX + c.verifiedId));
+            c._guidePick = p ? handleOf.get(String(p.guide)) : true;
+        }
+        if (near.length) console.log(`[guides] picks as candidates: ${near.map(c => `${c.name} (@${c._guidePick})`).join(', ')} — cat=${category} r=${radiusKm}km`);
+        return near;
+    } catch (err) {
+        console.warn('[guides] guidePickCandidates failed (deck built without them):', err.message);
+        return [];
+    }
+}
+
 module.exports = {
     deleteGuideForUser, normalizeHandle, normalizeInstagram, parseInstagramPost, makeVerificationCode, sanitizeApplication, sanitizeProfileEdit, sanitizePick,
-    publicGuide, placeSearch, attachGuidePicks, guidesForAsk, guideAskContext, CATEGORIES, RESERVED,
+    publicGuide, placeSearch, attachGuidePicks, guidePickCandidates, guidesForAsk, guideAskContext, CATEGORIES, RESERVED,
     categoryRules, categoryMismatch, loadPickPlaces, forGuide, isDestRef, CAT_ACTION,
 };
