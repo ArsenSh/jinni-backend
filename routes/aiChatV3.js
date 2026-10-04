@@ -1211,8 +1211,16 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
             //    it is one ("do it the v3 way" — no word list, §12); the code decides
             //    what may be said: the approved guides only — names, regions, page
             //    links. A country ("guides in Armenia") is no area filter at all. ──
-            const area = meta.destScale === 'country' ? null : ((intent.placeNames || [])[0] || null);
-            const found = await guideSvc.guidesForAsk({ area, countryCode: meta.destCountryCode, countryName: meta.destCountryName });
+            let area = meta.destScale === 'country' ? null : ((intent.placeNames || [])[0] || null);
+            let countryCode = meta.destCountryCode, countryName = meta.destCountryName;
+            // This lane runs before the destination is resolved (live 2026-10-04: "a guide in
+            // Tbilisi?" had no country, so Armenian guides were offered). The gazetteer says
+            // where the area is — no Google call; a named COUNTRY is the filter, not an area.
+            if (area && !countryCode) {
+                const geo = await require('../engine/geo/gazetteer').lookupPlace(area).catch(() => null);
+                if (geo) { countryCode = geo.countryCode || null; countryName = geo.countryName || null; if (geo.scale === 'country') area = null; }
+            }
+            const found = await guideSvc.guidesForAsk({ area, countryCode, countryName });
             meta.guidesOffered = [...found.covering, ...found.inCountry].map(g => g.handle);
             const gate = makeGreetingGate((c) => send(res, { type: 'token', content: c }), { enabled: greetGateOn });
             const out = await narrator.stream({
