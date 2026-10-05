@@ -24,3 +24,20 @@ describe('sanitizeFunnel (anonymous sign-up funnel, 2026-09-30)', () => {
         for (const e of FUNNEL_EVENTS) expect(sanitizeFunnel({ event: e, sid: 'abcdefghij' })).not.toBeNull();
     });
 });
+
+describe('sanitizeVisit (anonymous public-page visits, 2026-10-06)', () => {
+    const { sanitizeVisit } = _test;
+    const { PAGE_KEYS } = require('../models/PageVisit');
+    test('accepts a known page with the funnel sid/source rules', () => {
+        expect(sanitizeVisit('{"page":"discover","sid":"abcd1234-xyz","source":"WWW.Instagram.com"}'))
+            .toEqual({ page: 'discover', sid: 'abcd1234-xyz', source: 'instagram.com' });
+        for (const p of PAGE_KEYS) expect(sanitizeVisit({ page: p, sid: 'abcdefghij' })).not.toBeNull();
+    });
+    test('unknown pages, bad sids and junk bodies are ignored', () => {
+        expect(sanitizeVisit({ page: 'admin', sid: 'abcdefghij' })).toBeNull();
+        expect(sanitizeVisit({ page: { $ne: 1 }, sid: 'abcdefghij' })).toBeNull();
+        expect(sanitizeVisit({ page: 'guide', sid: 'short' })).toBeNull();
+        expect(sanitizeVisit('not json')).toBeNull();
+        expect(sanitizeVisit(null)).toBeNull();
+    });
+});

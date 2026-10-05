@@ -228,6 +228,70 @@ router.get('/funnel', async (req, res) => {
     }
 });
 
+// ─── MOST USED PAGES (founder 2026-10-06) ────────────────────────────────
+// "Which url users used most in last 7 days and in last 30 days." Two kinds
+// of people, counted separately, each once for the whole window:
+//   app    — signed-in travelers per app section (UserActivity.surfaces; admin,
+//            staff and business accounts are never recorded there). `uses` =
+//            the section's activity count, throttled to ≤1 per user per
+//            section per minute — roughly "minutes spent", not page loads.
+//   public — anonymous browsers per public page (PageVisit; the landing comes
+//            from the funnel's landing_view so it is not beaconed twice).
+const APP_SECTIONS = ['chat', 'quickAction', 'explore', 'itinerary', 'saves', 'map'];
+router.get('/page-usage', async (req, res) => {
+    try {
+        const UserActivity = require('../models/UserActivity');
+        const PageVisit = require('../models/PageVisit');
+        const FunnelEvent = require('../models/FunnelEvent');
+        const days = parseInt(req.query.days) === 7 ? 7 : 30;
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - (days - 1) * 86400000);
+        const fromDay = start.toISOString().slice(0, 10);
+        const inWindow = { day: { $gte: fromDay } };
+
+        const perUser = Object.fromEntries(APP_SECTIONS.map(s => [s, { $sum: `$surfaces.${s}` }]));
+        const [appRaw, pagesRaw, landingRaw] = await Promise.all([
+            UserActivity.aggregate([
+                { $match: inWindow },
+                { $group: { _id: '$userId', ...perUser } },
+                { $group: {
+                    _id: null,
+                    activeUsers: { $sum: 1 },
+                    ...Object.fromEntries(APP_SECTIONS.flatMap(s => [
+                        [`${s}_users`, { $sum: { $cond: [{ $gt: [`$${s}`, 0] }, 1, 0] } }],
+                        [`${s}_uses`, { $sum: `$${s}` }],
+                    ])),
+                } },
+            ]),
+            PageVisit.aggregate([
+                { $match: inWindow },
+                { $group: { _id: { page: '$page', sid: '$sid' } } },
+                { $group: { _id: '$_id.page', n: { $sum: 1 } } },
+            ]),
+            FunnelEvent.aggregate([
+                { $match: { ...inWindow, event: 'landing_view' } },
+                { $group: { _id: '$sid' } },
+                { $count: 'n' },
+            ]),
+        ]);
+
+        const a = appRaw[0] || {};
+        const app = APP_SECTIONS
+            .map(key => ({ key, users: a[`${key}_users`] || 0, uses: a[`${key}_uses`] || 0 }))
+            .sort((x, y) => (y.users - x.users) || (y.uses - x.uses));
+        const visitors = Object.fromEntries(PageVisit.PAGE_KEYS.map(k => [k, 0]));
+        for (const r of pagesRaw) if (r._id in visitors) visitors[r._id] = r.n;
+        const pub = [{ key: 'landing', visitors: landingRaw[0]?.n || 0 },
+            ...PageVisit.PAGE_KEYS.map(key => ({ key, visitors: visitors[key] }))]
+            .sort((x, y) => y.visitors - x.visitors);
+
+        res.json({ success: true, data: { days, from: fromDay, activeUsers: a.activeUsers || 0, app, public: pub } });
+    } catch (error) {
+        console.error('Page usage report error:', error);
+        res.status(500).json({ success: false, error: 'Failed to build page usage report' });
+    }
+});
+
 // User registrations over time (last 30 days)
 router.get('/users/registrations', async (req, res) => {
     try {

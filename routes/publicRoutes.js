@@ -409,7 +409,41 @@ router.post('/funnel', funnelLimiter, express.text({ type: 'text/plain', limit: 
     }
 });
 
+// ── ANONYMOUS PUBLIC-PAGE VISITS (founder 2026-10-06) ───────────────────────
+// Feeds the admin Overview's Most Used Pages card: the pages anyone can open
+// without an account (models/PageVisit.js). Same beacon, same rules as the
+// funnel above: no auth, 204 at once, never throw, unknown pages ignored,
+// one count per browser/page/day.
+const PageVisit = require('../models/PageVisit');
+const PAGE_SET = new Set(PageVisit.PAGE_KEYS);
+
+function sanitizeVisit(body) {
+    let b = body;
+    if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { return null; } }
+    if (!b || typeof b !== 'object') return null;
+    const page = typeof b.page === 'string' ? b.page.trim() : '';
+    if (!PAGE_SET.has(page)) return null;
+    const base = sanitizeFunnel({ event: 'landing_view', sid: b.sid, source: b.source });   // same sid/source rules
+    return base ? { page, sid: base.sid, source: base.source } : null;
+}
+
+router.post('/visit', funnelLimiter, express.text({ type: 'text/plain', limit: '2kb' }), (req, res) => {
+    res.status(204).end();
+    try {
+        const ua = String(req.headers['user-agent'] || '');
+        if (!ua || BOT_UA.test(ua)) return;
+        const v = sanitizeVisit(req.body);
+        if (!v) return;
+        const day = new Date().toISOString().slice(0, 10);
+        PageVisit.create({ day, ...v }).catch((err) => {
+            if (err && err.code !== 11000) console.warn('[visit] write failed:', err.message);
+        });
+    } catch (err) {
+        console.warn('[visit] error:', err.message);
+    }
+});
+
 module.exports = router;
-module.exports._test = { clusterCities, publicVisible, slugify, sanitizeFunnel };
+module.exports._test = { clusterCities, publicVisible, slugify, sanitizeFunnel, sanitizeVisit };
 // For scripts/publicCoverage.js (read-only diagnostics on the server).
 module.exports._internals = { buildSnapshot, publicVisible, clusterCities, ownedRow, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };
