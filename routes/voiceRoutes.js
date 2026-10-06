@@ -112,4 +112,42 @@ router.post('/speak', auth, speakLimiter, wrap(async (req, res) => {
     console.log(`[voice] spoke ${text.length} chars (${model}) for ${req.user.id}`);
 }));
 
+// A short spoken "working on it" line (founder 2026-10-07: "ok, let's see what I can find…, not
+// every time the same") played the moment a premium user's spoken message goes off, so there is
+// no silence while Jinni searches. Each line is made ONCE per deploy and cached on disk, so the
+// cost is a few hundred characters in total, not per answer. Not counted against the daily cap.
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const FILLERS = {
+    en: ["Okay, let me see what I can find.", "One moment, I'm looking into it.", "Let me check that for you.", "Good question. Give me a second.", "Alright, searching now."],
+    ru: ["Хорошо, сейчас посмотрю, что можно найти.", "Секунду, ищу.", "Сейчас проверю для вас.", "Хороший вопрос, дайте мне секунду.", "Так, ищу прямо сейчас."],
+    hy: ["Լավ, տեսնեմ ինչ կարող եմ գտնել։", "Մի պահ, նայում եմ։", "Հիմա կստուգեմ ձեզ համար։", "Լավ հարց է, մի վայրկյան։", "Լավ, փնտրում եմ։"],
+    fr: ["D'accord, voyons ce que je peux trouver.", "Un instant, je regarde.", "Je vérifie ça pour vous.", "Bonne question, une seconde.", "Très bien, je cherche."],
+    ar: ["حسنًا، دعني أرى ما يمكنني إيجاده.", "لحظة، أبحث الآن.", "سأتحقق من ذلك لك.", "سؤال جيد، أمهلني ثانية.", "حسنًا، أبحث الآن."],
+    zh: ["好的，让我看看能找到什么。", "稍等，我来查一下。", "我帮您查一下。", "好问题，请给我一点时间。", "好的，正在搜索。"],
+};
+const CACHE_DIR = path.join(process.env.VOICE_CACHE_DIR || os.tmpdir(), 'jinni-voice-fillers');
+try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch (e) { /* read-only fs: fillers are then made each time */ }
+const fillerCacheKey = (lang, i) => path.join(CACHE_DIR, `${lang}-${i}-${String(process.env.ELEVENLABS_VOICE_ID || '').slice(-6)}.mp3`);
+
+router.get('/filler', auth, speakLimiter, wrap(async (req, res) => {
+    if (!req.user.isPremium) return res.status(403).json({ success: false, error: 'premium_required' });
+    if (!ttsConfigured()) return res.status(503).json({ success: false, error: 'tts_unavailable' });
+    const lang = FILLERS[String(req.query.lang || '').slice(0, 2)] ? String(req.query.lang).slice(0, 2) : 'en';
+    const lines = FILLERS[lang];
+    const i = Number.isInteger(+req.query.i) && +req.query.i >= 0 && +req.query.i < lines.length ? +req.query.i : Math.floor(Math.random() * lines.length);
+    const file = fillerCacheKey(lang, i);
+    res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=86400', 'X-Voice-Filler': String(i) });
+    if (fs.existsSync(file)) return fs.createReadStream(file).pipe(res);
+    const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2');
+    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(process.env.ELEVENLABS_VOICE_ID)}?output_format=mp3_44100_96`, {
+        method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: lines[i], model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.25, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
+    if (!r.ok) { console.warn('[voice] filler:', r.status); return res.status(502).json({ success: false, error: 'tts_failed' }); }
+    const buf = Buffer.from(await r.arrayBuffer());
+    try { fs.writeFileSync(file, buf); } catch (e) { /* no cache, still served */ }
+    res.end(buf);
+}));
+
 module.exports = router;
