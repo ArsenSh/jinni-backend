@@ -150,7 +150,9 @@ router.post('/transcribe', auth, sttLimiter, upload.single('audio'), wrap(async 
     const provider = sttProvider(), key = whisperKey();
     if (!provider) return res.status(503).json({ success: false, error: 'stt_unavailable' });
     if (!req.file) return res.status(400).json({ success: false, error: 'no_audio' });
-    const lang = /^(en|ru|hy|fr|ar|zh)$/.test(String(req.body.lang || '')) ? req.body.lang : undefined;
+    // The language is NOT forced (founder 2026-10-09: speaking Russian with the app in English came out as English):
+    // the listener detects it from the voice. STT_FORCE_LANGUAGE=true sends the app's language again.
+    const lang = process.env.STT_FORCE_LANGUAGE === 'true' && /^(en|ru|hy|fr|ar|zh)$/.test(String(req.body.lang || '')) ? req.body.lang : undefined;
     let hints = [];
     try { hints = JSON.parse(req.body.hints || '[]'); } catch (e) { hints = []; }
     hints = (Array.isArray(hints) ? hints : []).filter(h => typeof h === 'string').map(h => h.replace(/[\r\n]+/g, ' ').trim().slice(0, 60)).filter(h => h.length > 1).slice(0, 40);
