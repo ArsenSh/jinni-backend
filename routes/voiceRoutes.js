@@ -3,8 +3,8 @@
 // Jinni's voice (founder 2026-10-07): the user talks to Jinni and, on Premium,
 // hears the answer in Jinni's own ElevenLabs voice. Free users keep the mic
 // (speech → text) and read the answer.
-//   POST /transcribe  — Whisper fallback for speech → text (iPhone Safari has no
-//                       Armenian recognition). Any signed-in user. Cheap.
+//   POST /transcribe  — speech → text for voice mode: ElevenLabs Scribe (keyterms = expected place
+//                       names) when ELEVENLABS_API_KEY is set, else OpenAI. Any signed-in user.
 //   POST /speak       — text → Jinni's voice. PREMIUM only, capped per day
 //                       (VOICE_DAILY_CAP, default 30 answers), text clipped to
 //                       VOICE_MAX_CHARS (default 1500) so one answer costs a
@@ -66,7 +66,7 @@ async function usageToday(userId) {
 
 router.get('/status', auth, wrap(async (req, res) => {
     const may = mayHearVoice(req.user), used = may ? await usageToday(req.user._id) : 0;
-    res.json({ success: true, isPremium: !!req.user.isPremium, voice: may, tts: ttsConfigured(), stt: !!whisperKey(), cap: CAP, remaining: may ? Math.max(0, CAP - used) : 0 });
+    res.json({ success: true, isPremium: !!req.user.isPremium, voice: may, tts: ttsConfigured(), stt: !!sttProvider(), cap: CAP, remaining: may ? Math.max(0, CAP - used) : 0 });
 }));
 
 // speech → text. Voice mode sends every turn here (founder 2026-10-09: the phone's own recogniser heard
@@ -105,6 +105,36 @@ function sttPrompt(hints, near) {
 function joinSpelled(text) {
     return String(text || '').replace(/\b(?:[A-Za-z][\s,.\-]+){2,}[A-Za-z]\b/g, (m) => { const w = m.replace(/[^A-Za-z]/g, ''); return w[0].toUpperCase() + w.slice(1).toLowerCase(); });
 }
+// ElevenLabs Scribe (founder 2026-10-09: "from elevenlabs" — the key Jinni already has for its voice). Expected names
+// go as `keyterms`: < 50 characters, ≤ 5 words each, at most 90 so the 100-term minimum-billing rule never applies.
+function keyterms(hints, near) {
+    const seen = new Set(), out = ['Jinni'];
+    for (const raw of [...hints, ...near]) {
+        const t = String(raw || '').replace(/[^\p{L}\p{N}' &.-]+/gu, ' ').trim().split(/\s+/).slice(0, 5).join(' ').slice(0, 49).trim();
+        const k = t.toLowerCase();
+        if (t.length > 1 && !seen.has(k)) { seen.add(k); out.push(t); }
+        if (out.length >= 90) break;
+    }
+    return out;
+}
+async function transcribeEleven(file, lang, terms, model) {
+    const fd = new FormData();
+    fd.append('file', new Blob([file.buffer], { type: file.mimetype || 'audio/webm' }), file.originalname || 'speech.webm');
+    fd.append('model_id', model);
+    if (lang) fd.append('language_code', lang);
+    fd.append('tag_audio_events', 'false');
+    for (const t of terms || []) fd.append('keyterms', t);
+    const r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', { method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }, body: fd });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, text: String(j.text || '').trim(), error: j.detail ? JSON.stringify(j.detail).slice(0, 200) : undefined };
+}
+// Which listener: STT_PROVIDER=elevenlabs|openai picks one; otherwise ElevenLabs when its key is set, else OpenAI.
+function sttProvider() {
+    const el = !!process.env.ELEVENLABS_API_KEY, oa = !!whisperKey(), want = process.env.STT_PROVIDER;
+    if (want === 'openai' && oa) return 'openai';
+    if (want === 'elevenlabs' && el) return 'elevenlabs';
+    return el ? 'elevenlabs' : (oa ? 'openai' : null);
+}
 async function transcribe(key, file, lang, prompt, model) {
     const fd = new FormData();
     fd.append('file', new Blob([file.buffer], { type: file.mimetype || 'audio/webm' }), file.originalname || 'speech.webm');
@@ -117,18 +147,29 @@ async function transcribe(key, file, lang, prompt, model) {
 }
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 router.post('/transcribe', auth, sttLimiter, upload.single('audio'), wrap(async (req, res) => {
-    const key = whisperKey();
-    if (!key) return res.status(503).json({ success: false, error: 'stt_unavailable' });
+    const provider = sttProvider(), key = whisperKey();
+    if (!provider) return res.status(503).json({ success: false, error: 'stt_unavailable' });
     if (!req.file) return res.status(400).json({ success: false, error: 'no_audio' });
     const lang = /^(en|ru|hy|fr|ar|zh)$/.test(String(req.body.lang || '')) ? req.body.lang : undefined;
     let hints = [];
     try { hints = JSON.parse(req.body.hints || '[]'); } catch (e) { hints = []; }
     hints = (Array.isArray(hints) ? hints : []).filter(h => typeof h === 'string').map(h => h.replace(/[\r\n]+/g, ' ').trim().slice(0, 60)).filter(h => h.length > 1).slice(0, 40);
-    const prompt = sttPrompt(hints, await namesNear(req.user));
-    const model = process.env.STT_MODEL || 'gpt-4o-transcribe';
+    const near = await namesNear(req.user);
     const t0 = Date.now();
-    let out = await transcribe(key, req.file, lang, prompt, model);
-    if (!out.ok && model !== 'whisper-1') { console.warn(`[voice] ${model}: ${out.status} ${out.error} — retrying with whisper-1`); out = await transcribe(key, req.file, lang, prompt.slice(0, 600), 'whisper-1'); }
+    let out, model;
+    if (provider === 'elevenlabs') {
+        model = process.env.ELEVENLABS_STT_MODEL || 'scribe_v2';
+        out = await transcribeEleven(req.file, lang, keyterms(hints, near), model);
+        // a refused request (e.g. the keyterms format): once more without the names, then the older model, then OpenAI if set
+        if (!out.ok && out.status >= 400 && out.status < 500) { console.warn(`[voice] ${model}: ${out.status} ${out.error} — retrying without keyterms`); out = await transcribeEleven(req.file, lang, [], model); }
+        if (!out.ok && model !== 'scribe_v1') { console.warn(`[voice] ${model}: ${out.status} ${out.error} — retrying with scribe_v1`); model = 'scribe_v1'; out = await transcribeEleven(req.file, lang, [], model); }
+        if (!out.ok && key) { model = process.env.STT_MODEL || 'gpt-4o-transcribe'; out = await transcribe(key, req.file, lang, sttPrompt(hints, near), model); }
+    } else {
+        model = process.env.STT_MODEL || 'gpt-4o-transcribe';
+        const prompt = sttPrompt(hints, near);
+        out = await transcribe(key, req.file, lang, prompt, model);
+        if (!out.ok && model !== 'whisper-1') { console.warn(`[voice] ${model}: ${out.status} ${out.error} — retrying with whisper-1`); out = await transcribe(key, req.file, lang, prompt.slice(0, 600), 'whisper-1'); }
+    }
     if (!out.ok) { console.warn('[voice] stt:', out.status, out.error); return res.status(502).json({ success: false, error: 'stt_failed' }); }
     const text = joinSpelled(out.text);
     console.log(`[voice] heard ${text.length} chars in ${Date.now() - t0}ms (${model}, ${hints.length} hint(s))`);
@@ -210,4 +251,4 @@ router.get('/filler', auth, speakLimiter, wrap(async (req, res) => {
 }));
 
 module.exports = router;
-module.exports._test = { joinSpelled, sttPrompt };
+module.exports._test = { joinSpelled, sttPrompt, keyterms, sttProvider };

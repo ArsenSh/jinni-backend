@@ -18,3 +18,21 @@ describe('voice speech-to-text helpers (2026-10-09)', () => {
         expect(long.length).toBeLessThanOrEqual(905);
     });
 });
+
+describe('ElevenLabs keyterms (2026-10-09)', () => {
+    const { keyterms, sttProvider } = require('../routes/voiceRoutes')._test;
+    test('Jinni first, no duplicates, at most 5 words and under 50 characters each, at most 90', () => {
+        const t = keyterms(['Amar Restaurant and Cafe', 'The Pool by Seven Visions Resort and Places, The Dvin'], ['amar restaurant and cafe', 'Cascade Complex']);
+        expect(t).toEqual(['Jinni', 'Amar Restaurant and Cafe', 'The Pool by Seven Visions', 'Cascade Complex']);
+        expect(keyterms(Array.from({ length: 300 }, (_, i) => 'Place ' + i), []).length).toBe(90);
+        expect(keyterms(['x'.repeat(80)], [])[1].length).toBeLessThan(50);
+    });
+    test('provider: ElevenLabs when its key is set, OpenAI when only that one is, none otherwise', () => {
+        const env = { ...process.env };
+        delete process.env.STT_PROVIDER; delete process.env.WHISPER_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_BASE_URL;
+        process.env.ELEVENLABS_API_KEY = 'el'; expect(sttProvider()).toBe('elevenlabs');
+        delete process.env.ELEVENLABS_API_KEY; process.env.OPENAI_API_KEY = 'oa'; expect(sttProvider()).toBe('openai');
+        delete process.env.OPENAI_API_KEY; expect(sttProvider()).toBe(null);
+        process.env = env;
+    });
+});
