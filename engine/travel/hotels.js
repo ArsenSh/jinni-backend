@@ -25,7 +25,7 @@ const BASE = 'https://api.liteapi.travel/v3.0';
 const TIMEOUT_MS = 8000;
 // Partner rates are LIVE by default (founder 2026-10-09: "hotels from Nuitee should not be cached").
 // HOTEL_PRICES_CACHE_MIN=30 in the env brings a short cache back if the partner's quota needs it.
-const TTL_MS = Math.max(0, parseInt(process.env.HOTEL_PRICES_CACHE_MIN || '0', 10)) * 60e3;
+const ttlMs = (env = process.env) => Math.max(0, parseInt(env.HOTEL_PRICES_CACHE_MIN || '0', 10)) * 60e3;
 const MAX_MEMO = 300;
 const MATCH_KM = 0.6;               // same hotel ⇒ same block; the name is the tie-breaker
 const HOTEL_POOL = 50;              // hotels priced per area call
@@ -56,7 +56,8 @@ async function _call(path, { method = 'GET', query = null, body = null } = {}, d
     const url = `${BASE}${path}${query ? `?${_q(query)}` : ''}`;
     const key = `${method} ${url} ${body ? JSON.stringify(body) : ''}`;
     const hit = _memo.get(key);
-    if (TTL_MS > 0 && hit && Date.now() - hit.at < TTL_MS) return hit.value;
+    const ttl = ttlMs(env);
+    if (ttl > 0 && hit && Date.now() - hit.at < ttl) return hit.value;
     const doFetch = deps.fetch || (typeof fetch === 'function' ? fetch : null);
     if (!doFetch) return null;
     await _pace(deps);

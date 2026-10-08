@@ -3,7 +3,9 @@
 const hotels = require('../engine/travel/hotels');
 const { runDeckAgent } = require('../engine/agent/deckAgent');
 
-const ENV = { HOTEL_PRICES_TOKEN: 'sand_x', HOTEL_PRICES_WL_DOMAIN: 'https://jinni.nuitee.link/' };
+// Rates are LIVE by default since 2026-10-09 (founder: "hotels from Nuitee should not be cached"); these
+// fixtures switch the optional cache on, as they were written against it. The last test covers the default.
+const ENV = { HOTEL_PRICES_TOKEN: 'sand_x', HOTEL_PRICES_WL_DOMAIN: 'https://jinni.nuitee.link/', HOTEL_PRICES_CACHE_MIN: '360' };
 const SEVAN = { lat: 40.55, lng: 44.95, countryCode: 'AM', name: 'Sevan' };
 const HOTELS = { data: [
     { id: 'lp1', name: 'Noy Land Resort', stars: 4, rating: 8.7, latitude: 40.60, longitude: 45.00, city: 'Sevan', country: 'AM' },
@@ -55,13 +57,21 @@ describe('hotel prices (liteAPI)', () => {
     });
     test('no whitelabel domain ⇒ price without a link; no dates ⇒ the coming Saturday night; memoised', async () => {
         const log = [];
-        const deps = { env: { HOTEL_PRICES_TOKEN: 'k' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
+        const deps = { env: { HOTEL_PRICES_TOKEN: 'k', HOTEL_PRICES_CACHE_MIN: '360' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
         const a = await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
         expect(a.check_in).toBe('2026-09-26'); expect(a.check_out).toBe('2026-09-27'); expect(a.nights).toBe(1);
         expect(a.matched['Harsnaqar'].price_per_night).toBe(60);
         expect(a.matched['Harsnaqar'].booking_url).toBeNull();
         await hotels.hotelPrices({ centre: SEVAN }, deps);
         expect(log).toHaveLength(2);                         // second call served from memory
+    });
+    test('without HOTEL_PRICES_CACHE_MIN every ask goes to the partner (live rates)', async () => {
+        const log = [];
+        const deps = { env: { HOTEL_PRICES_TOKEN: 'k2' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
+        await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
+        const first = log.length;
+        await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
+        expect(log.length).toBe(first * 2);                  // nothing served from memory
     });
     test('an unresolved centre or an empty index is reported, never invented', async () => {
         const a = await hotels.hotelPrices({ centre: { lat: 1, lng: 2 } }, { env: ENV, fetch: fakeFetch(), noPace: true });
