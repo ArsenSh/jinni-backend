@@ -172,7 +172,11 @@ router.post('/transcribe', auth, sttLimiter, upload.single('audio'), wrap(async 
         out = await transcribe(key, req.file, lang, prompt, model);
         if (!out.ok && model !== 'whisper-1') { console.warn(`[voice] ${model}: ${out.status} ${out.error} — retrying with whisper-1`); out = await transcribe(key, req.file, lang, prompt.slice(0, 600), 'whisper-1'); }
     }
-    if (!out.ok) { console.warn('[voice] stt:', out.status, out.error); return res.status(502).json({ success: false, error: 'stt_failed' }); }
+    if (!out.ok) {
+        // one clear line for the logs: which listener refused and why (401/403 = the key lacks Speech to Text)
+        console.warn(`[voice] stt FAILED via ${provider} (${model}): ${out.status} ${out.error || ''}${provider === 'elevenlabs' && (out.status === 401 || out.status === 403) ? ' — the ElevenLabs key needs the "Speech to Text" permission' : ''}`);
+        return res.status(502).json({ success: false, error: 'stt_failed', provider, status: out.status });
+    }
     const text = joinSpelled(out.text);
     console.log(`[voice] heard ${text.length} chars in ${Date.now() - t0}ms (${model}, ${hints.length} hint(s))`);
     res.json({ success: true, text });
