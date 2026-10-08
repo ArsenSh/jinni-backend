@@ -82,7 +82,9 @@ router.post('/transcribe', auth, sttLimiter, upload.single('audio'), wrap(async 
     res.json({ success: true, text: String(j.text || '').trim() });
 }));
 
-// text → Jinni's voice. Premium, capped, clipped. Streams the mp3 straight through.
+// text → Jinni's voice. Premium, capped, clipped. Streams the mp3 straight through. One request per
+// answer and style 0 / stability 0.65 (founder 2026-10-08: paragraph-by-paragraph requests came back
+// at different loudness — ElevenLabs levels each request on its own).
 router.post('/speak', auth, speakLimiter, wrap(async (req, res) => {
     if (!req.user.isPremium) return res.status(403).json({ success: false, error: 'premium_required' });
     if (!ttsConfigured()) return res.status(503).json({ success: false, error: 'tts_unavailable' });
@@ -101,7 +103,7 @@ router.post('/speak', auth, speakLimiter, wrap(async (req, res) => {
     const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2');
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(process.env.ELEVENLABS_VOICE_ID)}/stream?output_format=mp3_44100_96`;
     const r = await fetch(url, { method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.2, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
+        body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.65, similarity_boost: 0.8, style: 0, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
     if (!r.ok || !r.body) {
         const detail = await r.text().catch(() => '');
         console.warn('[voice] elevenlabs:', r.status, detail.slice(0, 200));
@@ -143,7 +145,7 @@ router.get('/filler', auth, speakLimiter, wrap(async (req, res) => {
     const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2');
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(process.env.ELEVENLABS_VOICE_ID)}?output_format=mp3_44100_96`, {
         method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: lines[i], model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.25, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
+        body: JSON.stringify({ text: lines[i], model_id: model, voice_settings: { stability: 0.65, similarity_boost: 0.8, style: 0, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
     if (!r.ok) { console.warn('[voice] filler:', r.status); return res.status(502).json({ success: false, error: 'tts_failed' }); }
     const buf = Buffer.from(await r.arrayBuffer());
     try { fs.writeFileSync(file, buf); } catch (e) { /* no cache, still served */ }
