@@ -296,6 +296,7 @@ const corsOptions = {
     // response and silently dropped by the browser, so the client could
     // never show live quota.
     exposedHeaders: [
+        'X-Voice-Request-Id',   // Jinni's voice: stitches one answer's sentences together (2026-10-08)
         'X-Usage-Tokens-Used',
         'X-Usage-Tokens-Remaining',
         'X-Usage-Places-Viewed',

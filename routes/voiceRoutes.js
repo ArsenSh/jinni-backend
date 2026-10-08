@@ -100,16 +100,20 @@ router.post('/speak', auth, speakLimiter, wrap(async (req, res) => {
         }
     }
     const lang = String(req.body?.lang || 'en').slice(0, 2);
-    const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2');
+    // Flash = ElevenLabs' low-latency model (founder 2026-10-08: "claude replies instantly"); the chat
+    // speaks sentence by sentence while the answer streams, and previous_request_ids stitch the
+    // sentences so they sound like one reading.
+    const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5');
+    const prev = Array.isArray(req.body?.previous_request_ids) ? req.body.previous_request_ids.filter(x => typeof x === 'string' && /^[\w-]{4,64}$/.test(x)).slice(-3) : [];
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(process.env.ELEVENLABS_VOICE_ID)}/stream?output_format=mp3_44100_96`;
     const r = await fetch(url, { method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.65, similarity_boost: 0.8, style: 0, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
+        body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.65, similarity_boost: 0.8, style: 0, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) }, ...(prev.length ? { previous_request_ids: prev } : {}) }) });
     if (!r.ok || !r.body) {
         const detail = await r.text().catch(() => '');
         console.warn('[voice] elevenlabs:', r.status, detail.slice(0, 200));
         return res.status(502).json({ success: false, error: 'tts_failed' });
     }
-    res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' });
+    res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', ...(r.headers.get('request-id') ? { 'X-Voice-Request-Id': r.headers.get('request-id') } : {}) });
     Readable.fromWeb(r.body).on('error', () => res.destroy()).pipe(res);
     console.log(`[voice] spoke ${text.length} chars (${model}) for ${req.user.id}`);
 }));
@@ -142,7 +146,7 @@ router.get('/filler', auth, speakLimiter, wrap(async (req, res) => {
     const file = fillerCacheKey(lang, i);
     res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'private, max-age=86400', 'X-Voice-Filler': String(i) });
     if (fs.existsSync(file)) return fs.createReadStream(file).pipe(res);
-    const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2');
+    const model = lang === 'hy' ? (process.env.ELEVENLABS_MODEL_HY || 'eleven_v3') : (process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5');
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(process.env.ELEVENLABS_VOICE_ID)}?output_format=mp3_44100_96`, {
         method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: lines[i], model_id: model, voice_settings: { stability: 0.65, similarity_boost: 0.8, style: 0, speed: Number(process.env.ELEVENLABS_SPEED || 0.95) } }) });
