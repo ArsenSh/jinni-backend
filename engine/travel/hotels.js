@@ -23,9 +23,9 @@
 
 const BASE = 'https://api.liteapi.travel/v3.0';
 const TIMEOUT_MS = 8000;
-// Partner rates are LIVE by default (founder 2026-10-09: "hotels from Nuitee should not be cached").
-// HOTEL_PRICES_CACHE_MIN=30 in the env brings a short cache back if the partner's quota needs it.
-const ttlMs = (env = process.env) => Math.max(0, parseInt(env.HOTEL_PRICES_CACHE_MIN || '0', 10)) * 60e3;
+// "from" prices move slowly: partner rates are remembered for 6 h (founder 2026-10-09: "if Nuitee
+// caches only 6 hours it is good"). HOTEL_PRICES_CACHE_MIN in the env changes it; 0 = always live.
+const ttlMs = (env = process.env) => Math.max(0, parseInt(env.HOTEL_PRICES_CACHE_MIN ?? '360', 10)) * 60e3;
 const MAX_MEMO = 300;
 const MATCH_KM = 0.6;               // same hotel ⇒ same block; the name is the tie-breaker
 const HOTEL_POOL = 50;              // hotels priced per area call

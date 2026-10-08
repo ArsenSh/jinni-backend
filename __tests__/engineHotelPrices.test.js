@@ -3,8 +3,7 @@
 const hotels = require('../engine/travel/hotels');
 const { runDeckAgent } = require('../engine/agent/deckAgent');
 
-// Rates are LIVE by default since 2026-10-09 (founder: "hotels from Nuitee should not be cached"); these
-// fixtures switch the optional cache on, as they were written against it. The last test covers the default.
+// Partner rates are remembered for 6 h by default (HOTEL_PRICES_CACHE_MIN overrides; 0 = live).
 const ENV = { HOTEL_PRICES_TOKEN: 'sand_x', HOTEL_PRICES_WL_DOMAIN: 'https://jinni.nuitee.link/', HOTEL_PRICES_CACHE_MIN: '360' };
 const SEVAN = { lat: 40.55, lng: 44.95, countryCode: 'AM', name: 'Sevan' };
 const HOTELS = { data: [
@@ -65,9 +64,9 @@ describe('hotel prices (liteAPI)', () => {
         await hotels.hotelPrices({ centre: SEVAN }, deps);
         expect(log).toHaveLength(2);                         // second call served from memory
     });
-    test('without HOTEL_PRICES_CACHE_MIN every ask goes to the partner (live rates)', async () => {
+    test('HOTEL_PRICES_CACHE_MIN=0 makes every ask go to the partner (live rates)', async () => {
         const log = [];
-        const deps = { env: { HOTEL_PRICES_TOKEN: 'k2' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
+        const deps = { env: { HOTEL_PRICES_TOKEN: 'k2', HOTEL_PRICES_CACHE_MIN: '0' }, fetch: fakeFetch(log), now: '2026-09-19T10:00:00Z', noPace: true };
         await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
         const first = log.length;
         await hotels.hotelPrices({ centre: SEVAN, names: ['Harsnaqar'] }, deps);
