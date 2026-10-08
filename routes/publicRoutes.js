@@ -23,7 +23,8 @@ const { priceTier, isPriceAction } = require('../services/priceTier');
 const INTEREST_TAGS = new Set(['nature', 'family', 'romantic', 'art', 'cultural', 'history', 'adventure', 'relaxation', 'nightlife', 'food&drink']);
 
 const EXPLORE_CATEGORIES = ['restaurants', 'hotels', 'historical', 'events', 'photo_spots', 'hidden_gems', 'shopping', 'activities'];
-const CATEGORY_ORDER = ['restaurants', 'historical', 'hidden_gems', 'activities', 'photo_spots', 'shopping', 'hotels'];
+// Events (validator-curated Destinations with dates) sit after activities (founder 2026-10-09).
+const CATEGORY_ORDER = ['restaurants', 'historical', 'hidden_gems', 'activities', 'events', 'photo_spots', 'shopping', 'hotels'];
 // Founder 2026-09-17: "there is also Tavush and lots of other regions that
 // the cache has verified locations" — a 50k-population bar left Dilijan and
 // Ijevan out. Every settlement may now own a page; the LARGEST settlement
@@ -34,7 +35,10 @@ const CITY_MIN_PLACES = Number(process.env.PUBLIC_CITY_MIN_PLACES) || 6;
 const CITY_MIN_POPULATION = Number(process.env.PUBLIC_CITY_MIN_POPULATION) || 1000;
 const CITY_RADIUS_KM = Number(process.env.PUBLIC_CITY_RADIUS_KM) || 30;     // hard cap on any reach
 const { radiusForPopulation } = require('../engine/geo/gazetteer');
-const PER_CATEGORY = 24;
+const PER_CATEGORY = 24;   // what a visitor sees per section
+// Founder 2026-10-09: the page picks its 24 FROM a larger set by the visitor's interests and style, so a
+// matching place beyond the first 24 can still reach them. PUBLIC_PER_CATEGORY widens or narrows what is sent.
+const PER_CATEGORY_SENT = Number(process.env.PUBLIC_PER_CATEGORY) || 60;
 // Founder 2026-09-17: the public page says "checked by local validators", so
 // by default ONLY validator-verified rows are published. Set
 // PUBLIC_INCLUDE_VISIBLE=true to widen it to ordinary visible cache rows (the
@@ -140,13 +144,19 @@ function clusterCities(rows, cities, { radiusKm = CITY_RADIUS_KM, minPlaces = CI
 //    code runs; `_owned` carries what the card and More window need. ──
 const OWNED_CATS = new Set(['restaurants', 'hotels', 'historical', 'hidden_gems', 'activities', 'photo_spots']);
 const SHOP_TYPES = new Set(['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food']);
+// A dated event is shown while it is upcoming or running; a recurring one always (same rule as /api/ai/explore).
+const upcomingEvent = (sch) => !!sch && (sch.isRecurring || ((sch.endDate || sch.startDate) && new Date(sch.endDate || sch.startDate) >= new Date()));
 const normName = (n) => String(n || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 function ownedRow(d, source) {
     const lat = d?.location?.coordinates?.lat, lng = d?.location?.coordinates?.lng;
     if (!d?.name || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
     const types = Array.isArray(d.type) ? d.type.map(t => String(t).toLowerCase()) : [];
-    const actions = [...new Set(types.filter(t => OWNED_CATS.has(t)).concat(types.some(t => SHOP_TYPES.has(t)) ? ['shopping'] : []))];
-    if (!actions.length) return null;                       // events are dated, not places; untyped rows have no rail
+    // An event: shown only while upcoming; an ENDED one-off event is dropped entirely, even when it also carries a
+    // place tag (it used to linger under that tag). A running/upcoming one also gets the Events section.
+    const isEvent = types.includes('events') && !!(d.eventSchedule && (d.eventSchedule.startDate || d.eventSchedule.isRecurring));
+    if (isEvent && !upcomingEvent(d.eventSchedule)) return null;
+    const actions = [...new Set(types.filter(t => OWNED_CATS.has(t)).concat(types.some(t => SHOP_TYPES.has(t)) ? ['shopping'] : []).concat(isEvent ? ['events'] : []))];
+    if (!actions.length) return null;                       // untyped rows have no section
     const images = (Array.isArray(d.images) ? d.images : []).map(i => (typeof i === 'string' ? i : i?.url)).filter(u => typeof u === 'string' && u);
     if (!images.length) return null;                        // a public card needs a photo the visitor can see
     let hours = null;
@@ -167,6 +177,7 @@ function ownedRow(d, source) {
             source,
             tier: source === 'business' ? (d.partnership?.tier || 'verified') : null,
             images, description: desc || null,
+            eventDates: isEvent && d.eventSchedule.startDate ? { start: d.eventSchedule.startDate, end: d.eventSchedule.endDate || null, recurring: !!d.eventSchedule.isRecurring } : (isEvent ? { start: null, end: null, recurring: true } : null),
             website: d.contact?.website || null, phone: d.contact?.phone || null, hours,
             address: d.location?.address || [d.location?.city, d.location?.country].filter(Boolean).join(', ') || null,
         },
@@ -192,6 +203,7 @@ function cardOf(r, km) {
         interests: (r.interests || []).map(t => String(t).toLowerCase()).filter(t => INTEREST_TAGS.has(t)),
         priceTier: r._owned ? r._styleTier : priceTier(r.types, r.primaryType, r.priceLevel).tier,
         priced: (r.actions || []).some(isPriceAction),
+        eventDates: r._owned ? r._owned.eventDates || undefined : undefined,
     };
 }
 
@@ -214,7 +226,7 @@ async function buildSnapshot() {
         const Business = require('../models/Business');
         const [dests, bizs] = await Promise.all([
             Destination.find({ isActive: { $ne: false }, 'location.coordinates.lat': { $type: 'number' }, 'images.0': { $exists: true } })
-                .select('name type images location rating engagement description contact openingHours').lean(),
+                .select('name type images location rating engagement description contact openingHours eventSchedule').lean(),
             Business.find({ status: 'active', 'location.coordinates.lat': { $type: 'number' }, 'images.0': { $exists: true } })
                 .select('name type images location rating engagement description contact openingHours partnership').lean(),
         ]);
@@ -239,21 +251,32 @@ async function buildSnapshot() {
     for (const cl of clusters) {
         const categories = {};
         for (const c of EXPLORE_CATEGORIES) categories[c] = [];
-        // Verified first, then rating — no personal weighting on a public page.
+        // Curated first (founder 2026-10-09): validator Destinations and partner Businesses have no Google rating, so
+        // "verified, then rating" sorted them BELOW every rated cache row and a busy section cut them first. Now owned
+        // rows lead (partners by tier), then verified, then rating — no personal weighting on the server.
+        const TIER_RANK = { signature: 3, spotlight: 2, verified: 1 };
+        const ownedRank = (r) => (r._owned ? 10 + (TIER_RANK[r._owned.tier] || 0) : 0);
         const ordered = cl.rows.slice().sort((a, b) =>
-            (Number(b.row.explore?.status === 'verified') - Number(a.row.explore?.status === 'verified'))
+            (ownedRank(b.row) - ownedRank(a.row))
+            || (Number(b.row.explore?.status === 'verified') - Number(a.row.explore?.status === 'verified'))
             || ((b.row.rating || 0) - (a.row.rating || 0)));
         for (const { row, km } of ordered) {
             for (const c of row.actions || []) {
-                if (categories[c] && categories[c].length < PER_CATEGORY && c !== 'events') categories[c].push(cardOf(row, km));
+                if (c === 'events' && !row._owned?.eventDates) continue;     // a cache venue tagged "events" is not a dated event
+                if (categories[c] && categories[c].length < PER_CATEGORY_SENT) categories[c].push(cardOf(row, km));
             }
         }
+        // events read soonest first; an event without a start date (recurring) goes last
+        if (categories.events) categories.events.sort((a, b) => (a.eventDates?.start ? new Date(a.eventDates.start) : Infinity) - (b.eventDates?.start ? new Date(b.eventDates.start) : Infinity));
         for (const c of Object.keys(categories)) if (!categories[c].length) delete categories[c];
-        const cover = ordered.find(m => Array.isArray(m.row.photos) && m.row.photos.length)?.row;
+        // "N places" = what a visitor can actually see (the first 24 of each section, each place once)
+        const shown = new Set(); for (const c of Object.keys(categories)) for (const p of categories[c].slice(0, PER_CATEGORY)) shown.add(p.placeId);
+        // the cover uses the card's own image, so a curated place (dest_/biz_ id) no longer gives a broken picture
+        const coverRow = ordered.find(m => Array.isArray(m.row.photos) && m.row.photos.length);
         const city = {
             slug: cl.slug, name: cl.city.name, country: cl.city.countryName || null, countryCode: cl.city.countryCode || null,
-            lat: cl.city.lat, lng: cl.city.lng, count: cl.rows.length,
-            image: cover ? `/api/ai/place-image/${cover.placeId}/0` : null,
+            lat: cl.city.lat, lng: cl.city.lng, count: shown.size,
+            image: coverRow ? cardOf(coverRow.row, coverRow.km).image : null,
         };
         snap.cities.push(city);
         snap.pages.set(cl.slug, { city, categories, order: CATEGORY_ORDER.filter(c => categories[c]) });
@@ -294,12 +317,12 @@ router.get('/discover/place/:placeId', async (req, res) => {
         const m = /^(dest|biz)_([a-f0-9]{24})$/.exec(id);
         if (m) {
             const Model = m[1] === 'biz' ? require('../models/Business') : require('../models/Destination');
-            const d = await Model.findById(m[2]).select('name type images location rating engagement description contact openingHours partnership status isActive').lean();
+            const d = await Model.findById(m[2]).select('name type images location rating engagement description contact openingHours partnership status isActive eventSchedule').lean();
             const o = d && (m[1] === 'biz' ? d.status === 'active' : d.isActive !== false) ? ownedRow(d, m[1] === 'biz' ? 'business' : 'destination') : null;
             if (!o) return res.status(404).json({ success: false, error: 'Place not found' });
             cacheHeader(res);
             return res.json({ success: true, data: { name: o.name, address: o._owned.address, rating: o.rating, hours: o._owned.hours,
-                website: o._owned.website, phone: o._owned.phone, description: o._owned.description, photos: o._owned.images, tier: o._owned.tier, source: o._owned.source } });
+                website: o._owned.website, phone: o._owned.phone, description: o._owned.description, photos: o._owned.images, tier: o._owned.tier, source: o._owned.source, eventDates: o._owned.eventDates || undefined } });
         }
         const r = await PlaceCache.findOne({ placeId: String(req.params.placeId).slice(0, 200) })
             .select('placeId name rating explore aiBlocked business_status likes dislikes website formatted_phone_number opening_hours.weekday_text details.formatted_address details.vicinity details.geometry.location photos.url').lean();
@@ -444,6 +467,6 @@ router.post('/visit', funnelLimiter, express.text({ type: 'text/plain', limit: '
 });
 
 module.exports = router;
-module.exports._test = { clusterCities, publicVisible, slugify, sanitizeFunnel, sanitizeVisit };
+module.exports._test = { clusterCities, publicVisible, slugify, sanitizeFunnel, sanitizeVisit, ownedRow, cardOf };
 // For scripts/publicCoverage.js (read-only diagnostics on the server).
 module.exports._internals = { buildSnapshot, publicVisible, clusterCities, ownedRow, EXPLORE_CATEGORIES, CITY_MIN_PLACES, CITY_MIN_POPULATION, CITY_RADIUS_KM, VERIFIED_ONLY };
