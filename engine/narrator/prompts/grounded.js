@@ -37,8 +37,10 @@ function placeFactLine(p) {
         p._stars ? `${p._stars}-star` : null,
         // A live partner price is a FACT the blurb may quote — including that
         // it covers the whole group when several rooms were priced.
+        // …but the CARD already prints it as its own line ("from 146 USD / night"), so the blurb must
+        // not repeat the amount (founder 2026-10-09: the price showed twice). It may compare in words.
         (p.hotelPrice && Number.isFinite(p.hotelPrice.perNight))
-            ? `live price from ${p.hotelPrice.perNight} ${p.hotelPrice.currency} per night${p.hotelPrice.rooms > 1 ? ` for all ${p.hotelPrice.rooms} rooms (the whole group)` : (p.hotelPrice.groupUnavailable ? ' for ONE room — no single booking here holds the whole party, and the traveler must be told' : '')}`
+            ? `live price from ${p.hotelPrice.perNight} ${p.hotelPrice.currency} per night${p.hotelPrice.rooms > 1 ? ` for all ${p.hotelPrice.rooms} rooms (the whole group)` : (p.hotelPrice.groupUnavailable ? ' for ONE room — no single booking here holds the whole party, and the traveler must be told' : '')} — this amount is PRINTED ON THE CARD under your blurb: do not repeat the number or the currency in the blurb, describe value only in words ("the cheapest of the three", "well above the others")`
             : null,
         p._partnerUnpriced ? 'the booking partner has no rate for this stay' : null,
         // Unknown hours are SAID on a right-now deck (live 2026-09-15, 02:00:
