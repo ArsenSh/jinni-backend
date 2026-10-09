@@ -182,6 +182,24 @@ router.post('/transcribe', auth, sttLimiter, upload.single('audio'), wrap(async 
     res.json({ success: true, text });
 }));
 
+// LIVE listening (founder 2026-10-09: "build the live streaming listener"). The browser streams the microphone straight
+// to ElevenLabs' realtime Scribe over a WebSocket; this route only hands it a single-use token (15 min, one session) so
+// the API key never leaves the server, plus the names to expect (keyterms). Any signed-in user.
+router.post('/stt-token', auth, sttLimiter, wrap(async (req, res) => {
+    if (!process.env.ELEVENLABS_API_KEY) return res.status(503).json({ success: false, error: 'stt_unavailable' });
+    const hints = (Array.isArray(req.body?.hints) ? req.body.hints : []).filter(h => typeof h === 'string').map(h => h.trim().slice(0, 60)).filter(Boolean).slice(0, 40);
+    const [r, near] = await Promise.all([
+        fetch('https://api.elevenlabs.io/v1/single-use-token/realtime_scribe', { method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY } }),
+        namesNear(req.user),
+    ]);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.token) {
+        console.warn(`[voice] live token FAILED: ${r.status} ${j.detail ? JSON.stringify(j.detail).slice(0, 200) : ''}${r.status === 401 || r.status === 403 ? ' — the ElevenLabs key needs the "Speech to Text" permission' : ''}`);
+        return res.status(502).json({ success: false, error: 'stt_failed', status: r.status });
+    }
+    res.json({ success: true, token: j.token, model: process.env.ELEVENLABS_REALTIME_MODEL || 'scribe_v2_realtime', keyterms: keyterms(hints, near).slice(0, 50) });
+}));
+
 // text → Jinni's voice. Premium, capped, clipped. Streams the mp3 straight through. One request per
 // answer and style 0 / stability 0.65 (founder 2026-10-08: paragraph-by-paragraph requests came back
 // at different loudness — ElevenLabs levels each request on its own).
