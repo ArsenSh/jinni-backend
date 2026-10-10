@@ -36,6 +36,7 @@ const TYPE_LABELS = {
     cafe: 'Cafe', coffee_shop: 'Cafe', tea_house: 'Tea house', bakery: 'Bakery',
     dessert_shop: 'Dessert shop', ice_cream_shop: 'Ice cream', juice_shop: 'Juice bar',
     bar: 'Bar', pub: 'Pub', bar_and_grill: 'Bar', wine_bar: 'Wine bar', night_club: 'Nightclub',
+    hookah_bar: 'Hookah lounge', lounge_bar: 'Lounge bar', cocktail_bar: 'Cocktail bar', sports_bar: 'Sports bar',
     // Culture
     museum: 'Museum', art_gallery: 'Gallery', performing_arts_theater: 'Theatre',
     opera_house: 'Opera house', concert_hall: 'Concert hall', auditorium: 'Concert hall',

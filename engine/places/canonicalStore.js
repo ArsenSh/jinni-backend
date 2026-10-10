@@ -89,8 +89,15 @@ function _prefFitScore(types, primaryType, preferences, tags = []) {
 
 /** The indexed bounding-box prefilter — v1's query shape, category optional. */
 const _rxEscape = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Google-type eligibility per action lives beside the JS gate it twins
+// (googleService.typesForAction). Lazy and fail-closed to the tag-only query,
+// so a missing comparator narrows the deck instead of flooding it.
+const typesForAction = (action, subType = null) => {
+    try { return require('../../services/googleService').typesForAction(action, subType); }
+    catch { return null; }
+};
 
-function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = [], countryScope = null, alsoTypes = null }) {
+function buildCacheQuery({ center, radiusKm, category = null, subType = null, excludePlaceIds = [], countryScope = null, alsoTypes = null }) {
     const freshnessCutoff = new Date(Date.now() - CACHE_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
     const latDelta = radiusKm / 111.32;
     const lngDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(center.lat * Math.PI / 180)));
@@ -119,8 +126,21 @@ function buildCacheQuery({ center, radiusKm, category = null, excludePlaceIds = 
     // Ground-truth category match — widened on a broad ask (2026-09-03), where
     // the traveler named no venue type and intent's single guess must not
     // exclude the neighbouring sightseeing tags.
-    if (alsoTypes && alsoTypes.length) query.actions = { $in: alsoTypes };
-    else if (category) query.actions = category;
+    // A row qualifies by the staff tag OR by Google's own typing (founder
+    // 2026-10-10, "use google types too"): Zazoo Rooftop Lounge, 44Hookah
+    // Lounge Bar and Barvikha Lounge sat in the Yerevan cache with
+    // `hookah_bar` in their types and an EMPTY tag list, and a hookah ask was
+    // dealt churches. The JS loop in loadCandidates still runs
+    // placeMatchesActionType on every row, so admission here is eligibility,
+    // not a verdict. Judgement categories (hidden_gems, events) have no type
+    // list and stay tag-only.
+    const wanted = (alsoTypes && alsoTypes.length) ? alsoTypes : (category ? [category] : []);
+    if (wanted.length) {
+        const typeList = [...new Set(wanted.flatMap(a => typesForAction(a, subType) || []))];
+        const tagClause = wanted.length === 1 ? { actions: wanted[0] } : { actions: { $in: wanted } };
+        if (typeList.length) query.$or = [tagClause, { types: { $in: typeList } }];
+        else Object.assign(query, tagClause);
+    }
     if (excludePlaceIds.length) query.placeId = { $nin: excludePlaceIds };
     return query;
 }
@@ -539,7 +559,7 @@ async function loadCandidates(params = {}, deps = {}) {
     // ── Cache tier ──
     let cacheDocs = [];
     try {
-        const query = buildCacheQuery({ center, radiusKm, category,
+        const query = buildCacheQuery({ center, radiusKm, category, subType,
             excludePlaceIds: excludes.placeIds || [], countryScope: params.countryScope || null,
             alsoTypes: params.alsoTypes || null });
         if (deps.cacheFind) {

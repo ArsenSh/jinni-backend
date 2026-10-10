@@ -327,14 +327,14 @@ describe('country-scoped retrieval', () => {
         expect(q.country.test('armenia')).toBe(true);      // address-parsed, so case-insensitive
         expect(q.country.test('Armenia Colombia')).toBe(false);
         expect(q['details.geometry.location.lat']).toBeUndefined();
-        expect(q.actions).toBe('restaurants');             // category still applies, after country
+        expect(q.$or[0]).toEqual({ actions: 'restaurants' });             // category still applies, after country (tag OR Google type, 2026-10-10)
     });
 
     test('every other ask keeps the bounding box and no country filter', () => {
         const q = buildCacheQuery({ center: CENTRE, radiusKm: 15, category: 'hotels' });
         expect(q.country).toBeUndefined();
         expect(q['details.geometry.location.lat']).toBeDefined();
-        expect(q.actions).toBe('hotels');
+        expect(q.$or[0]).toEqual({ actions: 'hotels' });
     });
 
     test('a country name with regex characters cannot break the query', () => {

@@ -496,7 +496,7 @@ async function fallbackClassify(message, userLanguage) {
     // as a dated happening and carded restaurants (Testbook 2026-08-20). An
     // activity is a place that is open — a spa, a club, a bowling alley; an event
     // is something with a DATE. The words move with the meaning.
-    else if (/\b(activity|activities|things to do|what to do|entertainment|nightlife|night club|nightclub|clubbing|karaoke|bowling|billiards|cinema|movie theater|movie theatre|casino|spa|spas|wellness|massage|hammam|sauna|thermal|water park|aqua park|amusement park|theme park|arcade|escape room|karting|go.?kart|paintball|zip.?line|climbing|rafting|paragliding|golf)\b/i.test(lower)) { actionType = 'activities'; }
+    else if (/\b(activity|activities|things to do|what to do|entertainment|nightlife|night club|nightclub|clubbing|hookah|shisha|nargile|lounge bar|karaoke|bowling|billiards|cinema|movie theater|movie theatre|casino|spa|spas|wellness|massage|hammam|sauna|thermal|water park|aqua park|amusement park|theme park|arcade|escape room|karting|go.?kart|paintball|zip.?line|climbing|rafting|paragliding|golf)\b/i.test(lower)) { actionType = 'activities'; }
     else if (/\b(event|events|festival|festivals|celebration|concert|concerts|show|shows|performance|exhibition)\b/i.test(lower)) { actionType = 'events'; }
     else if (/\b(photo spot|photo spots|viewpoint|viewpoints|panorama|panoramic|scenic|instagram|instagrammable|photogenic|take photos|take pictures)\b/i.test(lower)) { actionType = 'photo_spots'; }
 

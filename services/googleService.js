@@ -439,8 +439,11 @@ const _SHOPPING_BASE = {
 // generous because the interest weighting decides what surfaces, while this
 // gate only decides what is eligible at all.
 const _ACTIVITY_BASE = new Set([
-    // nightlife
+    // nightlife — the bar family as Google (New) actually emits it: a hookah
+    // lounge tagged ONLY `hookah_bar` (44Hookah Lounge Bar, Yerevan) was
+    // invisible to "activities" until these joined the set (live 2026-10-10).
     'night_club', 'bar', 'pub', 'wine_bar', 'karaoke', 'comedy_club', 'casino',
+    'hookah_bar', 'lounge_bar', 'cocktail_bar', 'sports_bar', 'bar_and_grill', 'karaoke_bar',
     // wellness
     'spa', 'wellness_center', 'sauna', 'massage', 'public_bath', 'yoga_studio',
     // play, indoor
@@ -474,6 +477,29 @@ const _NONACTIVITY_PRIMARY = new Set([
     'church', 'mosque', 'synagogue', 'hindu_temple', 'place_of_worship',
     'museum', 'art_gallery', 'historical_landmark', 'historical_place', 'monument',
 ]);
+
+/**
+ * The Google types that make a cached row ELIGIBLE for an action at the
+ * database — the Mongo-side twin of placeMatchesActionType (founder
+ * 2026-10-10: "use google types too"). The cache query used to admit rows by
+ * the staff `actions` tag alone, so three of Yerevan's four hookah bars —
+ * carrying Google's own `hookah_bar` type but an empty tag list — never
+ * reached a deck. Returns an array for $in (strings and suffix regexes), or
+ * null for actions that are a curation judgement rather than a type
+ * (hidden_gems, events): those stay tag-only. The JS gate above still runs
+ * on every admitted row, so the primary-identity rejections are unchanged.
+ */
+function typesForAction(action, subType = null) {
+    if (action === 'restaurants') return [..._RESTAURANT_BASE, /restaurant$/];
+    if (action === 'hotels') return [..._HOTEL_BASE, /hotel/];
+    if (action === 'activities') return [..._ACTIVITY_BASE];
+    if (action === 'shopping') {
+        if (subType && _SHOPPING_BASE[subType]) return [..._SHOPPING_BASE[subType]];
+        return [...new Set(Object.values(_SHOPPING_BASE).flat()), /_(store|shop)$/];
+    }
+    if (action === 'historical' || action === 'photo_spots') return [..._LANDMARK_ALLOW, /attraction$/];
+    return null;
+}
 
 function placeMatchesActionType(action, subType, types = [], primaryType = null) {
     const all = [primaryType, ...(Array.isArray(types) ? types : [])].filter(Boolean).map(t => String(t).toLowerCase());
@@ -555,6 +581,7 @@ module.exports = {
     searchPlacesText,
     getPlaceDetails,
     placeMatchesActionType,
+    typesForAction,
     actionIncludedType,
     actionHasTypeFilter,
     calculateDistances,

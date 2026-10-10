@@ -313,8 +313,11 @@ const VENUE_NOUN_RE = new RegExp([
     'park', 'garden', 'lake', 'waterfall', 'canyon', 'cave', 'mountain', 'peak', 'trail',
     'viewpoint', 'panorama', 'photo', 'event', 'festival', 'concert', 'show', 'exhibition',
     'spa', 'club', 'casino', 'cinema', 'theatre', 'theater', 'zoo', 'winery', 'brewery',
+    // "a hookah place to meet my friend" named a venue and was still widened
+    // into churches and fountains (live 2026-10-10).
+    'hookah', 'shisha', 'nargile', 'lounge',
 ].join('|'), 'i');
-const VENUE_NOUN_NONLATIN_RE = /(ресторан|кафе|бар|отел|гостиниц|музе|монастыр|церк|храм|крепост|рынок|парк|озер|водопад|каньон|пещер|гор|смотровая|фестивал|концерт|выстав|спа|клуб|кино|театр|ռեստորան|սրճարան|հյուրանոց|թանգարան|վանք|եկեղեց|ամրոց|շուկա|այգի|լիճ|ջրվեժ|քարանձավ|լեռ|փառատոն|համերգ|թատրոն)/i;
+const VENUE_NOUN_NONLATIN_RE = /(ресторан|кафе|бар|отел|гостиниц|музе|монастыр|церк|храм|крепост|рынок|парк|озер|водопад|каньон|пещер|гор|смотровая|фестивал|концерт|выстав|спа|клуб|кино|театр|ռեստորան|սրճարան|հյուրանոց|թանգարան|վանք|եկեղեց|ամրոց|շուկա|այգի|լիճ|ջրվեժ|քարանձավ|լեռ|փառատոն|համերգ|թատրոն|кальян|лаундж|նարգիլե|լաունջ)/i;
 
 // "stay 4 days" / "staying for two nights" is a DURATION, not a request for
 // lodging — the bare noun test read it as "hotel" and threw an answer to

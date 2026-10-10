@@ -35,11 +35,28 @@ describe('isCommunityRejected (v1 rules, byte-identical)', () => {
 describe('buildCacheQuery', () => {
     test('category adds the ground-truth actions filter; null omits it', () => {
         const withCat = buildCacheQuery({ center: CENTER, radiusKm: 50, category: 'restaurants' });
-        expect(withCat.actions).toBe('restaurants');
+        // Tag OR Google type (founder 2026-10-10: "use google types too").
+        expect(withCat.$or[0]).toEqual({ actions: 'restaurants' });
+        expect(withCat.$or[1].types.$in).toEqual(expect.arrayContaining(['restaurant', 'cafe', 'bar']));
+        expect(withCat.actions).toBeUndefined();
         expect(withCat.aiBlocked).toEqual({ $ne: true });
         expect(withCat['explore.status']).toEqual({ $ne: 'hidden' });
         const noCat = buildCacheQuery({ center: CENTER, radiusKm: 50 });
         expect(noCat.actions).toBeUndefined();
+        expect(noCat.$or).toBeUndefined();
+    });
+    test('a hookah lounge with an EMPTY tag list is eligible for activities by its Google type', () => {
+        // Zazoo / 44Hookah / Barvikha, Yerevan cache, 2026-10-10: types carried
+        // `hookah_bar`, actions were [] — three of four hookah bars invisible.
+        const q = buildCacheQuery({ center: CENTER, radiusKm: 5, category: 'activities' });
+        expect(q.$or[1].types.$in).toEqual(expect.arrayContaining(['hookah_bar', 'lounge_bar', 'night_club']));
+        const { placeMatchesActionType } = require('../services/googleService');
+        expect(placeMatchesActionType('activities', null, ['hookah_bar', 'point_of_interest'], 'hookah_bar')).toBe(true);
+    });
+    test('judgement categories stay tag-only (no type list can say "hidden gem")', () => {
+        const q = buildCacheQuery({ center: CENTER, radiusKm: 5, category: 'hidden_gems' });
+        expect(q.actions).toBe('hidden_gems');
+        expect(q.$or).toBeUndefined();
     });
     test('bbox straddles the center; excludes become $nin', () => {
         const q = buildCacheQuery({ center: CENTER, radiusKm: 50, excludePlaceIds: ['a'] });
@@ -611,6 +628,9 @@ describe('broad-ask widening', () => {
     test('a named venue type keeps the ask narrow', () => {
         expect(alsoTypesFor('historical', 'What is the closest monastery?')).toBeNull();
         expect(alsoTypesFor('activities', 'any good bars nearby?')).toBeNull();
+        // "a hookah place to meet my friend" was widened into churches (live 2026-10-10).
+        expect(alsoTypesFor('activities', 'I would like a hookah, normal hookah location to meet with my friend.')).toBeNull();
+        expect(namesVenueType('где кальян рядом')).toBe(true);
         expect(namesVenueType('ближайший монастырь')).toBe(true);
         expect(namesVenueType('что посмотреть рядом')).toBe(false);
     });
@@ -622,12 +642,14 @@ describe('broad-ask widening', () => {
     test('the cache gate opens to the whole admissible set', () => {
         const wide = buildCacheQuery({ center: CENTRE, radiusKm: 5, category: 'historical',
             alsoTypes: ['historical', 'activities', 'photo_spots', 'hidden_gems'] });
-        expect(wide.actions).toEqual({ $in: ['historical', 'activities', 'photo_spots', 'hidden_gems'] });
+        expect(wide.$or[0]).toEqual({ actions: { $in: ['historical', 'activities', 'photo_spots', 'hidden_gems'] } });
+        expect(wide.$or[1].types.$in).toEqual(expect.arrayContaining(['museum', 'spa']));
     });
 
     test('without it the gate is exactly as strict as before', () => {
         const narrow = buildCacheQuery({ center: CENTRE, radiusKm: 5, category: 'historical' });
-        expect(narrow.actions).toBe('historical');
+        expect(narrow.$or[0]).toEqual({ actions: 'historical' });
+        expect(narrow.$or[1].types.$in).not.toContain('spa');
     });
 });
 
