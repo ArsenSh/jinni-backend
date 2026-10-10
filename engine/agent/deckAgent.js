@@ -104,7 +104,10 @@ function systemPrompt({ langName, dateNote, traveler, preferences, lastDeck, las
         '',
         'CONTEXT',
         `- Date: ${dateNote || 'unknown'}`,
-        `- Traveler is at: ${traveler?.label || 'unknown'}${traveler?.lat != null ? ` (${traveler.lat.toFixed(3)}, ${traveler.lng.toFixed(3)})` : ''}`,
+        traveler && traveler.isTraveler === false
+            // 2026-10-10: the search centre is a city centre (saved city / session / IP), NOT where the traveler stands
+            ? `- Search centre: the centre of ${traveler.label || 'the city'}${traveler.lat != null ? ` (${traveler.lat.toFixed(3)}, ${traveler.lng.toFixed(3)})` : ''}. The traveler's own position is NOT known. Never say "from you", "near you" or "X m away"; say "from the centre of ${traveler.label || 'the city'}" or "in central ${traveler.label || 'the city'}".`
+            : `- Traveler is at: ${traveler?.label || 'unknown'}${traveler?.lat != null ? ` (${traveler.lat.toFixed(3)}, ${traveler.lng.toFixed(3)})` : ''}`,
         `- Saved travel style: ${prefs.travelStyle || 'none'} · interests: ${(prefs.interests || []).join(', ') || 'none'}`,
         activeDestination ? `- Destination in play from earlier turns: ${clip(activeDestination, 80)}` : null,
         lastDeck && lastDeck.length ? `- Cards already on screen (do not repeat unless asked): ${lastDeck.slice(0, 8).join(', ')}` : null,
@@ -210,7 +213,7 @@ async function runDeckAgent({
             const query = clip(a.query, 80);
             if (!query) return { error: 'query_required' };
             const category = ['restaurants', 'hotels', 'historical', 'activities', 'hidden_gems', 'photo_spots', 'shopping', 'events', 'general'].includes(a.category) ? a.category : 'general';
-            let center = near, centreName = 'traveler';
+            let center = near, centreName = traveler && traveler.isTraveler === false ? `centre of ${traveler.label || 'the city'}` : 'traveler';
             if (a.centre && String(a.centre).toLowerCase() !== 'traveler') {
                 const key = String(a.centre).toLowerCase();
                 let hit = resolved.get(key);

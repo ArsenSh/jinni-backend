@@ -219,6 +219,9 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
     // the GPS, not whatever the search is centred on — otherwise it would save
     // Dubai back onto itself while the traveler stood in Yerevan.
     const gpsCenter = center;
+    // Founder 2026-10-10: "it always says 400 m away — it cannot see my MacBook's GPS". Only a real GPS fix (accuracy
+    // ≤ ~1 km when the app sends it) counts as the traveler's position; an IP / city / saved fix never does.
+    const positionPrecise = !!(location && location.source === 'gps' && (location.accuracy == null || Number(location.accuracy) <= 1000));
     // The city THIS turn named, geocoded through Google by resolveDestination.
     // Kept so "change my location, choose Dubai" can be saved as Dubai — the
     // model says which city it meant, never where it is.
@@ -1063,6 +1066,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 statedPosition,
             }, { findPlaces: (q, near) => require('../services/googleService').findPlaces(q, near) });
             meta.centreSource = dest.source;
+            // Distances may be phrased "from you" only when the search centre IS where the traveler stands.
+            meta.centreIsTraveler = ['gps', 'nearby', 'stated'].includes(dest.source) && (dest.source === 'stated' || positionPrecise);
             // How big the named place IS — country / region / town. The named-
             // town radius cap below is only correct for a TOWN; without this
             // it capped a whole COUNTRY to 15 km around its centroid.
@@ -2063,7 +2068,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     agentOut = await runDeckAgent({
                         message, recentTurns, langName,
                         dateNote: describeDate(buildTimeContext({ timezone: userTimezone, lng: center?.lng })),
-                        traveler: center ? { lat: center.lat, lng: center.lng, label: meta.searchCity || null } : null,
+                        traveler: center ? { lat: center.lat, lng: center.lng, label: meta.searchCity || null, isTraveler: !!meta.centreIsTraveler } : null,
                         preferences: intent._preferences || null,
                         lastDeck: shown?.names ? [...shown.names].slice(0, 8) : [],
                         lastQuestion: sessionPeek?.lastReply?.text ? String(sessionPeek.lastReply.text).split(/(?<=\?)/).pop() : null,
@@ -2511,7 +2516,8 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                     // from that town's centre, not from the traveler (who may
                     // be in another city — live 2026-08-31, Yerevan user told
                     // "2.5 km from you" about Tsaghkadzor).
-                    centreCity: meta.centreSource === 'named' ? (meta.searchCity || null) : null,
+                    // was gated on 'named' only — a SAVED city's centre was presented as the traveler (2026-10-10)
+                    centreCity: !meta.centreIsTraveler ? (meta.searchCity || null) : null,
                     modeNote: meta.modeSwitched
                         ? { to: meta.modeSwitched, place: meta.modeSwitchedTo || meta.searchCity || null }
                         : null,
@@ -2692,7 +2698,7 @@ router.post('/chat-stream-v3', auth, usageTracker, async (req, res) => {
                 const hoisted = hoistNarrated(intro, result.places, blurbs);
                 for (const p of hoisted.places) if (p && p._agentKind && !p._kind) p._kind = p._agentKind;
                 recommendations = hoisted.places.map((p, i) =>
-                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode,
+                    toRecommendation(p, i, { action: category || 'general', nearbyMode: effectiveNearbyMode, centreIsTraveler: !!meta.centreIsTraveler, centreLabel: meta.searchCity || null,
                         // V3: a blurb may not claim open/closed for a place with no hours.
                         description: require('../engine/narrator/prompts/grounded').scrubHoursClaims(hoisted.blurbs[i] || null, p) || null }));
                 // What the listing printed stays exactly as printed; the

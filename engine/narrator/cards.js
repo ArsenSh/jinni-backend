@@ -129,7 +129,7 @@ function categoryFor(place, action) {
 }
 
 /** Factual one-liner card description — only facts the candidate carries. */
-function factDescription(place, category) {
+function factDescription(place, category, centreIsTraveler = null, centreLabel = null) {
     // Events carry facts worth reading even when narration gives no blurb —
     // live 2026-08-23 five tomsarkgh cards all read just "Event" because the
     // model asked a clarifying question instead of emitting the card tail.
@@ -147,7 +147,7 @@ function factDescription(place, category) {
     }
     return [
         category,
-        place.distanceKm != null ? `${place.distanceKm.toFixed(1)} km away` : null,
+        place.distanceKm != null ? (centreIsTraveler === false ? `${place.distanceKm.toFixed(1)} km from the centre${centreLabel ? ` of ${centreLabel}` : ''}` : `${place.distanceKm.toFixed(1)} km away`) : null,
         place.rating ? `rated ${place.rating}` : null,
         // The booking partner scores out of TEN, Google out of five. Rendering
         // an 8.6 as "rated 8.6" beside Google's 4.8 would read as a different
@@ -165,11 +165,11 @@ function factDescription(place, category) {
  * @param {number} i      position (stable ids + originalPosition)
  * @param {object} opts   { action, nearbyMode }
  */
-function toRecommendation(place, i, { action = 'general', nearbyMode = false, description = null } = {}) {
+function toRecommendation(place, i, { action = 'general', nearbyMode = false, description = null, centreIsTraveler = null, centreLabel = null } = {}) {
     const category = categoryFor(place, action);
     // Narrator blurb when provided (v1's hasAIDescription spirit); factual
     // one-liner as the fallback so a failed narration never blanks the card.
-    const desc = description || factDescription(place, category);
+    const desc = description || factDescription(place, category, centreIsTraveler, centreLabel);
     const cachedImageUrl = place.placeId ? `/api/ai/place-image/${place.placeId}/0` : null;
     return {
         id: `chat-rec-${Date.now()}-${i}`,
@@ -202,7 +202,8 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         isLargeCard: true,
         appearsInline: true,
         isStreaming: false,
-        ...(nearbyMode && place.distanceKm != null && { distance: `${place.distanceKm.toFixed(1)} km` }),
+        // the distance chip only when the centre is really the traveler (2026-10-10)
+        ...(nearbyMode && centreIsTraveler !== false && place.distanceKm != null && { distance: `${place.distanceKm.toFixed(1)} km` }),
         // Present ⇒ the frontend's isEventRec() renders the date row on the
         // card (v1's exact contract). Event candidates carry it; places don't.
         eventSchedule: place.eventSchedule || null,
