@@ -2508,6 +2508,7 @@ router.get('/limits', async (req, res) => {
                 limitFreeDailyPlaces: cfg.limitFreeDailyPlaces || 100,
                 limitPremiumDailyTokens: cfg.limitPremiumDailyTokens || 50000,
                 limitPremiumDailyPlaces: cfg.limitPremiumDailyPlaces || 200,
+                voiceFreeUsers: !!cfg.voiceFreeUsers,
                 zoneRadiusM: cfg.zoneRadiusM || { restaurants: 300, hotels: 900, events: 300, hidden_gems: 900, activities: 900, souvenirs: 300, clothing: 300, jewelry: 300, food: 300 }
             },
             free: tier(false),
@@ -2516,6 +2517,19 @@ router.get('/limits', async (req, res) => {
     } catch (error) {
         console.error('Limits read error:', error);
         res.status(500).json({ success: false, error: 'Failed to read limits' });
+    }
+});
+
+// Jinni's voice for free accounts (founder 2026-10-10): one switch, saved at once.
+router.post('/voice-config', async (req, res) => {
+    try {
+        if (typeof req.body?.voiceFreeUsers !== 'boolean') return res.status(400).json({ success: false, error: 'voiceFreeUsers must be true or false' });
+        await AppConfig.updateConfig({ voiceFreeUsers: req.body.voiceFreeUsers }, req.user?._id);
+        console.log(`[admin] voice for free users → ${req.body.voiceFreeUsers ? 'ON' : 'OFF'}`);
+        res.json({ success: true, voiceFreeUsers: req.body.voiceFreeUsers });
+    } catch (error) {
+        console.error('Voice config error:', error);
+        res.status(500).json({ success: false, error: 'Failed to save' });
     }
 });
 

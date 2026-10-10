@@ -69,6 +69,9 @@ const appConfigSchema = new mongoose.Schema({
      * override the per-user premiumBenefits. UserAILimit.setTierConfig()
      * consumes these — call it after every change. */
     limitFreeDailyTokens:    { type: Number, default: 10000 },
+    // Founder 2026-10-10: a switch in Admin → Limits. On = free accounts hear Jinni's voice and get the talking
+    // screen; off = Premium only (free users keep the mic as dictation). Premium always has it.
+    voiceFreeUsers:          { type: Boolean, default: false },
     limitFreeDailyPlaces:    { type: Number, default: 100 },
     limitPremiumDailyTokens: { type: Number, default: 50000 },
     limitPremiumDailyPlaces: { type: Number, default: 200 },
@@ -205,7 +208,7 @@ appConfigSchema.statics.updateConfig = async function (patch = {}, userId = null
         'claudeWebSearch', 'claudeWebSearchMaxUses', 'claudeWebSearchActions', 'claudeWebSearchActionsChat',
         'claudeWebSearchBlockedDomains', 'claudeWebSearchAllowedDomains',
         'eventHorizonDays', 'eventSourceAutoDiscover',
-        'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces', 'zoneRadiusM',
+        'limitFreeDailyTokens', 'limitFreeDailyPlaces', 'limitPremiumDailyTokens', 'limitPremiumDailyPlaces', 'zoneRadiusM', 'voiceFreeUsers',
         'claudeCreditUsd', 'claudeCreditSetAt', 'deepseekCreditUsd', 'deepseekCreditSetAt',
         'googlePrefetch', 'googlePrefetchActions', 'googlePrefetchCount', 'googlePrefetchTtlMin', 'googlePrefetchLayers', 'googlePrefetchMode',
         'cacheCuration', 'cacheCurationActions', 'cacheCurationCount',

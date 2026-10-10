@@ -37,8 +37,13 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 // Founder 2026-10-09: "initially free mode can have it too, I don't have many users" — Jinni's voice is open to every
 // signed-in user with the same daily cap. VOICE_PREMIUM_ONLY=true in Coolify makes it Premium-only again.
-const premiumOnly = () => process.env.VOICE_PREMIUM_ONLY === 'true';
-const mayHearVoice = (user) => !!user && (!premiumOnly() || !!user.isPremium);
+// 2026-10-10: the switch moved to Admin → Limits (AppConfig.voiceFreeUsers); the env var no longer decides.
+const AppConfig = require('../models/AppConfig');
+async function mayHearVoice(user) {
+    if (!user) return false;
+    if (user.isPremium) return true;
+    try { return !!(await AppConfig.getConfig()).voiceFreeUsers; } catch (e) { return false; }
+}
 const ttsConfigured = () => !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_VOICE_ID);
 function whisperKey() {
     if (process.env.WHISPER_API_KEY) return process.env.WHISPER_API_KEY;
@@ -65,7 +70,7 @@ async function usageToday(userId) {
 }
 
 router.get('/status', auth, wrap(async (req, res) => {
-    const may = mayHearVoice(req.user), used = may ? await usageToday(req.user._id) : 0;
+    const may = await mayHearVoice(req.user), used = may ? await usageToday(req.user._id) : 0;
     res.json({ success: true, isPremium: !!req.user.isPremium, voice: may, tts: ttsConfigured(), stt: !!sttProvider(), cap: CAP, remaining: may ? Math.max(0, CAP - used) : 0 });
 }));
 
@@ -204,7 +209,7 @@ router.post('/stt-token', auth, sttLimiter, wrap(async (req, res) => {
 // answer and style 0 / stability 0.65 (founder 2026-10-08: paragraph-by-paragraph requests came back
 // at different loudness — ElevenLabs levels each request on its own).
 router.post('/speak', auth, speakLimiter, wrap(async (req, res) => {
-    if (!mayHearVoice(req.user)) return res.status(403).json({ success: false, error: 'premium_required' });
+    if (!(await mayHearVoice(req.user))) return res.status(403).json({ success: false, error: 'premium_required' });
     if (!ttsConfigured()) return res.status(503).json({ success: false, error: 'tts_unavailable' });
     const text = speakable(req.body?.text);
     if (text.length < 2) return res.status(400).json({ success: false, error: 'no_text' });
@@ -256,7 +261,7 @@ try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch (e) { /* read-only f
 const fillerCacheKey = (lang, i) => path.join(CACHE_DIR, `${lang}-${i}-${String(process.env.ELEVENLABS_VOICE_ID || '').slice(-6)}.mp3`);
 
 router.get('/filler', auth, speakLimiter, wrap(async (req, res) => {
-    if (!mayHearVoice(req.user)) return res.status(403).json({ success: false, error: 'premium_required' });
+    if (!(await mayHearVoice(req.user))) return res.status(403).json({ success: false, error: 'premium_required' });
     if (!ttsConfigured()) return res.status(503).json({ success: false, error: 'tts_unavailable' });
     const lang = FILLERS[String(req.query.lang || '').slice(0, 2)] ? String(req.query.lang).slice(0, 2) : 'en';
     const lines = FILLERS[lang];
