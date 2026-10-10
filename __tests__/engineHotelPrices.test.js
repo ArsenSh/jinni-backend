@@ -159,17 +159,18 @@ describe("owner's listed price (Destination/Business pricing)", () => {
         expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: true, average: 5 } }, 'destination', null).ownedPrice).toBeNull();
         expect(store.dbDocToCandidate({ ...doc, pricing: { isFree: false, average: 300, currency: 'usd' } }, 'business', null).ownedPrice).toEqual({ min: null, max: null, average: 300, currency: 'USD' });
     });
-    test('agent sees a quotable number; free or empty pricing stays silent', () => {
-        // Wording updated 2026-09-23: an unsourced row takes the CAUTIOUS
-        // attribution — it may not claim the venue quoted the number.
-        expect(summarize({ name: 'x', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toContain('from 120 to 260 USD');
-        expect(summarize({ name: 'x', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toContain('about 180 AMD');
-        expect(summarize({ name: 'x', ownedPrice: { min: 120, currency: 'USD' } }).price).toContain('recorded by Jinni');
+    test('agent sees a VENUE\'s quotable number; Jinni\'s own reference, free or empty pricing stays silent', () => {
+        // 2026-10-10 (founder: "that 30 dollar is for internal work"): only a venue's own price reaches the narrator.
+        expect(summarize({ name: 'x', source: 'business', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }).price).toContain('from 120 to 260 USD');
+        expect(summarize({ name: 'x', source: 'business', ownedPrice: { min: null, max: null, average: 180, currency: 'AMD' } }).price).toContain('about 180 AMD');
+        expect(summarize({ name: 'x', source: 'destination', ownedPrice: { min: 120, currency: 'USD' } }).price).toBeNull();
+        expect(summarize({ name: 'x', ownedPrice: { min: 120, currency: 'USD' } }).price).toBeNull();
         expect(summarize({ name: 'x' }).price).toBeNull();
     });
-    test('card carries listedPrice, and never a partner hotelPrice it did not get', () => {
-        const rec = toRecommendation({ name: 'x', source: 'destination', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }, 0, {});
+    test('card carries a VENUE\'s listedPrice (never Jinni\'s internal reference), and never a partner hotelPrice it did not get', () => {
+        const rec = toRecommendation({ name: 'x', source: 'business', ownedPrice: { min: 120, max: 260, average: 180, currency: 'USD' } }, 0, {});
         expect(rec.listedPrice).toEqual({ min: 120, max: 260, average: 180, currency: 'USD' });
+        expect(toRecommendation({ name: 'x', source: 'destination', ownedPrice: { min: 120, average: 180, currency: 'USD' } }, 0, {}).listedPrice).toBeNull();
         expect(rec.hotelPrice).toBeNull();
         expect(rec.bookingUrl).toBeNull();
     });
@@ -361,8 +362,7 @@ describe('whose price is it (founder 2026-09-23: "hotel owner or app owner?")', 
     const priced = { name: 'X', ownedPrice: { min: null, max: null, average: 70000, currency: 'AMD' } };
     test('a venue-entered price is the venue\'s; a curated one is Jinni\'s own reference', () => {
         expect(summarize({ ...priced, source: 'business' }).price).toBe("about 70000 AMD (the venue's own listed price, per night)");
-        const curated = summarize({ ...priced, source: 'destination' }).price;
-        expect(curated).toContain('recorded by Jinni');
-        expect(curated).toContain('NOT a quote from the venue');
+        // 2026-10-10: Jinni's curated reference is internal — never handed to the narrator at all
+        expect(summarize({ ...priced, source: 'destination' }).price).toBeNull();
     });
 });

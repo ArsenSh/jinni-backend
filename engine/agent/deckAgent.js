@@ -141,7 +141,8 @@ function summarize(c) {
         // dashboard; a Destination row was typed by Jinni when the place was
         // curated. Calling both "the owner's listing" told the traveler the
         // hotel had quoted a number Jinni had actually estimated.
-        price: c.ownedPrice ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min}${c.ownedPrice.max != null ? ` to ${c.ownedPrice.max}` : ''} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`)
+        // a Destination's reference price is internal (founder 2026-10-10): the narrator never gets it; a venue's own price stays
+        price: (c.ownedPrice && c.source === 'business') ? (c.ownedPrice.min != null ? `from ${c.ownedPrice.min}${c.ownedPrice.max != null ? ` to ${c.ownedPrice.max}` : ''} ${c.ownedPrice.currency}` : `about ${c.ownedPrice.average} ${c.ownedPrice.currency}`)
             + (c.source === 'business'
                 ? ' (the venue\'s own listed price, per night)'
                 : ' (a reference price recorded by Jinni, approximate — NOT a quote from the venue; never attribute it to the hotel)') : null,

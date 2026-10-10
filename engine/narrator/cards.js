@@ -222,7 +222,9 @@ function toRecommendation(place, i, { action = 'general', nearbyMode = false, de
         bookingUrl: place.hotelPrice?.url || null,
         // The owner's listed price (Destination/Business pricing block) —
         // shown as "from X" / "≈ X" when no partner price exists for the card.
-        listedPrice: place.ownedPrice || null,
+        // Only a VENUE's own price (Business dashboard) is shown. A Destination's price is the reference Jinni recorded while
+        // curating — internal (budget/style matching), never shown to the traveler (founder 2026-10-10).
+        listedPrice: place.source === 'business' ? (place.ownedPrice || null) : null,
         _isExpired: false,
         _action: action || 'general',
         metadata: {
