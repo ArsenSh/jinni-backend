@@ -73,7 +73,7 @@ async function runCacheRefresh({ olderThanDays = STALE_DAYS, limit = BATCH_LIMIT
     const PlaceCache = deps.PlaceCache || require('../models/PlaceCache');
     const find = deps.find || (async (query, n) => PlaceCache.find(query)
         .select('placeId name hoursCurated opening_hours lastFetched')
-        .sort({ lastFetched: 1 }).limit(n).lean());
+        .sort({ lastFetched: 1 }).limit(n).allowDiskUse(true).lean());
     const getPlaceDetails = deps.getPlaceDetails
         || ((placeId) => require('./googleService').getPlaceDetails(placeId, false, 'cache-refresh'));
     const updateOne = deps.updateOne || ((filter, update) => PlaceCache.updateOne(filter, update));

@@ -158,6 +158,10 @@ PlaceCacheSchema.index({ actions: 1 });
 PlaceCacheSchema.index({ useCount: -1 });
 PlaceCacheSchema.index({ fetchCount: -1 });
 PlaceCacheSchema.index({ lastUsed: -1 });
+// The refresh sweep sorts stale rows oldest-first; without this the sort ran in
+// memory over full documents (photos, embeddings) and hit Mongo's 32 MB limit
+// on the first backlog run (2026-10-11).
+PlaceCacheSchema.index({ lastFetched: 1 });
 PlaceCacheSchema.index({ createdAt: -1 });
 // No TTL — cache expiry is managed manually via the Admin > Places Cache > Purge Stale button.
 
