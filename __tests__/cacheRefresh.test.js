@@ -9,6 +9,10 @@ describe('staleQuery', () => {
     test('owned rows older than the threshold, not recently failed', () => {
         const q = staleQuery({ olderThanDays: 30, now: NOW.getTime() });
         expect(q.imagesStored).toBe(true);
+        // Our own mirrored rows have no Google identity to refresh.
+        expect(q.placeId.$not.test('dest_6a794a2f2d8b51daa1e348b1')).toBe(true);
+        expect(q.placeId.$not.test('biz_6a189cc96f6c60dd9bdcd54c')).toBe(true);
+        expect(q.placeId.$not.test('ChIJkdTYcwCl4BQRFna04xRTtUw')).toBe(false);
         const cutoff = q.$and[0].$or[0].lastFetched.$lt;
         expect(NOW - cutoff).toBe(30 * 864e5);
         expect(q.$and[1].$or[2].refreshFailedAt.$lt).toEqual(cutoff);

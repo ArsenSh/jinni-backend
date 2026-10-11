@@ -37,6 +37,10 @@ function staleQuery({ olderThanDays = STALE_DAYS, now = Date.now() } = {}) {
     const cutoff = new Date(now - olderThanDays * 24 * 60 * 60 * 1000);
     return {
         imagesStored: true,
+        // Mirrors of our own Destinations / Businesses (scripts/mirrorLegacyImages:
+        // placeId dest_… / biz_…) carry images but no Google identity — the first
+        // backlog run (2026-10-11) spent 60 calls learning that from 400s.
+        placeId: { $not: /^(dest|biz)_/ },
         $and: [
             { $or: [{ lastFetched: { $lt: cutoff } }, { lastFetched: null }, { lastFetched: { $exists: false } }] },
             { $or: [{ refreshFailedAt: null }, { refreshFailedAt: { $exists: false } }, { refreshFailedAt: { $lt: cutoff } }] },
