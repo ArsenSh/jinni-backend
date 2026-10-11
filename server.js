@@ -725,6 +725,14 @@ async function runAuctionSweep() {
 const { startEventCleanup } = require('./services/eventCleanup');
 startEventCleanup();
 
+// ── Cache refresh sweep ──────────────────────────────────────────────────────
+// Freshness is a background job, not a visibility gate (founder 2026-10-11):
+// the deck serves every owned row, and this sweep re-fetches hours, rating,
+// business status and types for rows older than 30 days, oldest first, a
+// bounded batch per week. See services/cacheRefresh.js for the controls.
+const { startCacheRefresh } = require('./services/cacheRefresh');
+startCacheRefresh();
+
 let auctionSweepTimer = null;
 if (AUCTION_SCHEDULER_ENABLED) {
     // First sweep shortly after startup (give Mongo time to connect), then on interval.

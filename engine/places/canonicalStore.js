@@ -23,7 +23,6 @@ const { scheduleToPeriods, isOpenAt } = require('../context/contextEngine');
 const { LOCAL_MODEL: EMBED_MODEL } = require('../retrieval/embedder');
 const { priceTier, tierFit, tierMismatch, isPriceAction } = require('../../services/priceTier');
 
-const CACHE_VALIDITY_DAYS = 30;
 const CACHE_SCAN_LIMIT = 200;      // hard ceiling so a big cache never blows up the scan
 const HIT_CAP = 25;                // cap popularity so a few places can't ossify the list
 const SHOP_SUBTYPE_TAGS = ['souvenirs', 'clothing', 'market', 'mall', 'jewelry', 'food'];
@@ -98,7 +97,6 @@ const typesForAction = (action, subType = null) => {
 };
 
 function buildCacheQuery({ center, radiusKm, category = null, subType = null, excludePlaceIds = [], countryScope = null, alsoTypes = null }) {
-    const freshnessCutoff = new Date(Date.now() - CACHE_VALIDITY_DAYS * 24 * 60 * 60 * 1000);
     const latDelta = radiusKm / 111.32;
     const lngDelta = radiusKm / (111.32 * Math.max(0.1, Math.cos(center.lat * Math.PI / 180)));
     const query = {
@@ -106,7 +104,14 @@ function buildCacheQuery({ center, radiusKm, category = null, subType = null, ex
         aiBlocked: { $ne: true },                      // staff suppression at the SOURCE
         nameAskPending: { $ne: true },                 // name-ask quarantine: invisible until staff admit
         'explore.status': { $ne: 'hidden' },
-        lastFetched: { $gte: freshnessCutoff },
+        // No freshness cutoff (founder 2026-10-11). The old 30-day lastFetched
+        // gate HID rows instead of refreshing them: v3 never bumps lastFetched,
+        // so a row nobody dealt for a month could never be dealt again — 258 of
+        // Yerevan's 413 image-bearing rows (214 staff-verified) were dark while
+        // the coverage gate still counted them as warm. Hours, rating and
+        // business status are kept current by services/cacheRefresh (weekly
+        // sweep over rows older than 30 days); closed businesses are dropped in
+        // the loop below on business_status.
     };
     // ── A COUNTRY IS NOT A CIRCLE (Arsen's rule, 2026-09-01: "if user asks in
     //    Armenia then it should see in country, it should filter by country

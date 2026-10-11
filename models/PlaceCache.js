@@ -29,6 +29,10 @@ const PlaceCacheSchema = new mongoose.Schema({
     // whenever details are fetched (2026-09-16). A closed business is dropped
     // from every pool; null = never checked, kept.
     business_status: { type: String, default: null, index: true },
+    // Last time the weekly refresh sweep could NOT get Details for this row
+    // (services/cacheRefresh): such rows wait a cycle instead of blocking the
+    // oldest-first queue every week.
+    refreshFailedAt: { type: Date, default: null },
     // Staff set these hours in the validator (2026-09-16). A Google details
     // refresh must never overwrite them — Google's line was the wrong one.
     hoursCurated: { type: Boolean, default: false },

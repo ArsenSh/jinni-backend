@@ -45,6 +45,10 @@ describe('buildCacheQuery', () => {
         expect(noCat.actions).toBeUndefined();
         expect(noCat.$or).toBeUndefined();
     });
+    test('no freshness gate — an old row is still owned data (founder 2026-10-11)', () => {
+        const q = buildCacheQuery({ center: CENTER, radiusKm: 5, category: 'activities' });
+        expect(q.lastFetched).toBeUndefined();
+    });
     test('a hookah lounge with an EMPTY tag list is eligible for activities by its Google type', () => {
         // Zazoo / 44Hookah / Barvikha, Yerevan cache, 2026-10-10: types carried
         // `hookah_bar`, actions were [] — three of four hookah bars invisible.
